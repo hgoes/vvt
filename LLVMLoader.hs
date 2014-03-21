@@ -418,7 +418,7 @@ translateModule f = withContext $ \ctx -> do
               fun' = inlineBools fun
           --putStrLn $ showPretty fun'
           --putStrLn $ graphviz' $ renderCfg $ extractTR fun
-          --writeCTIGAR f $ mkInfo $ addEndNode $ extractTR fun'
+          writeCTIGAR f $ mkInfo $ addEndNode $ extractTR fun'
           --runErrorT $ withModuleFromAST ctx mod (\mod'' -> runErrorT $ writeBitcodeToFile (File $ f++".bc") mod'')
           return (extractTR fun')
     )
