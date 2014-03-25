@@ -374,27 +374,42 @@ handleInstruction (name := (I.Select { I.condition' = cond
      Map.empty,
      inp_tps,
      Map.insert name IntType tps)
-handleInstruction (name := (Call { function = Right (ConstantOperand (GlobalReference (Name "__undef_int"))) })) inp_tps tps
+handleInstruction (name := (Call { function = Right (ConstantOperand op)
+                                 , arguments = args })) inp_tps tps
+  = handleCall (Just name) op args inp_tps tps
+handleInstruction (Do (Call { function = Right (ConstantOperand op)
+                            , arguments = args })) inp_tps tps
+  = handleCall Nothing op args inp_tps tps
+handleInstruction instr _ _ = error $ "Can't handle "++show instr
+
+handleCall :: Maybe Name -> Constant -> [(Operand,a)]
+              -> TypeMap -> TypeMap
+              -> (ValueMap -> ValueMap -> ValueMap
+                 ,ValueMap -> ValueMap -> [SMTExpr Bool]
+                 ,Map Name (ValueMap -> ValueMap -> ValueMap)
+                 ,TypeMap
+                 ,TypeMap)
+handleCall (Just name) (GlobalReference (Name "__undef_int")) [] inp_tps tps
   = (\inps vals -> vals,
      \_ _ -> [],
      Map.empty,
      Map.insert name IntType inp_tps,
      tps)
-handleInstruction (name := (Call { function = Right (ConstantOperand (GlobalReference (Name "__undef_bool"))) })) inp_tps tps
+handleCall (Just name) (GlobalReference (Name "__undef_bool")) [] inp_tps tps
   = (\inps vals -> vals,
      \_ _ -> [],
      Map.empty,
      Map.insert name BoolType inp_tps,
      tps)
-handleInstruction (Do (Call { function = Right (ConstantOperand (GlobalReference (Name "assert")))
-                            , arguments = [(op,_)] })) inp_tps tps
+handleCall _ (GlobalReference (Name "assert")) [(op,_)] inp_tps tps
   = (\inps vals -> vals,
      \inps vals -> [case translateOperand inps vals op of
                        BoolVal x -> x],
      Map.empty,
      inp_tps,
      tps)
-handleInstruction instr _ _ = error $ "Can't handle "++show instr
+handleCall name (C.BitCast { C.operand0 = call }) args inp_tps tps
+  = handleCall name call args inp_tps tps
 
 translateModule :: String -> IO (CFGModel ValueMap ValueMap)
 translateModule f = withContext $ \ctx -> do
