@@ -233,8 +233,7 @@ realizeFunction fun = do
                                                            (Map.singleton blk act)
                                                            (forwardEdges st) })
     realizeInstr act st i@(castDown -> Just call) = do
-      fun <- callInstGetCalledValue call
-      fname <- getNameString fun
+      fname <- getFunctionName call
       case fname of
         '_':'_':'u':'n':'d':'e':'f':_ -> do
           trg_tp <- valueGetType i >>= translateType
@@ -369,6 +368,20 @@ realizeFunction fun = do
           _ -> case Map.lookup blk acts of
             Just mp -> case Map.lookup src mp of
               Just act -> ite act (castUntypedExpr val) (mkITE blk inp xs)
+
+getFunctionName :: Ptr CallInst -> IO String
+getFunctionName ci = do
+  val <- callInstGetCalledValue ci
+  getFunctionName' val
+  where
+    getFunctionName' (castDown -> Just (f::Ptr Function))
+      = getNameString f
+    getFunctionName' (castDown -> Just c) = do
+      tp <- constantExprGetOpcode c
+      case tp of
+        CastOp BitCast -> do
+          val <- getOperand c 0
+          getFunctionName' val
 
 declareOutputActs :: RealizationSt -> RealizedGates -> LLVMInput
                      -> SMT (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (SMTExpr Bool))
