@@ -48,10 +48,11 @@ affineToExpr expr
     [x] -> x
     _ -> app plus summands
   where
-    summands = [ if c==1
-                 then Var v (affineAnnotation expr)
-                 else app mult [Var v (affineAnnotation expr)
-                               ,constantAnn c (affineAnnotation expr)]
+    summands = [ case c of
+                    1 -> Var v (affineAnnotation expr)
+                    -1 -> app neg (Var v (affineAnnotation expr))
+                    _ -> app mult [Var v (affineAnnotation expr)
+                                  ,constantAnn c (affineAnnotation expr)]
                | (v,c) <- Map.toList $ affineFactors expr,
                  c /= 0 ]++
                (if affineConstant expr == 0
