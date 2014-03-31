@@ -1,10 +1,12 @@
-{-# LANGUAGE ScopedTypeVariables,ViewPatterns,GADTs,PackageImports,RankNTypes #-}
-module LLVMLoader3 where
+{-# LANGUAGE ScopedTypeVariables,ViewPatterns,GADTs,PackageImports,RankNTypes,
+             FlexibleInstances,MultiParamTypeClasses,MultiWayIf #-}
+module LLVMLoader4 where
 
 import Gates
 import Affine
 import ExprPreprocess
 import Karr
+import Realization
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals hiding (Value)
@@ -14,7 +16,7 @@ import Language.SMTLib2.Internals.Instances (quantify,dequantify)
 import Language.SMTLib2.Debug
 import LLVM.FFI
 
-import Prelude hiding (foldl,mapM_,mapM)
+import Prelude hiding (foldl,mapM_,mapM,concat)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -26,15 +28,14 @@ import Data.Foldable
 import Data.Traversable
 import System.Environment (getArgs)
 import Foreign.Marshal.Array
-import "mtl" Control.Monad.State (runStateT,get,put,lift)
+import "mtl" Control.Monad.State (StateT,runStateT,get,put,lift)
 import "mtl" Control.Monad.Trans (liftIO)
-import Data.Typeable (cast)
+import Data.Typeable
 import qualified Data.Vector as Vec
 import Data.Maybe (catMaybes)
 import Debug.Trace
 import Data.Graph.Inductive.Graphviz
-
-import Realization
+import System.IO
 
 traceThis :: Show a => a -> a
 traceThis = traceWith show
@@ -42,9 +43,9 @@ traceThis = traceWith show
 traceWith :: (a -> String) -> a -> a
 traceWith f x = trace (f x) x
 
-declareOutputActs :: RealizationSt -> RealizedGates -> LLVMInput
-                     -> SMT (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (SMTExpr Bool))
-                            ,RealizedGates)
+declareOutputActs :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
+                     -> SMT' m (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (SMTExpr Bool))
+                               ,RealizedGates)
 declareOutputActs st real inp
   = runStateT (Map.traverseWithKey
                (\trg el
@@ -66,9 +67,9 @@ getOutput st inp
                  Map.intersection (prevInstrs st) (latchInstrs st)
     in (acts,latchs)
 
-declareOutputInstrs :: RealizationSt -> RealizedGates -> LLVMInput
-                       -> SMT (Map (Ptr Instruction) UntypedExpr
-                              ,RealizedGates)
+declareOutputInstrs :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
+                       -> SMT' m (Map (Ptr Instruction) UntypedExpr
+                                 ,RealizedGates)
 declareOutputInstrs st real inp
   = runStateT (Map.traverseWithKey
                (\instr (UntypedExpr val) -> do
@@ -78,9 +79,9 @@ declareOutputInstrs st real inp
                    return (UntypedExpr expr)) (Map.intersection (prevInstrs st) (latchInstrs st))
               ) real
 
-declareAssertions :: RealizationSt -> RealizedGates -> LLVMInput
-                     -> SMT ([SMTExpr Bool]
-                            ,RealizedGates)
+declareAssertions :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
+                     -> SMT' m ([SMTExpr Bool]
+                               ,RealizedGates)
 declareAssertions st real inp
   = runStateT (traverse (\ass -> do
                             real <- get
@@ -90,9 +91,9 @@ declareAssertions st real inp
                         ) (assertions st)
               ) real
 
-declareAssumptions :: RealizationSt -> RealizedGates -> LLVMInput
-                     -> SMT ([SMTExpr Bool]
-                            ,RealizedGates)
+declareAssumptions :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
+                     -> SMT' m ([SMTExpr Bool]
+                               ,RealizedGates)
 declareAssumptions st real inp
   = runStateT (traverse (\ass -> do
                             real <- get
@@ -116,9 +117,9 @@ allLatchBlockAssigns st
 
 getKarr :: RealizationSt -> Map (Ptr BasicBlock) (Map (Ptr BasicBlock) [ValueMap -> SMTExpr Bool])
 getKarr st
-  = trace (graphviz' (renderKarrTrans init_karr)) $
-    fmap (fmap (\n -> let diag = traceWith (\diag' -> show n++": "++show diag') $ (karrNodes final_karr) IMap.! n
-                          pvecs = traceThis $ extractPredicateVec diag
+  = {-trace (graphviz' (renderKarrTrans init_karr)) $-}
+    fmap (fmap (\n -> let diag = {-traceWith (\diag' -> show n++": "++show diag') $-} (karrNodes final_karr) IMap.! n
+                          pvecs = {-traceThis $-} extractPredicateVec diag
                       in [ \vals -> (constant c) .==. (case catMaybes [ case f of
                                                                            0 -> Nothing
                                                                            1 -> Just expr
@@ -193,15 +194,22 @@ getKarr st
                                  in Map.insertWith (Map.unionWith (++)) from_nd suc cmp
                      ) Map.empty transitions
 
+data LoaderBackend = LoaderBackend
+
+instance Monad m => SMTBackend LoaderBackend (StateT [(String,TypeRep,String)] m) where
+  smtHandle _ st (SMTDefineFun finfo [] (expr::SMTExpr a)) = do
+    funs <- get
+    case funInfoName finfo of
+      Just (name,0) -> put (funs++[(name,typeOf (undefined::a),renderExpr' st expr)])
+  smtHandle _ _ (SMTDeclareFun _) = return ()
+  smtHandle _ _ (SMTComment _) = return ()
+  smtHandle _ _ SMTExit = return ()
+
 main = do
   [mod,entry] <- getArgs
   fun <- getProgram entry mod
   st <- realizeFunction fun
-  pipe <- createSMTPipe "z3" ["-smt2","-in"]
-  withSMTBackend (debugBackend $ optimizeBackend pipe)
-    (do
-        comment "activation latches:"
-        inp_gates <- Map.traverseWithKey
+  latch_blk_names <- Map.traverseWithKey
                      (\trg
                       -> Map.traverseWithKey
                          (\src _
@@ -210,109 +218,92 @@ main = do
                             src' <- if src==nullPtr
                                     then return ""
                                     else liftIO $ getNameString src
-                            varNamed (src'++"."++trg'))) (latchBlks st)
-        comment "inputs:"
-        inp_inps <- Map.traverseWithKey
-                    (\instr (ProxyArg (_::a) ann) -> do
-                        name <- liftIO $ getNameString instr
-                        res <- varNamedAnn (name++"_") ann
-                        return (UntypedExpr (res::SMTExpr a))
-                    ) (inputInstrs st)
-        comment "variable latches:"
-        inp_vals <- Map.traverseWithKey
-                    (\instr (ProxyArg (_::a) ann) -> do
-                        name <- liftIO $ getNameString instr
-                        res <- varNamedAnn (name++"_") ann
-                        return (UntypedExpr (res::SMTExpr a))
-                    ) (latchInstrs st)
-        comment "gates:"
-        let inps = (inp_gates,inp_inps,inp_vals)
-        (gates,real0) <- declareOutputActs st Map.empty inps
-        (vals,real1) <- declareOutputInstrs st real0 inps
-        (asserts,real2) <- declareAssertions st real1 inps
-        (assumes,real3) <- declareAssumptions st real2 inps
-        mapM_ (\(trg,jumps) -> do
-                  trg' <- liftIO $ getNameString trg
-                  comment $ "To "++trg'++":"
-                  mapM_ (\(src,act) -> do
-                            src' <- if src==nullPtr
-                                    then return "[init]"
-                                    else liftIO $ getNameString src
-                            act' <- renderExpr act
-                            comment $ "  from "++src'++": "++act') (Map.toList jumps)
-              ) (Map.toList gates)
-        mapM_ (\(instr,UntypedExpr val) -> do
-                  name <- liftIO $ getNameString instr
-                  str <- renderExpr val
-                  comment $ "Latch "++name++": "++str
-              ) (Map.toList vals)
-        mapM_ (\ass -> do
-                  str <- renderExpr ass
-                  comment $ "Assertion: "++str
-              ) asserts
-        mapM_ (\ass -> do
-                  str <- renderExpr ass
-                  comment $ "Assume: "++str
-              ) assumes
-        {-let output = \acts inps latchs -> getOutput st (acts,inps,latchs)
-            transitions = [ (src,trg,trans')
-                          | (src,trg,acts) <- allLatchBlockAssigns st
-                          , trans <- removeInputs (inputInstrs st)
-                                     (latchBlks st,latchInstrs st) (output acts) inp_vals
-                          , (_,trans') <- removeArgGuards trans ]
-        mapM_ (\(src,trg,(act_trans,latch_trans)) -> do
-                  name <- liftIO $ if src==nullPtr
-                                   then getNameString trg
-                                   else (do
-                                            src' <- getNameString src
-                                            trg' <- getNameString trg
-                                            return $ src'++"~>"++trg')
-                  comment $ "From "++name
-                  Map.traverseWithKey
-                    (\ntrg nsrcs
-                     -> Map.traverseWithKey
-                        (\nsrc expr
-                         -> do
-                           name' <- liftIO $ if nsrc==nullPtr
-                                             then getNameString ntrg
-                                             else (do
-                                                      nsrc' <- getNameString nsrc
-                                                      ntrg' <- getNameString ntrg
-                                                      return (nsrc'++"~>"++ntrg'))
-                           expr' <- renderExpr expr
-                           comment $ "  to "++name'++": "++expr'
-                           return ()
-                        ) nsrcs
-                    ) act_trans
-                  Map.traverseWithKey
-                    (\instr (UntypedExpr expr) -> do
-                        name <- liftIO $ getNameString instr
-                        case cast expr >>= affineFromExpr of
-                          Nothing -> do
-                            res <- renderExpr expr
-                            comment $ "Instr "++name++" not affine ("++res++")"
-                          Just (aff::AffineExpr Integer) -> do
-                            affExpr <- renderExpr (affineToExpr aff)
-                            comment $ "Instr "++name++" = "++affExpr
-                    ) latch_trans
-              ) transitions-}
-        comment $ "Karr analysis:"
-        fixp <- mapM renderExpr [ fix inp_vals
-                                | mp <- Map.elems (getKarr st)
-                                , lst <- Map.elems mp
-                                , fix <- lst ]
-        comment $ show fixp
-        comment $ "--------------"
-
-        {-let (act_exprs,latch_exprs) = getOutput st inps
-        mapM_ (\(instr,UntypedExpr val) -> case cast val of
-                  Just (iexpr::SMTExpr Integer) -> affineFromExpr
-                do
-                  name <- liftIO $ getNameString instr
-                  str <- renderExpr val
-                  comment $ "Latch expr "++name++": "++str
-              ) (Map.toList latch_exprs)-}
-    )
+                            return (src'++"."++trg'))) (latchBlks st)
+  latch_var_names <- Map.traverseWithKey
+                     (\instr prx -> do
+                         name <- liftIO $ getNameString instr
+                         return (name++"'",prx)
+                     ) (latchInstrs st)
+  input_names <- Map.traverseWithKey
+                 (\instr prx -> do
+                     name <- liftIO $ getNameString instr
+                     return (name,prx)
+                 ) (inputInstrs st)
+  let act = withSMTBackend LoaderBackend
+            (do
+                comment "activation latches:"
+                inp_gates <- mapM (mapM varNamed) latch_blk_names
+                comment "inputs:"
+                inp_inps <- mapM
+                            (\(name,ProxyArg (_::a) ann) -> do
+                                res <- varNamedAnn name ann
+                                return (UntypedExpr (res::SMTExpr a))
+                            ) input_names
+                comment "variable latches:"
+                inp_vals <- Map.traverseWithKey
+                            (\instr (name,ProxyArg (_::a) ann) -> do
+                                res <- varNamedAnn name ann
+                                return (UntypedExpr (res::SMTExpr a))
+                            ) latch_var_names
+                comment "gates:"
+                let inps = (inp_gates,inp_inps,inp_vals)
+                (latch_blks,real0) <- declareOutputActs st Map.empty inps
+                (latch_vals,real1) <- declareOutputInstrs st real0 inps
+                (asserts,real2) <- declareAssertions st real1 inps
+                (assumes,real3) <- declareAssumptions st real2 inps
+                latch_blks' <- mapM (mapM renderExpr) latch_blks
+                latch_vals' <- mapM (\(UntypedExpr e) -> renderExpr e) latch_vals
+                asserts' <- mapM renderExpr asserts
+                init <- renderExpr (((inp_gates Map.! (initBlk st)) Map.! nullPtr) .==. constant True)
+                assumes0 <- mapM renderExpr assumes
+                assumes1 <- Map.traverseWithKey
+                            (\trg -> Map.traverseWithKey
+                                     (\src expr
+                                      -> renderExpr (expr .=>. app and' [ not' expr'
+                                                                        | (trg',mp') <- Map.toList inp_gates
+                                                                        , (src',expr') <- Map.toList mp'
+                                                                        , trg/=trg' || src/=src' ])
+                                     )
+                            ) inp_gates
+                fixp <- mapM renderExpr [ fix inp_vals
+                                        | mp <- Map.elems (getKarr st)
+                                        , lst <- Map.elems mp
+                                        , fix <- lst ]
+                return (latch_blks',latch_vals',asserts',init,assumes0++(concat $ fmap Map.elems (Map.elems assumes1))++fixp)
+            )
+  ((latch_blks,latch_vals,asserts,init,assumes),gates) <- runStateT act ([]::[(String,TypeRep,String)])
+  withFile (mod++".nondet") WriteMode $ \h -> do
+    mapM (\(name,ProxyArg u ann) -> do
+             let tpname = case cast u of
+                   Just (_::Integer) -> "int"
+                   Nothing -> case cast u of
+                     Just (_::Bool) -> "bool"
+             hPutStrLn h (name++";"++tpname)
+         ) input_names
+  withFile (mod++".vars") WriteMode $ \h -> do
+    mapM_ (mapM_ (\(name,nexpr) -> do
+                     hPutStrLn h (name++";bool;"++nexpr)
+                 )) (Map.intersectionWith
+                     (Map.intersectionWith (\x y -> (x,y))) latch_blk_names latch_blks)
+    mapM_ (\((name,ProxyArg u ann),nexpr) -> do
+              let tpname = case cast u of
+                    Just (_::Integer) -> "int"
+                    Nothing -> case cast u of
+                      Just (_::Bool) -> "bool"
+              hPutStrLn h (name++";"++tpname++";"++nexpr)
+          ) (Map.intersectionWith (\x y -> (x,y)) latch_var_names latch_vals)
+  withFile (mod++".tr") WriteMode $
+    \h -> mapM_ (\(name,tp,expr)
+                 -> let tpname = if | tp==typeOf (undefined::Integer) -> "int"
+                                    | tp==typeOf (undefined::Bool) -> "bool"
+                    in hPutStrLn h (name ++ ";"++tpname++";"++expr)
+                ) gates
+  withFile (mod++".asrts") WriteMode $
+    \h -> mapM_ (\ass -> hPutStrLn h ass) asserts
+  withFile (mod++".init") WriteMode $
+    \h -> hPutStrLn h init
+  withFile (mod++".assum") WriteMode $
+    \h -> mapM_ (\ass -> hPutStrLn h ass) assumes
 
 data APass = forall p. PassC p => APass (IO (Ptr p))
 

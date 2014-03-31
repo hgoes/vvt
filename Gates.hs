@@ -22,7 +22,7 @@ data Gate inp outp = Gate { gateTransfer :: inp -> SMTExpr outp
                           , gateAnnotation :: SMTAnnotation outp
                           , gateName :: Maybe String
                           }
-                   deriving Typeable 
+                   deriving Typeable
 
 addGate :: (Args inp,SMTType outp) => GateMap inp -> Gate inp outp -> (SMTExpr outp,GateMap inp)
 addGate mp gate = let (expr,nmp) = addGate' mp gate
@@ -70,7 +70,7 @@ translateGateExpr' e _ _ = e
 
 type RealizedGates = Map TypeRep (Map GateExpr UntypedExpr)
 
-declareGate :: (Args inp,SMTType a) => SMTExpr a -> RealizedGates -> GateMap inp -> inp -> SMT (SMTExpr a,RealizedGates)
+declareGate :: (Args inp,SMTType a,Monad m) => SMTExpr a -> RealizedGates -> GateMap inp -> inp -> SMT' m (SMTExpr a,RealizedGates)
 declareGate e real mp inp = do
   (nreal,[res]) <- foldExprM (\creal e -> do
                                  (res,nreal) <- declareGate' e creal mp inp
@@ -78,7 +78,7 @@ declareGate e real mp inp = do
                              ) real e
   return (res,nreal)
 
-declareGate' :: Args inp => SMTExpr a -> RealizedGates -> GateMap inp -> inp -> SMT (SMTExpr a,RealizedGates)
+declareGate' :: (Args inp,Monad m) => SMTExpr a -> RealizedGates -> GateMap inp -> inp -> SMT' m (SMTExpr a,RealizedGates)
 declareGate' e@(InternalObj obj ann::SMTExpr a) real mp inp = case cast obj of
   Just gexpr -> case Map.lookup (typeOf (undefined::a)) real of
     Just exprs -> case Map.lookup gexpr exprs of

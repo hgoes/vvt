@@ -13,8 +13,14 @@ import qualified Data.Map as Map
 
 removeGuards :: SMTType a => SMTExpr a -> [([SMTExpr Bool],SMTExpr a)]
 removeGuards (asITE -> Just (cond,lhs,rhs))
-  = [ (cond:condL,lhs') | (condL,lhs') <- removeGuards lhs ] ++
-    [ ((not' cond):condR,rhs') | (condR,rhs') <- removeGuards rhs ]
+  | cond' == constant True = removeGuards lhs
+  | cond' == constant False = removeGuards rhs
+  | otherwise = [ (cond:condL,lhs') | (condL,lhs') <- removeGuards lhs ] ++
+                [ ((not' cond):condR,rhs') | (condR,rhs') <- removeGuards rhs ]
+  where
+    cond' = case optimizeExpr cond of
+      Just c -> c
+      Nothing -> cond
 removeGuards (asAnyApp removeFunGuards -> Just res) = res
 removeGuards x = [([],x)]
 
@@ -39,12 +45,12 @@ removeArgGuards x
         | (cond,x') <- removeGuards x
         , (cond',xs') <- remove xs ]
 
-removeInputs :: (Args inp,Args a,Args b) => ArgAnnotation inp -> ArgAnnotation b -> (inp -> a -> b) -> a -> [b]
-removeInputs ann_inp ann_st fun x = rexpr
+removeInputs :: (Args inp,Args b) => ArgAnnotation inp -> ArgAnnotation b -> (inp -> b) -> [b]
+removeInputs ann_inp ann_st fun = rexpr
   where
     ((n,mp),inp) = foldExprsId (\(n,mp) (_::SMTExpr a) ann -> ((n+1,Map.insert n (ProxyArg (undefined::a) ann) mp),InternalObj n ann)
                                ) (0::Integer,Map.empty) undefined ann_inp
-    xs = fun inp x
+    xs = fun inp
     rexpr = Map.foldlWithKey (\exprs n prx
                                -> if prx == ProxyArg (undefined::Bool) ()
                                   then [optimizeArgs ann_st $ replaceExpr (InternalObj n ()) (Const val ()) expr
