@@ -7,6 +7,7 @@ import Affine
 import ExprPreprocess
 import Karr
 import Realization
+import AffineGates
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals hiding (Value)
@@ -114,6 +115,107 @@ allLatchBlockAssigns st
                ) (latchBlks st))
     | (trg,srcs) <- Map.toList (latchBlks st)
     , (src,()) <- Map.toList srcs ]
+
+getKarrOpt :: RealizationSt -> IO (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) [ValueMap -> SMTExpr Bool]))
+getKarrOpt st = do
+  let (instrs_int,instrs_nint) = Map.partition
+                                 (==(ProxyArg (undefined::Integer) ()))
+                                 (latchInstrs st)
+      (sz,node_mp) = Map.mapAccum
+                     (Map.mapAccum (\n _ -> (n+1,n))) 1 (latchBlks st)
+      sz_vals = Map.size instrs_int
+  trans <- mapM (\(src,trg,acts) -> do
+                    pipe <- createSMTPipe "z3" ["-in","-smt2"]
+                    withSMTBackend pipe
+                      (do
+                          latchs_int <- argVarsAnn instrs_int
+                          latchs_nint <- argVarsAnn instrs_nint
+                          let latchs = Map.union latchs_int latchs_nint
+                              rev_mp = Map.foldlWithKey (\crev instr (UntypedExpr (Var i _))
+                                                          -> Map.insert i instr crev
+                                                        ) Map.empty latchs_int
+                          (affs,_) <- getAffineFromGates (acts,latchs) (inputInstrs st)
+                                      (\(acts,l) inps -> (acts,inps,l))
+                                      (\real cond inp -> do
+                                          (acts,nreal) <- runStateT (mapM (mapM (\f -> do
+                                                                                    creal <- get
+                                                                                    (act,nreal) <- lift $ declareGate (f inp) real (gates st) inp
+                                                                                    put nreal
+                                                                                    return act
+                                                                                )
+                                                                          ) (backwardEdges st)) real
+                                          let getActBlk mp = case [ (src,trg)
+                                                                  | (trg,mp') <- Map.toList mp
+                                                                  , (src,act) <- Map.toList mp'
+                                                                  , act ] of
+                                                               [] -> Nothing
+                                                               [el] -> Just el
+                                              allSat = do
+                                                res <- checkSat
+                                                if res
+                                                  then (do
+                                                           v <- getValues acts
+                                                           assert $ not' $ argEq acts (liftArgs v (latchBlks st))
+                                                           vs <- allSat
+                                                           return (getActBlk v:vs))
+                                                  else return []
+                                          racts <- stack allSat
+                                          return (racts,nreal))
+                                      (gates st)
+                                      (Map.toList $
+                                       fmap castUntypedExpr
+                                       (Map.intersection (prevInstrs st) latchs_int))
+                                      Map.empty
+                          return (src,trg,affs,rev_mp))
+                ) (allLatchBlockAssigns st)
+  let (_,_,_,rev_mp):_ = trans
+      trans_mp = foldl (\cmp (from_src,from_trg,affs,_)
+                         -> let from_nd = (node_mp Map.! from_trg) Map.! from_src
+                            in foldl (\cmp (to_gates,aff)
+                                      -> let mat = Vec.fromList $
+                                                   [ Vec.generate sz_vals
+                                                     (\i' -> case Map.lookup (fromIntegral i') (affineFactors aff') of
+                                                         Nothing -> 0
+                                                         Just x -> x)
+                                                   | (_,aff') <- aff ]
+                                             vec = Vec.fromList
+                                                   [ affineConstant aff'
+                                                   | (_,aff') <- aff ]
+                                         in foldl (\cmp to
+                                                   -> let to_nd = case to of
+                                                            Just (to_src,to_trg) -> (node_mp Map.! to_trg) Map.! to_src
+                                                            Nothing -> 0
+                                                      in Map.insertWith
+                                                         (Map.unionWith (++))
+                                                         from_nd
+                                                         (Map.singleton to_nd [(mat,vec)])
+                                                         cmp
+                                                  ) cmp to_gates
+                                     ) cmp affs
+                       ) Map.empty trans
+      init_karr = initKarr sz
+                  ((node_mp Map.! (initBlk st)) Map.! nullPtr)
+                  (\from to -> (trans_mp Map.! from) Map.! to)
+                  (\from -> case Map.lookup from trans_mp of
+                      Nothing -> []
+                      Just mp -> Map.keys mp)
+      final_karr = finishKarr init_karr
+      res = fmap (fmap (\n -> let diag = (karrNodes final_karr) IMap.! n
+                                  pvecs = extractPredicateVec diag
+                              in [ \vals -> (constant c) .==. (case catMaybes [ case f of
+                                                                                   0 -> Nothing
+                                                                                   1 -> Just expr
+                                                                                   -1 -> Just $ app neg expr
+                                                                                   _ -> Just $ (constant f) * expr
+                                                                              | (i,f) <- zip [0..] facs
+                                                                              , let expr = castUntypedExpr $ vals Map.! (rev_mp Map.! i)
+                                                                              ] of
+                                                                 [] -> constant 0
+                                                                 [x] -> x
+                                                                 xs -> app plus xs)
+                                 | pvec <- pvecs
+                                 , let c:facs = Vec.toList pvec ])) node_mp
+  return res
 
 getKarr :: RealizationSt -> Map (Ptr BasicBlock) (Map (Ptr BasicBlock) [ValueMap -> SMTExpr Bool])
 getKarr st
@@ -229,6 +331,7 @@ main = do
                      name <- liftIO $ getNameString instr
                      return (name,prx)
                  ) (inputInstrs st)
+  fixps <- getKarrOpt st
   let act = withSMTBackend LoaderBackend
             (do
                 comment "activation latches:"
@@ -266,12 +369,12 @@ main = do
                                      )
                             ) inp_gates
                 fixp <- mapM renderExpr [ fix inp_vals
-                                        | mp <- Map.elems (getKarr st)
+                                        | mp <- Map.elems fixps
                                         , lst <- Map.elems mp
                                         , fix <- lst ]
                 return (latch_blks',latch_vals',asserts',init,assumes0++(concat $ fmap Map.elems (Map.elems assumes1))++fixp)
             )
-  ((latch_blks,latch_vals,asserts,init,assumes),gates) <- runStateT act ([]::[(String,TypeRep,String)])
+  ((latch_blks,latch_vals,asserts,init,assumes),gts) <- runStateT act ([]::[(String,TypeRep,String)])
   withFile (mod++".nondet") WriteMode $ \h -> do
     mapM (\(name,ProxyArg u ann) -> do
              let tpname = case cast u of
@@ -297,7 +400,7 @@ main = do
                  -> let tpname = if | tp==typeOf (undefined::Integer) -> "int"
                                     | tp==typeOf (undefined::Bool) -> "bool"
                     in hPutStrLn h (name ++ ";"++tpname++";"++expr)
-                ) gates
+                ) gts
   withFile (mod++".asrts") WriteMode $
     \h -> mapM_ (\ass -> hPutStrLn h ass) asserts
   withFile (mod++".init") WriteMode $
