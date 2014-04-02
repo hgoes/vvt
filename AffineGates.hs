@@ -10,6 +10,7 @@ import Language.SMTLib2.Internals.Operators
 import Data.Typeable
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe (mapMaybe)
 
 import Debug.Trace
 
@@ -28,6 +29,13 @@ getAffineFromGates latchs inp_ann (mkArg::latchs -> inps -> arg) allSat gates ex
                                     [(undefined,()),(undefined::inps,())] inp_ann
   trace'' freeMp freeInps inps [] real expr
   where
+    mkFree freeMp = snd . foldExpr (\_ expr' -> case expr' of
+                                       InternalObj obj ann -> case cast obj of
+                                         Just (InputVar i) -> ((),castUntypedExpr $ freeMp Map.! i)
+                                         Nothing -> ((),expr')
+                                       _ -> ((),expr')
+                                   ) ()
+
     trace'' freeMp freeInps inps cond real ((k,x):xs) = do
       (affs,nreal) <- trace' freeMp freeInps inps cond real x
       let foldRes creal ((aff,cond'):affs) = do
@@ -66,7 +74,7 @@ getAffineFromGates latchs inp_ann (mkArg::latchs -> inps -> arg) allSat gates ex
     trace' freeMp freeInps inps cond real (Var i ()) = do
       return ([(AffineExpr (Map.singleton i 1) 0 (),cond)],real)
     trace' freeMp freeInps inps cond real (App SMTITE (cond',ifTrue,ifFalse)) = do
-      (condExpr,nreal) <- declareGate cond' real gates (mkArg latchs freeInps)
+      (condExpr,nreal) <- declareGate (mkFree freeMp cond') real gates (mkArg latchs freeInps)
       tIsFeas <- stack $ do
         assert $ app and' (cond++[condExpr])
         checkSat
@@ -95,5 +103,15 @@ getAffineFromGates latchs inp_ann (mkArg::latchs -> inps -> arg) allSat gates ex
             (yress,nreal1) <- trace' freeMp freeInps inps ncond creal y
             (rest,nreal2) <- foldRes nreal1 affs
             return ((fmap (\(aff',cond') -> (affineAdd aff aff',cond')) yress)++rest,nreal2)
+      foldRes real1 xress
+    trace' freeMp freeInps inps cond real (App (SMTArith Mult) [x,y]) = do
+      (xress,real1) <- trace' freeMp freeInps inps cond real x
+      let foldRes creal [] = return ([],creal)
+          foldRes creal ((aff,ncond):affs) = do
+            (yress,nreal1) <- trace' freeMp freeInps inps ncond creal y
+            (rest,nreal2) <- foldRes nreal1 affs
+            return ((mapMaybe (\(aff',cond') -> do
+                                  res <- affineMul aff aff'
+                                  return (res,cond')) yress)++rest,nreal2)
       foldRes real1 xress
     trace' _ _ _ _ _ expr = error $ "trace' "++show expr
