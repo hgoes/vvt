@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts,RankNTypes,TypeFamilies #-}
 module Model where
 
 import Data.Unit
@@ -11,11 +11,13 @@ import Data.Ord (comparing)
 import Data.Foldable
 import Prelude hiding (foldl)
 
+import Gates
+
 data Model inp st = Model { inpAnnotation :: ArgAnnotation inp
                           , stAnnotation :: ArgAnnotation st
                           , initState :: st -> SMTExpr Bool
                           , nextState :: st -> inp -> st -> SMTExpr Bool
-                          , assertion :: st -> SMTExpr Bool }
+                          , assertion :: st -> inp -> SMTExpr Bool }
 
 data CFGNode inp st = CFGNode { nodeAssertion :: inp -> st -> SMTExpr Bool
                               , nodePhi :: Map Node (inp -> st -> st)
@@ -30,8 +32,21 @@ data CFGModel inp st = CFGModel { cfgStAnnotation :: ArgAnnotation st
                                 , cfgInit :: Node
                                 }
 
-addAssertion :: (st -> SMTExpr Bool) -> Model inp st -> Model inp st
-addAssertion f mdl = mdl { assertion = \x -> (assertion mdl x) .&&. (f x) }
+class (Args (ModelInput mdl),Args (ModelState mdl)) => ModelC mdl where
+  type ModelInput mdl
+  type ModelState mdl
+  modelInputAnnotation :: mdl -> ArgAnnotation (ModelInput mdl)
+  modelStateAnnotation :: mdl -> ArgAnnotation (ModelState mdl)
+  modelGates :: mdl -> GateMap (ModelInput mdl)
+  modelInit :: Monad m => mdl -> (forall t. Args t => ArgAnnotation t -> m t) -> Either (ModelState mdl) (m (ModelState mdl,[SMTExpr Bool]))
+  modelInit mdl alloc = Right (do
+                                  st <- alloc (modelStateAnnotation mdl)
+                                  return (st,[modelInitP mdl st]))
+  modelInitP :: mdl -> ModelState mdl -> SMTExpr Bool
+  --modelStep :: mdl -> ModelInput mdl -> 
+
+addAssertion :: (st -> inp -> SMTExpr Bool) -> Model inp st -> Model inp st
+addAssertion f mdl = mdl { assertion = \x i -> (assertion mdl x i) .&&. (f x i) }
 
 newState :: Args st => Model inp st -> SMT st
 newState mdl = argVarsAnn (stAnnotation mdl)
@@ -46,8 +61,9 @@ bmc mdl = do
   bmc' [] init
   where
     bmc' hist cur = do
+      inp <- newInput mdl
       res <- stack $ do
-        assert $ not' $ assertion mdl cur
+        assert $ not' $ assertion mdl cur inp
         sat <- checkSat
         if sat
           then fmap Just $ mapM getValues (cur:hist)
@@ -55,7 +71,6 @@ bmc mdl = do
       case res of
         Nothing -> do
           nxt <- newState mdl
-          inp <- newInput mdl
           assert $ nextState mdl cur inp nxt
           bmc' (cur:hist) nxt
         Just res' -> return res'
@@ -183,3 +198,11 @@ stateSpace mdl = do
                  vs <- getAll ann st
                  return (v:vs))
         else return []
+
+{-
+cfgToModel :: CFGModel inp st -> Model inp (SMTExpr Integer,st)
+cfgToModel mdl = Model { inpAnnotation = cfgInpAnnotation mdl
+                       , stAnnotation = ((),cfgStAnnotation mdl)
+                       , initState = \(pc,st) -> pc .==. (constant $ fromIntegral $ cfgInit mdl)
+                       , nextState = \(pc,st) inp (pc',st')
+                                      -> Gr.labNodes -}

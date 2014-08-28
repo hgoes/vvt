@@ -1,4 +1,4 @@
-{-# LANGUAGE ViewPatterns,ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns,ScopedTypeVariables,GADTs #-}
 module ExprPreprocess where
 
 import Language.SMTLib2

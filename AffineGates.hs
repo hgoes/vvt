@@ -49,7 +49,7 @@ getAffineFromGates latchs inp_ann (mkArg::latchs -> inps -> arg) allSat gates ex
       (gates,nreal) <- allSat real cond (mkArg latchs freeInps)
       return ([(gates,[])],nreal)
     
-    trace' :: (Monad m) => Map Integer UntypedExpr -> inps -> inps -> [SMTExpr Bool] -> RealizedGates -> SMTExpr Integer
+    trace' :: (Monad m) => Map Integer (SMTExpr Untyped) -> inps -> inps -> [SMTExpr Bool] -> RealizedGates -> SMTExpr Integer
               -> SMT' m ([(AffineExpr Integer,[SMTExpr Bool])],RealizedGates)
     trace' freeMp freeInps inps cond real e@(InternalObj obj ann) = case cast obj of
       Just (InputVar i) -> do

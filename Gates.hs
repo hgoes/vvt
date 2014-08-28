@@ -9,6 +9,7 @@ import Data.Typeable
 import Data.Array
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Foldable (foldlM)
 
 newtype GateExpr = GateExpr Int deriving (Typeable,Eq,Ord,Show,Ix)
 
@@ -23,6 +24,8 @@ data Gate inp outp = Gate { gateTransfer :: inp -> SMTExpr outp
                           , gateName :: Maybe String
                           }
                    deriving Typeable
+
+type RealizedGates = Map TypeRep (Map GateExpr (SMTExpr Untyped))
 
 addGate :: (Args inp,SMTType outp) => GateMap inp -> Gate inp outp -> (SMTExpr outp,GateMap inp)
 addGate mp gate = let (expr,nmp) = addGate' mp gate
@@ -58,17 +61,20 @@ getGate idx mp = withUndef $
 emptyGateMap :: GateMap inp
 emptyGateMap = Map.empty
 
-translateGateExpr :: (Args inp,SMTType a) => SMTExpr a -> GateMap inp -> inp -> SMTExpr a
-translateGateExpr e mp inp = snd $ foldExpr (\_ e' -> ((),translateGateExpr' e' mp inp)
-                                            ) () e
+translateGateExpr :: (Args inp,SMTType a) => SMTExpr a -> GateMap inp -> RealizedGates -> inp -> SMTExpr a
+translateGateExpr e mp real inp
+  = snd $ foldExpr (\_ e' -> ((),translateGateExpr' e' mp real inp)
+                   ) () e
 
-translateGateExpr' :: Args inp => SMTExpr a -> GateMap inp -> inp -> SMTExpr a
-translateGateExpr' e@(InternalObj obj ann) mp inp = case cast obj of
-  Just gexpr -> translateGateExpr (gateTransfer (getGate gexpr mp) inp) mp inp
+translateGateExpr' :: Args inp => SMTExpr a -> GateMap inp -> RealizedGates -> inp -> SMTExpr a
+translateGateExpr' e@(InternalObj obj ann::SMTExpr a) mp realized inp = case cast obj of
+  Just gexpr -> case (do
+                         exprs <- Map.lookup (typeOf (undefined::a)) realized
+                         Map.lookup gexpr exprs) of
+    Just decl -> castUntypedExpr decl
+    Nothing -> translateGateExpr (gateTransfer (getGate gexpr mp) inp) mp realized inp
   Nothing -> e
-translateGateExpr' e _ _ = e
-
-type RealizedGates = Map TypeRep (Map GateExpr UntypedExpr)
+translateGateExpr' e _ _ _ = e
 
 declareGate :: (Args inp,SMTType a,Monad m) => SMTExpr a -> RealizedGates -> GateMap inp -> inp -> SMT' m (SMTExpr a,RealizedGates)
 declareGate e real mp inp = do
@@ -96,8 +102,19 @@ declareGate' e@(InternalObj obj ann::SMTExpr a) real mp inp = case cast obj of
       return (res,Map.insertWith Map.union (typeOf (undefined::a)) (Map.singleton gexpr (UntypedExpr res)) nreal)
 declareGate' e real _ _ = return (e,real)
 
+declareAllGates :: (Args inp,Monad m) => RealizedGates -> GateMap inp -> inp
+                   -> SMT' m RealizedGates
+declareAllGates realized gates inp
+  = foldlM (\realized (_,AnyGateArray arr)
+             -> foldlM (\realized gate
+                        -> do
+                          (_,nrealized) <- declareGate (gateTransfer gate inp) realized gates inp
+                          return nrealized
+                       ) realized arr
+           ) realized gates
+
 test :: (SMTExpr Integer,SMTExpr Integer,SMTExpr Bool) -> SMTExpr Integer
-test = translateGateExpr e3 mp3
+test = translateGateExpr e3 mp3 Map.empty
   where
     g1 = Gate (\(x,y,_) -> x+y) () Nothing
     g2 = Gate (\(x,y,_) -> x-y) () Nothing

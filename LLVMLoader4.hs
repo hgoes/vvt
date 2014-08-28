@@ -44,66 +44,6 @@ traceThis = traceWith show
 traceWith :: (a -> String) -> a -> a
 traceWith f x = trace (f x) x
 
-declareOutputActs :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
-                     -> SMT' m (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (SMTExpr Bool))
-                               ,RealizedGates)
-declareOutputActs st real inp
-  = runStateT (Map.traverseWithKey
-               (\trg el
-                -> Map.traverseWithKey
-                   (\src act -> do
-                       real <- get
-                       (expr,nreal) <- lift $ declareGate (act inp) real (gates st) inp
-                       put nreal
-                       return expr
-                   ) el
-               ) (backwardEdges st)
-              ) real
-
-getOutput :: RealizationSt -> LLVMInput -> LLVMOutput
-getOutput st inp
-  = let acts = fmap (fmap (\act -> translateGateExpr (act inp) (gates st) inp)) (backwardEdges st)
-        latchs = fmap (\(UntypedExpr xs)
-                       -> UntypedExpr $ translateGateExpr xs (gates st) inp) $
-                 Map.intersection (prevInstrs st) (latchInstrs st)
-    in (acts,latchs)
-
-declareOutputInstrs :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
-                       -> SMT' m (Map (Ptr Instruction) UntypedExpr
-                                 ,RealizedGates)
-declareOutputInstrs st real inp
-  = runStateT (Map.traverseWithKey
-               (\instr (UntypedExpr val) -> do
-                   real <- get
-                   (expr,nreal) <- lift $ declareGate val real (gates st) inp
-                   put nreal
-                   return (UntypedExpr expr)) (Map.intersection (prevInstrs st) (latchInstrs st))
-              ) real
-
-declareAssertions :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
-                     -> SMT' m ([SMTExpr Bool]
-                               ,RealizedGates)
-declareAssertions st real inp
-  = runStateT (traverse (\ass -> do
-                            real <- get
-                            (expr,nreal) <- lift $ declareGate (ass inp) real (gates st) inp
-                            put nreal
-                            return expr
-                        ) (assertions st)
-              ) real
-
-declareAssumptions :: (Monad m,Functor m) => RealizationSt -> RealizedGates -> LLVMInput
-                     -> SMT' m ([SMTExpr Bool]
-                               ,RealizedGates)
-declareAssumptions st real inp
-  = runStateT (traverse (\ass -> do
-                            real <- get
-                            (expr,nreal) <- lift $ declareGate (ass inp) real (gates st) inp
-                            put nreal
-                            return expr
-                        ) (assumptions st)
-              ) real
-
 allLatchBlockAssigns :: RealizationSt
                         -> [(Ptr BasicBlock,Ptr BasicBlock,
                              Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (SMTExpr Bool)))]
@@ -119,19 +59,20 @@ allLatchBlockAssigns st
 getKarrOpt :: RealizationSt -> IO (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) [ValueMap -> SMTExpr Bool]))
 getKarrOpt st = do
   let (instrs_int,instrs_nint) = Map.partition
-                                 (==(ProxyArg (undefined::Integer) ()))
+                                 (==(ProxyArgValue (undefined::Integer) ()))
                                  (latchInstrs st)
       (sz,node_mp) = Map.mapAccum
                      (Map.mapAccum (\n _ -> (n+1,n))) 1 (latchBlks st)
       sz_vals = Map.size instrs_int
   trans <- mapM (\(src,trg,acts) -> do
                     pipe <- createSMTPipe "z3" ["-in","-smt2"]
-                    withSMTBackend pipe
+                    backend <- debugBackend pipe
+                    withSMTBackend backend
                       (do
                           latchs_int <- argVarsAnn instrs_int
                           latchs_nint <- argVarsAnn instrs_nint
                           let latchs = Map.union latchs_int latchs_nint
-                              rev_mp = Map.foldlWithKey (\crev instr (UntypedExpr (Var i _))
+                              rev_mp = Map.foldlWithKey (\crev instr (UntypedExprValue (Var i _))
                                                           -> Map.insert i instr crev
                                                         ) Map.empty latchs_int
                           (affs,_) <- getAffineFromGates (acts,latchs) (inputInstrs st)
@@ -163,7 +104,7 @@ getKarrOpt st = do
                                           return (racts,nreal))
                                       (gates st)
                                       (Map.toList $
-                                       fmap castUntypedExpr
+                                       fmap castUntypedExprValue
                                        (Map.intersection (prevInstrs st) latchs_int))
                                       Map.empty
                           return (src,trg,affs,rev_mp))
@@ -207,8 +148,8 @@ getKarrOpt st = do
                                                                                    1 -> Just expr
                                                                                    -1 -> Just $ app neg expr
                                                                                    _ -> Just $ (constant f) * expr
-                                                                              | (i,f) <- zip [0..] facs
-                                                                              , let expr = castUntypedExpr $ vals Map.! (rev_mp Map.! i)
+                                                                              | (i,f) <- zip [(0::Integer)..] facs
+                                                                              , let expr = castUntypedExprValue $ vals Map.! (rev_mp Map.! i)
                                                                               ] of
                                                                  [] -> constant 0
                                                                  [x] -> x
@@ -216,6 +157,9 @@ getKarrOpt st = do
                                  | pvec <- pvecs
                                  , let c:facs = Vec.toList pvec ])) node_mp
   return res
+  where
+    getVarI :: SMTExpr a -> Integer
+    getVarI (Var i _) = i
 
 getKarr :: RealizationSt -> Map (Ptr BasicBlock) (Map (Ptr BasicBlock) [ValueMap -> SMTExpr Bool])
 getKarr st
@@ -228,7 +172,7 @@ getKarr st
                                                                            -1 -> Just $ app neg expr
                                                                            _ -> Just $ (constant f) * expr
                                                                       | (i,f) <- zip [0..] facs
-                                                                      , let expr = castUntypedExpr $ vals Map.! (rev_mp Map.! i)
+                                                                      , let expr = castUntypedExprValue $ vals Map.! (rev_mp Map.! i)
                                                                       ] of
                                                          [] -> constant 0
                                                          [x] -> x
@@ -245,14 +189,14 @@ getKarr st
                     Just mp -> Map.keys mp)
     (sz_vals,int_vals,inp_vals,rev_mp)
       = Map.foldlWithKey
-        (\(n,imp,amp,tmp) instr (ProxyArg (u::a) ann)
+        (\(n,imp,amp,tmp) instr (ProxyArgValue (u::a) ann)
          -> case cast u of
            Just (_::Integer)
              -> (n+1,Map.insert instr n imp,
-                 Map.insert instr (UntypedExpr (Var n ann::SMTExpr a)) amp,
+                 Map.insert instr (UntypedExprValue (Var n ann::SMTExpr a)) amp,
                  Map.insert n instr tmp)
            Nothing -> (n,imp,
-                       Map.insert instr (UntypedExpr (InternalObj () ann::SMTExpr a)) amp,
+                       Map.insert instr (UntypedExprValue (InternalObj () ann::SMTExpr a)) amp,
                        tmp)
         ) (0,Map.empty,Map.empty,Map.empty) (latchInstrs st)
     output = \acts (inps,latchs) -> getOutput st (acts,inps,latchs)
@@ -273,7 +217,7 @@ getKarr st
                                     , (to_src,cond) <- Map.toList to_trgs
                                     , cond /= constant False ]
                               vals = mapM (\(instr,n) -> do
-                                              res <- affineFromExpr $ castUntypedExpr $
+                                              res <- affineFromExpr $ castUntypedExprValue $
                                                      var_latch Map.! instr
                                               return (n,res::AffineExpr Integer)
                                           ) (Map.toList int_vals)
@@ -307,7 +251,7 @@ instance Monad m => SMTBackend LoaderBackend (StateT [(String,TypeRep,String)] m
   smtHandle _ _ (SMTComment _) = return ()
   smtHandle _ _ SMTExit = return ()
 
-main = do
+{-main = do
   [mod,entry] <- getArgs
   fun <- getProgram entry mod
   st <- realizeFunction fun
@@ -406,7 +350,7 @@ main = do
   withFile (mod++".init") WriteMode $
     \h -> hPutStrLn h init
   withFile (mod++".assum") WriteMode $
-    \h -> mapM_ (\ass -> hPutStrLn h ass) assumes
+    \h -> mapM_ (\ass -> hPutStrLn h ass) assumes-}
 
 data APass = forall p. PassC p => APass (IO (Ptr p))
 
