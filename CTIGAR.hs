@@ -1036,7 +1036,7 @@ interpolate j s = do
       if j==0
         then assertInterp (initialState (ic3Model cfg) (interpBlks st)) ante --(interpAnte st)
         else (do
-                 let frames = Vec.drop (j-1) (ic3Frames env)
+                 let frames = Vec.drop j (ic3Frames env)
                  mapM_ (\fr -> mapM_ (\ast -> do
                                          let trm = toDomainTerm ast (ic3Domain env)
                                                    (interpBlks st,interpInstrs st)
