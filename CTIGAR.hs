@@ -305,9 +305,9 @@ extractState succ doLift = do
                       Nothing -> return (\st -> app and' $ liftNxtAsserts st)
                       Just succ' -> do
                         succ'' <- liftIO $ readIORef succ'
-                        return (\st -> argEq (liftNxtBlks st,liftNxtInstrs st)
-                                       (liftArgs (stateFull succ'')
-                                        (latchBlks mdl,latchInstrs mdl)))
+                        return (\st -> not' $ app and' $
+                                       assignPartial (liftNxtBlks st,liftNxtInstrs st)
+                                       (stateLifted succ''))
                     part <- liftIO $ withSMTPool (ic3Lifting env) $
                             \vars' -> liftState ((liftBlks vars',liftInstrs vars')
                                                  ,liftInputs vars'
@@ -713,18 +713,20 @@ handleObligations queue = case Queue.minView queue of
                       elimSpuriousTrans (oblState obl) (oblLevel obl)
                       return True
                     spurious = error "spur"
+                Left core -> generalizeErase obl obls core
             Just concretePred -> do
               predRes <- predecessor obl obls concretePred
               case predRes of
                 Nothing -> return False
                 Just nobls -> handleObligations nobls
-        Left core -> do
-          n <- abstractGeneralize (oblLevel obl) core
-          tk <- k
-          let nobls = if n <= tk
-                      then Queue.insert (obl { oblLevel = n }) obls
-                      else obls
-          handleObligations nobls
+        Left core -> generalizeErase obl obls core
+    generalizeErase obl obls core = do
+      n <- abstractGeneralize (oblLevel obl) core
+      tk <- k
+      let nobls = if n <= tk
+                  then Queue.insert (obl { oblLevel = n }) obls
+                  else obls
+      handleObligations nobls
 
 removeObligations :: IORef (State inp st)
                      -> Int
