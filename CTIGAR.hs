@@ -8,6 +8,7 @@ import Translate
 import State
 import SMTPool
 import LitOrder
+import RSM
 
 import Language.SMTLib2
 import Language.SMTLib2.Connection
@@ -71,6 +72,7 @@ data IC3Env
            , ic3Frames :: Vector (Frame (LatchActs,ValueMap))
            , ic3CexState :: Maybe (IORef (State ValueMap (LatchActs,ValueMap)))
            , ic3Earliest :: Int
+           , ic3RSM :: RSMState
            }
 
 data Consecution inp st = forall b. SMTBackend b IO =>
@@ -140,7 +142,7 @@ consecutionPerform (Consecution { consSolver = conn }) act
 consecutionNew :: (SMTBackend b IO)
                   => IO b -> RealizationSt -> IO (Consecution ValueMap (LatchActs,ValueMap))
 consecutionNew backend mdl = do
-  consBackend <- backend >>= namedDebugBackend "cons"
+  consBackend <- backend -- >>= namedDebugBackend "cons"
   consConn <- open consBackend
   (consSt,consInp,consNxtInp,consSt',primedErrs) <- performSMT consConn $ do
     setOption (ProduceModels True)
@@ -181,10 +183,10 @@ runIC3 cfg act = do
       interpBackend = ic3InterpolationBackend cfg
       mdl = ic3Model cfg
   cons <- consecutionNew backend mdl
-  let liftingBackend = backend >>= namedDebugBackend "lift"
-      initiationBackend = backend >>= namedDebugBackend "init"
-      domainBackend = backend >>= namedDebugBackend "domain"
-      interpBackend' = interpBackend >>= namedDebugBackend "interp"
+  let liftingBackend = backend -- >>= namedDebugBackend "lift"
+      initiationBackend = backend -- >>= namedDebugBackend "init"
+      domainBackend = backend -- >>= namedDebugBackend "domain"
+      interpBackend' = interpBackend -- >>= namedDebugBackend "interp"
   lifting <- createSMTPool liftingBackend $ do
     setOption (ProduceUnsatCores True)
     blks <- createBlockVars "" mdl
@@ -256,6 +258,7 @@ runIC3 cfg act = do
                                           , ic3CexState = Nothing
                                           , ic3LitOrder = Map.empty
                                           , ic3Earliest = 0
+                                          , ic3RSM = emptyRSM
                                           })
   
 newFrame :: Bool -> IC3 (Frame (LatchActs,ValueMap))
@@ -791,7 +794,13 @@ abstractGeneralize level cube = do
 
 baseCases :: RealizationSt -> SMT (Maybe ErrorTrace)
 baseCases st = do
-  st0@(blks0,inp0,instrs0) <- argVarsAnn (latchBlks st,inputInstrs st,latchInstrs st)
+  comment "Basic blocks:"
+  blks0 <- createBlockVars "" st
+  comment "Inputs:"
+  inp0 <- createInputVars "" st
+  comment "Latches:"
+  instrs0 <- createInstrVars "" st
+  let st0 = (blks0,inp0,instrs0)
   assert $ initialState st blks0
   (asserts0,real0) <- declareAssertions st Map.empty st0
   (blks1,real1) <- declareOutputActs st real0 st0
@@ -877,7 +886,7 @@ strengthen = strengthen' True
 
 check :: RealizationSt -> IO (Maybe ErrorTrace)
 check st = do
-  backend <- createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "base"
+  backend <- createSMTPipe "z3" ["-in","-smt2"] >>= namedDebugBackend "base"
   tr <- withSMTBackend backend (baseCases st)
   case tr of
     Just tr' -> return (Just tr')
@@ -1013,13 +1022,17 @@ elimSpuriousTrans :: IORef (State ValueMap (LatchActs,ValueMap)) -> Int
                      -> IC3 ()
 elimSpuriousTrans st level = do
   rst <- liftIO $ readIORef st
+  backend <- asks ic3DefaultBackend
+  env <- get
+  (nrsm,props) <- liftIO $ analyzeTrace (backend >>= namedDebugBackend "rsm") rst (ic3RSM env)
+  put $ env { ic3RSM = nrsm }
   interp <- interpolate level (stateLifted rst)
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm
                      -> do
                        (_,ndom) <- liftIO $ domainAdd trm cdomain
                        return ndom
-                    ) domain interp
+                    ) domain (interp++props)
   liftIO $ domainDump ndomain >>= putStrLn
   modify $ \env -> env { ic3Domain = ndomain }
 

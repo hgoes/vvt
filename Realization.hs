@@ -619,3 +619,13 @@ blockConstraint blks
     exactlyOne prev (x:xs)
       = (prev++(x:(fmap not' xs))):
         (exactlyOne (prev++[not' x]) xs)
+
+extractBlock :: Map (Ptr BasicBlock) (Map (Ptr BasicBlock) Bool) -> (Ptr BasicBlock,Ptr BasicBlock)
+extractBlock mp = case blks of
+  [x] -> x
+  [] -> error "No basic block is active in state."
+  _ -> error "More than one basic block is active in state."
+  where
+    blks = [ (src,trg) | (trg,srcs) <- Map.toList mp
+                       , (src,act) <- Map.toList srcs
+                       , act ]
