@@ -1,5 +1,5 @@
 {-# LANGUAGE ExistentialQuantification,GeneralizedNewtypeDeriving,
-             DeriveDataTypeable,ScopedTypeVariables #-}
+             DeriveDataTypeable,ScopedTypeVariables,GADTs #-}
 module Gates where
 
 import Language.SMTLib2
@@ -10,6 +10,9 @@ import Data.Array
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Foldable (foldlM)
+import qualified Data.Graph.Inductive as Gr
+
+import Debug.Trace
 
 newtype GateExpr = GateExpr Int deriving (Typeable,Eq,Ord,Show,Ix)
 
@@ -78,10 +81,12 @@ translateGateExpr' e _ _ _ = e
 
 declareGate :: (Args inp,SMTType a,Monad m) => SMTExpr a -> RealizedGates -> GateMap inp -> inp -> SMT' m (SMTExpr a,RealizedGates)
 declareGate e real mp inp = do
+  --trace ("declare gate "++show e) (return ())
   (nreal,[res]) <- foldExprM (\creal e -> do
                                  (res,nreal) <- declareGate' e creal mp inp
                                  return (nreal,[res])
                              ) real e
+  --trace "...done" (return ())
   return (res,nreal)
 
 declareGate' :: (Args inp,Monad m) => SMTExpr a -> RealizedGates -> GateMap inp -> inp -> SMT' m (SMTExpr a,RealizedGates)
@@ -95,6 +100,7 @@ declareGate' e@(InternalObj obj ann::SMTExpr a) real mp inp = case cast obj of
   where
     createGate gexpr = do
       let gate = getGate gexpr mp
+      --trace ("creating gate "++show (gateName gate)) (return ())
       (r,nreal) <- declareGate (gateTransfer gate inp) real mp inp
       res <- case gateName gate of
         Nothing -> defConst r
@@ -122,3 +128,59 @@ test = translateGateExpr e3 mp3 Map.empty
     (e2,mp2) = addGate mp1 g2
     g3 = Gate (\(_,_,c) -> ite c e1 e2) () Nothing
     (e3,mp3) = addGate mp2 g3
+
+data GateId = GateName String
+            | GateNr TypeRep GateExpr
+
+instance Show GateId where
+  show (GateName n) = n
+  show (GateNr tp i) = show (tp,i)
+
+debugGates :: inp -> GateMap inp -> Gr.Gr (TypeRep,GateExpr,String,SMTExpr Untyped) ()
+debugGates inp gates
+  = Gr.mkGraph [ (nd,(tp,i,n,e))
+               | (nd,(tp,i,Just n,e)) <- allGates ]
+    edges
+  where
+    allGates = zip [0..]
+               [ (tp,i,gateName gate,UntypedExpr (gateTransfer gate inp))
+               | (tp,(no,AnyGateArray arr)) <- Map.toList gates
+               , (i,gate) <- Map.toList arr ]
+    gateMp = Map.fromList
+             [ ((tp,i),nd) | (nd,(tp,i,_,_)) <- allGates ]
+    edges = [ (nd,ndDep,())
+            | (nd,(tp,i,_,UntypedExpr expr)) <- allGates
+            , ndDep <- gateDeps expr ]
+    gateDeps :: SMTType a => SMTExpr a -> [Gr.Node]
+    gateDeps expr = fst $ foldExpr exprDeps [] expr
+    exprDeps :: [Gr.Node] -> SMTExpr a -> ([Gr.Node],SMTExpr a)
+    exprDeps deps e@(InternalObj obj ann :: SMTExpr a) = case cast obj of
+      Just i -> ((gateMp Map.! (typeOf (undefined::a),i)):deps,e)
+      Nothing -> (deps,e)
+    exprDeps deps e = (deps,e)
+
+{-
+debugGates :: inp -> GateMap inp -> Gr.Gr GateId ()
+debugGates inp gates
+  = Gr.mkGraph [ (nd,case name of
+                     Nothing -> GateNr tp i
+                     Just n -> GateName n)
+               | (nd,(tp,i,name,_)) <- allGates ]
+    edges
+  where
+    allGates = zip [0..]
+               [ (tp,i,gateName gate,UntypedExpr (gateTransfer gate inp))
+               | (tp,(no,AnyGateArray arr)) <- Map.toList gates
+               , (i,gate) <- Map.toList arr ]
+    gateMp = Map.fromList
+             [ ((tp,i),nd) | (nd,(tp,i,_,_)) <- allGates ]
+    edges = [ (nd,ndDep,())
+            | (nd,(tp,i,_,UntypedExpr expr)) <- allGates
+            , ndDep <- gateDeps expr ]
+    gateDeps :: SMTType a => SMTExpr a -> [Gr.Node]
+    gateDeps expr = fst $ foldExpr exprDeps [] expr
+    exprDeps :: [Gr.Node] -> SMTExpr a -> ([Gr.Node],SMTExpr a)
+    exprDeps deps e@(InternalObj obj ann :: SMTExpr a) = case cast obj of
+      Just i -> ((gateMp Map.! (typeOf (undefined::a),i)):deps,e)
+      Nothing -> (deps,e)
+    exprDeps deps e = (deps,e)-}

@@ -1,5 +1,6 @@
 {-# LANGUAGE ExistentialQuantification,FlexibleContexts,RankNTypes,
-             ScopedTypeVariables,PackageImports,GADTs,DeriveDataTypeable #-}
+             ScopedTypeVariables,PackageImports,GADTs,DeriveDataTypeable,
+             ViewPatterns #-}
 module CTIGAR where
 
 import Realization
@@ -9,6 +10,7 @@ import State
 import SMTPool
 import LitOrder
 import RSM
+import Gates
 
 import Language.SMTLib2
 import Language.SMTLib2.Connection
@@ -36,12 +38,13 @@ import Data.Traversable
 import Prelude hiding (sequence_,concat,mapM_,or,and,mapM,foldl)
 import Data.Typeable
 import Foreign.Ptr (Ptr,nullPtr)
-import LLVM.FFI (BasicBlock,Instruction)
+import LLVM.FFI (BasicBlock,Instruction,getNameString)
 import "mtl" Control.Monad.State (runStateT,execStateT,get,put,modify)
 import Data.Bits (shiftL)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 import Data.Maybe (catMaybes)
+import Data.List (intersperse)
 
 import Debug.Trace
 
@@ -50,7 +53,7 @@ data Frame st = Frame { frameFrontier :: Set (AbstractState st)
                       }
 
 data IC3Config
-  = IC3Cfg { ic3Model :: RealizationSt
+  = IC3Cfg { ic3Model :: RealizedBlocks
            , ic3DefaultBackend :: IO (AnyBackend IO)
            , ic3InterpolationBackend :: IO (AnyBackend IO)
            , ic3DebugLevel :: Int
@@ -59,6 +62,8 @@ data IC3Config
            , ic3MaxDepth :: Int
            , ic3MaxJoins :: Int
            , ic3MaxCTGs :: Int
+           , ic3RebuildIntercept :: Int
+           , ic3RebuildVarSlope :: Int
            }
 
 data IC3Env
@@ -140,7 +145,7 @@ consecutionPerform (Consecution { consSolver = conn }) act
   = liftIO $ performSMT conn act
 
 consecutionNew :: (SMTBackend b IO)
-                  => IO b -> RealizationSt -> IO (Consecution ValueMap (LatchActs,ValueMap))
+                  => IO b -> RealizedBlocks -> IO (Consecution ValueMap (LatchActs,ValueMap))
 consecutionNew backend mdl = do
   consBackend <- backend -- >>= namedDebugBackend "cons"
   consConn <- open consBackend
@@ -164,17 +169,19 @@ consecutionNew backend mdl = do
     return ((blks,instrs),inp,nxtInp,(nxtBlks,nxtInstrs),asserts2)
   return $ Consecution consConn consSt consInp consNxtInp consSt' primedErrs
 
-ic3DefaultConfig :: RealizationSt -> IC3Config
+ic3DefaultConfig :: RealizedBlocks -> IC3Config
 ic3DefaultConfig mdl
   = IC3Cfg { ic3Model = mdl
            , ic3DefaultBackend = fmap AnyBackend $ createSMTPipe "z3" ["-in","-smt2"]
            , ic3InterpolationBackend = fmap AnyBackend $ createSMTPipe "mathsat" []
-           , ic3DebugLevel = 5
+           , ic3DebugLevel = 0
            , ic3MaxSpurious = 0
            , ic3MicAttempts = 1 `shiftL` 20
            , ic3MaxDepth = 1
            , ic3MaxJoins = 1 `shiftL` 20
            , ic3MaxCTGs = 3
+           , ic3RebuildIntercept = 1000
+           , ic3RebuildVarSlope = 200
            }
 
 runIC3 :: IC3Config -> IC3 a -> IO a
@@ -226,6 +233,7 @@ runIC3 cfg act = do
                ) rmp1 nxtInstrs'
     ante <- interpolationGroup
     post <- interpolationGroup
+    assertInterp (blockConstraint blks) ante
     mapM_ (\assert -> assertInterp assert ante) asserts
     assertInterp (argEq nxtBlks' nxtBlks) ante
     assertInterp (argEq nxtInstrs' nxtInstrs) ante
@@ -317,7 +325,8 @@ extractState succ doLift = do
                                                  ,liftNxtInputs vars'
                                                  ,(liftNxtBlks vars',liftNxtInstrs vars'))
                                       (vars,inp,inp',nxt vars')
-                    ic3Debug 3 ("Lifted state: "++show part)
+                    str_part <- renderState part
+                    ic3Debug 3 ("Lifted state: "++str_part)
                     return $ State { stateSuccessor = succ
                                    , stateLiftedAst = Nothing
                                    , stateFullAst = Nothing
@@ -405,7 +414,7 @@ updateAbstraction ref = do
     then return False
     else (do
              full <- liftIO $ domainAbstract
-                     (\x -> argEq x (liftArgs (stateFull st) (latchBlks mdl,latchInstrs mdl)){-app and' $ assignPartial x (stateLifted st)-})
+                     (\x -> argEq x (liftArgs (stateFull st) (realizedLatchActs mdl,realizedLatches mdl)){-app and' $ assignPartial x (stateLifted st)-})
                      dom
              lifted <- case stateSuccessor st of
                Nothing -> lift full (stateInputs st) (stateNxtInputs st) Nothing
@@ -464,8 +473,8 @@ lift toLift inps nxtInps succ = do
                           cid <- assertId (if act then expr else not' expr)
                           return (i+1,Map.insert cid i mp)
                       ) (0,Map.empty) (toDomainTerms toLift domain (liftBlks st,liftInstrs st))
-    assert $ argEq (liftInputs st) (liftArgs inps (inputInstrs mdl))
-    assert $ argEq (liftNxtInputs st) (liftArgs nxtInps (inputInstrs mdl))
+    assert $ argEq (liftInputs st) (liftArgs inps (realizedInputs mdl))
+    assert $ argEq (liftNxtInputs st) (liftArgs nxtInps (realizedInputs mdl))
     case succ of
       Nothing -> assert $ app and' (liftNxtAsserts st)
       Just succ_abstr -> assert $ toDomainTerm succ_abstr domain (liftBlks st,liftInstrs st)
@@ -486,88 +495,16 @@ lift toLift inps nxtInps succ = do
       --init_res2 <- initiationAbstract nlift_abs
       --return $ error ("Init res2: "++show init_res2)
       return $ Just nlift_abs
-{-  
-relativize :: Args a => SMTExpr Bool -> a -> a -> SMTExpr Bool
-relativize expr args args'
-  = snd $ foldExpr (\_ expr' -> case expr' of
-                       Var n ann -> case Map.lookup n trMp of
-                         Just n' -> ((),Var n' ann)
-                         Nothing -> ((),Var n ann)
-                       _ -> ((),expr')
-                   ) () expr
-  where
-    (trMp,_,_) = foldsExprsId (\cmp [(Var ecur _,_),(Var enew _,_)] _
-                               -> (Map.insert ecur enew cmp,undefined,undefined)
-                              ) Map.empty [(args,()),(args',())] (extractArgAnnotation args)
-
-splitRefinementTerm :: Bool -> SMTExpr Bool -> [SMTExpr Bool]
-splitRefinementTerm onlyIneqs (App (SMTLogic And) xs)
-  = concat $ fmap (splitRefinementTerm onlyIneqs) xs
-splitRefinementTerm onlyIneqs e@(App SMTEq xs) = case cast xs of
-  Nothing -> [e] -- This should not happen, as we only deal with integers
-  Just (xs'::[SMTExpr Integer])
-    -> if onlyIneqs
-       then concat [ [x .<=. y,
-                      y .<=. x]
-                   | (x,y) <- pairs xs' ]
-       else e:[ x .<=. y | (x,y) <- pairs xs' ]
-splitRefinementTerm _ expr = [expr]
-
-pairs :: [a] -> [(a,a)]
-pairs [] = []
-pairs (x:xs) = [ (x,y) | y <- xs ] ++
-               pairs xs
-
-interpolateState :: (LiftArgs st,LiftArgs inp)
-                    => IC3Env inp st -> State inp st
-                    -> IO [st -> SMTExpr Bool]
-interpolateState env st
-  = withSMTPool (ic3Interpolation env) $
-    \(vars,inp,vars') -> stack $ do
-      ante <- interpolationGroup
-      cons <- interpolationGroup
-      assertInterp (argEq vars (liftArgs (stateFull st) (extractArgAnnotation vars))) ante
-      assertInterp (argEq inp (liftArgs (stateInputs st) (extractArgAnnotation inp))) cons
-      assertInterp (nextState (ic3Model env) vars inp vars') cons
-      case stateSuccessor st of
-        Nothing -> assertInterp (not' (assertion (ic3Model env) vars')) cons
-        Just succ -> do
-          succ_st <- liftIO $ readIORef succ
-          assertInterp (not' $ toDomainTerm (bestAbstraction succ_st) (ic3Domain env) vars') cons
-      res <- checkSat
-      when res $ error "Interpolation query not unsat."
-      interp <- getInterpolant [ante]
-      return $ fmap (\x -> relativize x vars) (splitRefinementTerm True interp)
-
-elimSpuriousTrans :: (LiftArgs st,LiftArgs inp)
-                     => IC3Env inp st -> State inp st -> IO (IC3Env inp st)
-elimSpuriousTrans env st = do
-  -- Some clever trace mining stuff is omitted...
-  props <- interpolateState env st
-  dom' <- foldlM (\dom prop -> do
-                     (_,dom') <- domainAdd prop dom
-                     return dom'
-                 ) (ic3Domain env) props
-  return $ env { ic3Domain = dom' }
-
-backtrackRefine :: (LiftArgs st,LiftArgs inp)
-                   => IC3Env inp st
-                   -> IORef (State inp st)
-                   -> IO (IC3Env inp st)
-backtrackRefine env ref = do
-  st <- readIORef ref
-  if not (stateSpuriousSucc st) ||
-     stateNSpurious st /= 1
-    then (case stateSuccessor st of
-             Just st' -> backtrackRefine env st')
-    else elimSpuriousTrans env st
--}
 
 rebuildConsecution :: IC3 ()
 rebuildConsecution = do
   env <- get
   backend <- asks ic3DefaultBackend
   mdl <- asks ic3Model
+  {-
+  cons->getNumActLits() - k
+			< opt.rebuildIntercept
+					+ model.vars.toPrime.size() * opt.rebuildVarSlope -}
   -- TODO: Heuristic check to see if rebuild is neccessary
   case ic3Consecution env of
     Consecution { consSolver = solv } -> liftIO $ close solv
@@ -606,7 +543,7 @@ abstractConsecution :: Int -- ^ The level 'i'
                               (State ValueMap (LatchActs,ValueMap))
                              )
 abstractConsecution fi abs_st succ = do
-  rebuildConsecution
+  --rebuildConsecution
   ic3Debug 3 ("Original abstract state: "++show abs_st)
   env <- get
   res <- consecutionPerform (ic3Consecution env) $ stack $ do
@@ -792,7 +729,7 @@ abstractGeneralize level cube = do
                  addAbstractCube level cube
                  return level)
 
-baseCases :: RealizationSt -> SMT (Maybe ErrorTrace)
+baseCases :: RealizedBlocks -> SMT (Maybe ErrorTrace)
 baseCases st = do
   comment "Basic blocks:"
   blks0 <- createBlockVars "" st
@@ -802,13 +739,19 @@ baseCases st = do
   instrs0 <- createInstrVars "" st
   let st0 = (blks0,inp0,instrs0)
   assert $ initialState st blks0
+  comment "Declare assertions:"
   (asserts0,real0) <- declareAssertions st Map.empty st0
+  comment "Declare output acts:"
   (blks1,real1) <- declareOutputActs st real0 st0
+  comment $ show $ fmap Map.keys blks1
+  comment "Declare output instrs:"
   (instrs1,real2) <- declareOutputInstrs st real1 st0
-  inp1 <- argVarsAnn (inputInstrs st)
+  comment $ show instrs1
+  comment "Inputs 2:"
+  inp1 <- createInputVars "nxt" st
   let st1 = (blks1,inp1,instrs1)
+  comment "Declare assertions 2:"
   (asserts1,_) <- declareAssertions st Map.empty st1
-  (asserts1,real1) <- declareAssertions st Map.empty st1
   assert $ not' $ app and' (asserts0++asserts1)
   res <- checkSat
   if res
@@ -884,13 +827,17 @@ strengthen = strengthen' True
                  consecutionPerform (ic3Consecution env) pop
                  return $ Just trivial)
 
-check :: RealizationSt -> IO (Maybe ErrorTrace)
+check :: RealizedBlocks -> IO (Maybe ErrorTrace)
 check st = do
   backend <- createSMTPipe "z3" ["-in","-smt2"] >>= namedDebugBackend "base"
   tr <- withSMTBackend backend (baseCases st)
   case tr of
     Just tr' -> return (Just tr')
     Nothing -> runIC3 (ic3DefaultConfig st) (do
+                                                addBlkProperties
+                                                addEqProperties
+                                                addCmpProperties
+                                                addAssertProperties
                                                 extend
                                                 extend
                                                 checkIt)
@@ -936,7 +883,7 @@ check st = do
       assert $ app and' $ assignPartial acts cacts
       assert $ app and' $ assignPartial latch clatch
       comment "Inputs"
-      inps <- argVarsAnn (inputInstrs real)
+      inps <- argVarsAnn (realizedInputs real)
       (assumps,real0) <- declareAssumptions real Map.empty (acts,inps,latch)
       (nacts,real1) <- declareOutputActs real real0 (acts,inps,latch)
       (nlatch,real2) <- declareOutputInstrs real real1 (acts,inps,latch)
@@ -1024,7 +971,7 @@ elimSpuriousTrans st level = do
   rst <- liftIO $ readIORef st
   backend <- asks ic3DefaultBackend
   env <- get
-  (nrsm,props) <- liftIO $ analyzeTrace (backend >>= namedDebugBackend "rsm") rst (ic3RSM env)
+  (nrsm,props) <- liftIO $ analyzeTrace (backend {- >>= namedDebugBackend "rsm" -}) rst (ic3RSM env)
   put $ env { ic3RSM = nrsm }
   interp <- interpolate level (stateLifted rst)
   domain <- gets ic3Domain
@@ -1033,7 +980,7 @@ elimSpuriousTrans st level = do
                        (_,ndom) <- liftIO $ domainAdd trm cdomain
                        return ndom
                     ) domain (interp++props)
-  liftIO $ domainDump ndomain >>= putStrLn
+  --liftIO $ domainDump ndomain >>= putStrLn
   modify $ \env -> env { ic3Domain = ndomain }
 
 interpolate :: Int -> PartialValue (LatchActs,ValueMap)
@@ -1043,6 +990,7 @@ interpolate j s = do
   cfg <- ask
   liftIO $ withSMTPool (ic3Interpolation env) $
     \st -> stack $ do
+      comment $ "Interpolating at level "++show j
       -- XXX: Workaround for MathSAT:
       ante <- interpolationGroup
       post <- interpolationGroup
@@ -1063,8 +1011,10 @@ interpolate j s = do
       res <- checkSat
       when res $ error "Interpolation query is SAT"
       interp <- getInterpolant [ante,interpAnte st]
+      let interp1 = cleanInterpolant interp
+      comment $ "Cleaned interpolant: "++show interp1
       return $ fmap (relativizeInterpolant (interpReverse st)
-                    ) $ splitInterpolant $ negateInterpolant $ cleanInterpolant interp
+                    ) $ splitInterpolant $ negateInterpolant interp1
   where
     cleanInterpolant (Let ann arg f) = cleanInterpolant (f arg)
     cleanInterpolant (App (SMTLogic op) es) = App (SMTLogic op)
@@ -1078,6 +1028,7 @@ interpolate j s = do
                           Just arg' -> App (SMTOrd op) arg'
                           Nothing -> App (SMTOrd op) arg
       Nothing -> App (SMTOrd op) arg
+    cleanInterpolant (App (SMTArith Plus) [x]) = x
     cleanInterpolant e = e
 
     removeToReal :: SMTExpr Rational -> Maybe (SMTExpr Integer)
@@ -1249,4 +1200,114 @@ addAbstractCube level state = do
 frameActivation' :: IC3Env -> Int -> SMTExpr Bool
 frameActivation' env fi
   = app and' $ Vec.toList $ fmap frameActivation $ Vec.drop fi (ic3Frames env)
+
+addEqProperties :: IC3 ()
+addEqProperties = do
+  mdl <- asks ic3Model
+  let props = mkEqs (Map.toList (realizedLatches mdl))
+  domain <- gets ic3Domain
+  ndomain <- foldlM (\cdomain trm -> do
+                        (_,ndom) <- liftIO $ domainAdd trm cdomain
+                        return ndom
+                    ) domain props
+  modify $ \env -> env { ic3Domain = ndomain }
+  where
+    mkEqs [] = []
+    mkEqs [x] = []
+    mkEqs ((i,x):xs) = (mkEqs' i x xs)++
+                       (mkEqs xs)
+
+    mkEqs' i x [] = []
+    mkEqs' i x ((j,y):xs)
+      | x==y = (\(_,instrs) -> entypeValue (\e1 -> e1 .==. (castUntypedExprValue (instrs Map.! j)))
+                               (instrs Map.! i)
+               ):(mkEqs' i x xs)
+      | otherwise = mkEqs' i x xs
+
+addCmpProperties :: IC3 ()
+addCmpProperties = do
+  mdl <- asks ic3Model
+  let props = mkCmps (Map.toList (realizedLatches mdl))
+  domain <- gets ic3Domain
+  ndomain <- foldlM (\cdomain trm -> do
+                        (_,ndom) <- liftIO $ domainAdd trm cdomain
+                        return ndom
+                    ) domain props
+  modify $ \env -> env { ic3Domain = ndomain }
+  where
+    intP = ProxyArgValue (undefined::Integer) ()
+    
+    mkCmps [] = []
+    mkCmps [x] = []
+    mkCmps ((i,x):xs)
+      | x == intP = (mkCmps' i xs)++
+                    (mkCmps xs)
+      | otherwise = mkCmps xs
+
+    mkCmps' i [] = []
+    mkCmps' i ((j,y):xs)
+      | y == intP = (\(_,instrs)
+                     -> (castUntypedExprValue (instrs Map.! i) :: SMTExpr Integer)
+                        .<.
+                        (castUntypedExprValue (instrs Map.! j))
+                    ):(mkCmps' i xs)
+      | otherwise = mkCmps' i xs
+
+addBlkProperties :: IC3 ()
+addBlkProperties = do
+  mdl <- asks ic3Model
+  let props = mkActs [ (trg,src)
+                     | (trg,srcs) <- Map.toList (realizedLatchActs mdl)
+                     , (src,act) <- Map.toList srcs ] []
+  domain <- gets ic3Domain
+  ndomain <- foldlM (\cdomain trm -> do
+                        (_,ndom) <- liftIO $ domainAdd trm cdomain
+                        return ndom
+                    ) domain props
+  modify $ \env -> env { ic3Domain = ndomain }
+  where
+    mkActs [] _ = []
+    mkActs ((trg,src):xs) ys = (\(acts,_) -> app and'
+                                             (((acts Map.! trg) Map.! src):
+                                              [ not' $ ((acts Map.! trg') Map.! src')
+                                              | (trg',src') <- xs++ys ])
+                               ):(mkActs xs ((trg,src):ys))
+
+addAssertProperties :: IC3 ()
+addAssertProperties = do
+  mdl <- asks ic3Model
+  domain <- gets ic3Domain
+  let props = fmap (\ass (acts,latch)
+                    -> let inp = (acts,fmap defInput (realizedInputs mdl),latch)
+                       in translateGateExpr (ass inp)
+                          (realizedGates mdl) Map.empty inp
+                   ) (realizedAsserts mdl)
+  ndomain <- foldlM (\cdomain trm -> do
+                        (_,ndom) <- liftIO $ domainAdd trm cdomain
+                        return ndom
+                    ) domain props
+  modify $ \env -> env { ic3Domain = ndomain }
+  where
+    defInput (ProxyArgValue (cast -> Just (_::Bool)) ann)
+      = UntypedExprValue (constant False)
+    defInput (ProxyArgValue (cast -> Just (_::Integer)) ann)
+      = UntypedExprValue (constant (0::Integer))
+
+renderState :: (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (Maybe Bool)),
+                Map (Ptr Instruction) (Maybe UntypedValue)) -> IC3 String
+renderState (acts,mp) = do
+  blk <- findBlk [ (trg,src,act)
+                 | (trg,srcs) <- Map.toList acts
+                 , (src,Just act) <- Map.toList srcs ]
+  instrs <- mapM (\(instr,val) -> do
+                     instrName <- liftIO $ getNameString instr
+                     return $ instrName++"="++show val
+                 ) [ (instr,val) | (instr,Just val) <- Map.toList mp ]
+  return $ blk++"["++concat (intersperse "," instrs)++"]"
+  where
+    findBlk xs = case [ (trg,src) | (trg,src,True) <- xs ] of
+      [(trg,src)] -> do
+        srcName <- liftIO $ getNameString src
+        trgName <- liftIO $ getNameString trg
+        return (srcName++"."++trgName)
 

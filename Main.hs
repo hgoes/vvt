@@ -1,6 +1,5 @@
 module Main where
 
-import LLVMLoader4
 import Realization
 import CTIGAR
 

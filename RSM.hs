@@ -62,7 +62,9 @@ notAllZero coeffs = app or' [ not' (c .==. 0) | c <- Map.elems (coeffsVar coeffs
 
 createLine :: Coeffs -> Map (Ptr Instruction) Integer -> SMTExpr Bool
 createLine coeffs vars
-  = (app plus (Map.elems $ Map.intersectionWith (\c i -> c * (constant i)) (coeffsVar coeffs) vars))
+  = (case Map.elems $ Map.intersectionWith (\c i -> c * (constant i)) (coeffsVar coeffs) vars of
+      [x] -> x
+      xs -> app plus xs)
     .==.
     (coeffsConst coeffs)
 
@@ -83,9 +85,11 @@ extractLine coeffs = do
                                      else Just c
                               ) rcoeffs
   rconst <- getValue (coeffsConst coeffs)
-  return $ \(_,vals) -> app plus (Map.elems (Map.intersectionWith
-                                             (\co v -> (constant co)*(castUntypedExprValue v))
-                                             rcoeffs' vals))
+  return $ \(_,vals) -> (case Map.elems (Map.intersectionWith
+                                         (\co v -> (constant co)*(castUntypedExprValue v))
+                                         rcoeffs' vals) of
+                          [x] -> x
+                          xs -> app plus xs)
                        .==. (constant rconst)
 
 mineStates :: SMTBackend b m => m b -> RSMState

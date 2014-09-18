@@ -62,7 +62,7 @@ collectVars expr vars
 
 domainAdd :: (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
 domainAdd abs dom = withSMTPool (domainPool dom) $
-                    \vars -> liftIO (putStrLn ("Adding term "++show (abs vars))) >> domainAdd' vars abs
+                    \vars -> {-liftIO (putStrLn ("Adding term "++show (abs vars))) >> -} domainAdd' vars abs
   where
     domainFindParents vars cur term = do
       let curCtx = context (domainGraph dom) cur
@@ -96,15 +96,15 @@ domainAdd abs dom = withSMTPool (domainPool dom) $
                    [] -> return $ Just (Set.singleton cur)
                    xs -> return $ Just (Set.unions xs))
 
-    domainAdd' vars term = liftIO (print $ domainNodes dom) >> case Map.lookup (term vars) (domainNodes dom) of
-      Just nd -> liftIO (putStrLn "Already in.") >> return (nd,dom)
+    domainAdd' vars term = {-liftIO (print $ domainNodes dom) >>-} case Map.lookup (term vars) (domainNodes dom) of
+      Just nd -> {- liftIO (putStrLn "Already in.") >> -} return (nd,dom)
       Nothing -> do
         -- Because we have top and bottom nodes, these must succeed
-        liftIO $ putStrLn "Finding parents..."
+        --liftIO $ putStrLn "Finding parents..."
         Just parents <- domainFindParents vars domainTop term
-        liftIO $ putStrLn "Finding children..."
+        --liftIO $ putStrLn "Finding children..."
         Just childs <- domainFindChildren vars domainBot term
-        liftIO $ putStrLn "done."
+        --liftIO $ putStrLn "done."
         let intersection = Set.intersection parents childs
         case Set.toList intersection of -- Is the term redundant?
           [equiv] -> return (equiv,dom) -- Do we have to account for the variables in the term?
