@@ -22,6 +22,7 @@ import Control.Applicative
 import Prelude hiding (sequence,mapM)
 import Data.List (intersperse)
 import System.IO.Unsafe
+import Foreign.Storable (peek)
 import Foreign.C.String
 import Foreign.Marshal.Array
 
@@ -653,6 +654,37 @@ analyzeInstruction i@(castDown -> Just phi) = do
                ) [0..(num-1)]
   ana <- analyzePhi tp phis
   return $ reDefineVar' i tp ana
+analyzeInstruction (castDown -> Just sw) = do
+  cond <- switchInstGetCondition sw >>= analyzeValue
+  def <- switchInstGetDefaultDest sw
+  begin <- switchInstCaseBegin sw
+  end <- switchInstCaseEnd sw
+  cases <- getCases begin end
+  return $ mkDefault def cases cond *>
+    mkSwitch cases cond
+  where
+    mkDefault def cases val
+      = reJump def (fmap (\rval inp -> app and' [ not' $
+                                                  (castUntypedExprValue (rval inp)) .==.
+                                                  (constant i)
+                                                | (i,_) <- cases ]
+                         ) val)
+    mkSwitch [] _ = pure ()
+    mkSwitch ((i,blk):rest) val
+      = reJump blk (fmap (\rval inp -> (castUntypedExprValue (rval inp))
+                                       .==. (constant i)
+                         ) val) *>
+        mkSwitch rest val
+    getCases cur end = do
+      eq <- caseItEq cur end
+      if eq
+        then return []
+        else (do
+                 APInt _ val <- caseItGetCaseValue cur >>= constantIntGetValue >>= peek
+                 blk <- caseItGetCaseSuccessor cur
+                 nxt <- caseItNext cur
+                 rest <- getCases nxt end
+                 return ((val,blk):rest))
 analyzeInstruction i = do
   valueDump i
   error "Unknown instruction"
