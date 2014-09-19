@@ -77,7 +77,7 @@ createLines coeffs points = do
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: Monad m => Coeffs -> SMT' m ((LatchActs,ValueMap) -> SMTExpr Bool)
+extractLine :: Monad m => Coeffs -> SMT' m [(LatchActs,ValueMap) -> SMTExpr Bool]
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
   let rcoeffs' = Map.mapMaybe (\c -> if c==0
@@ -85,12 +85,24 @@ extractLine coeffs = do
                                      else Just c
                               ) rcoeffs
   rconst <- getValue (coeffsConst coeffs)
-  return $ \(_,vals) -> (case Map.elems (Map.intersectionWith
-                                         (\co v -> (constant co)*(castUntypedExprValue v))
-                                         rcoeffs' vals) of
-                          [x] -> x
-                          xs -> app plus xs)
-                       .==. (constant rconst)
+  return [\(_,vals) -> (case Map.elems (Map.intersectionWith
+                                        (\co v -> case co of
+                                                   1 -> castUntypedExprValue v
+                                                   -1 -> -(castUntypedExprValue v)
+                                                   _ -> (constant co)*(castUntypedExprValue v))
+                                        rcoeffs' vals) of
+                         [x] -> x
+                         xs -> app plus xs)
+                       .<=. (constant rconst)
+         ,\(_,vals) -> (case Map.elems (Map.intersectionWith
+                                        (\co v -> case co of
+                                                   1 -> castUntypedExprValue v
+                                                   -1 -> -(castUntypedExprValue v)
+                                                   _ -> (constant co)*(castUntypedExprValue v))
+                                        rcoeffs' vals) of
+                         [x] -> x
+                         xs -> app plus xs)
+                       .<. (constant rconst)]
 
 mineStates :: SMTBackend b m => m b -> RSMState
               -> m (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
@@ -127,15 +139,15 @@ mineStates backend st
         res <- checkSat
         if res
           then (do
-                   line <- extractLine coeffs
-                   return $ Right line)
+                   lines <- extractLine coeffs
+                   return $ Right lines)
           else (do
                    core <- getUnsatCore
                    let coreMp = Map.fromList [ (cid,()) | cid <- core ]
                        coreLines = Set.fromList $ Map.elems $ Map.intersection revMp coreMp
                    return $ Left coreLines)
       case res of
-        Right line -> return (Just (Set.empty,[line]))
+        Right lines -> return (Just (Set.empty,lines))
         Left coreLines -> do
           let noCoreLines = Set.difference cls coreLines
               Just (coreLine1,coreLines1) = Set.minView coreLines

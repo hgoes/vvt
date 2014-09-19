@@ -11,7 +11,7 @@ import qualified Data.Map as Map
 import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.List (delete,filter)
+import Data.List (delete,filter,intercalate)
 import Data.Foldable
 import Prelude hiding (foldl)
 import Control.Monad (when)
@@ -99,6 +99,8 @@ domainAdd abs dom = withSMTPool (domainPool dom) $
     domainAdd' vars term = {-liftIO (print $ domainNodes dom) >>-} case Map.lookup (term vars) (domainNodes dom) of
       Just nd -> {- liftIO (putStrLn "Already in.") >> -} return (nd,dom)
       Nothing -> do
+        termStr <- renderExpr (term vars)
+        liftIO $ putStrLn ("Adding term "++termStr)
         -- Because we have top and bottom nodes, these must succeed
         --liftIO $ putStrLn "Finding parents..."
         Just parents <- domainFindParents vars domainTop term
@@ -182,3 +184,15 @@ domainDump dom
       let edges' = fmap (\(x,y,()) -> (x,y,Str "")) edges
           gr = mkGraph nodes' edges' :: Gr Str Str
       return $ graphviz' gr
+
+renderDomainTerm :: AbstractState a -> Domain a -> IO String
+renderDomainTerm st dom
+  = withSMTPool (domainPool dom) $
+    \vars -> do
+      let exprs = [ if act
+                    then term vars
+                    else not' $ term vars
+                  | (nd,act) <- Vec.toList st,
+                    let Just term = lab (domainGraph dom) nd]
+      strs <- mapM renderExpr exprs
+      return $ "{"++intercalate ", " strs++"}"

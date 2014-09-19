@@ -129,10 +129,13 @@ k = do
   return $ Vec.length frames - 2
 
 ic3Debug :: Int -> String -> IC3 ()
-ic3Debug lvl txt = do
+ic3Debug lvl txt = ic3DebugAct lvl (liftIO $ putStrLn txt)
+
+ic3DebugAct :: Int -> IC3 () -> IC3 ()
+ic3DebugAct lvl act = do
   dbgLevel <- asks ic3DebugLevel
   if dbgLevel >= lvl
-    then liftIO $ putStrLn txt
+    then act
     else return ()
 
 splitLast :: [a] -> ([a],a)
@@ -427,37 +430,6 @@ updateAbstraction ref = do
                                           }
              return True)
 
-{-
--- From LiftRef
-updateAbstraction :: IORef (State ValueMap (LatchActs,ValueMap)) -> IC3 ()
-updateAbstraction ref = do
-  dom <- gets ic3Domain
-  st <- liftIO $ readIORef ref
-  case stateLiftedAst st of
-    Just _ -> ic3Debug 4 "State already lifted."
-    Nothing
-      -> if stateDomainHash st == domainHash dom
-         then ic3Debug 4 "Lifting will not work."
-         else do
-           st' <- calculateLifting st
-           liftIO $ writeIORef ref st'
-
-calculateLifting :: State ValueMap (LatchActs,ValueMap)
-                    -> IC3 (State ValueMap (LatchActs,ValueMap))
-calculateLifting state = do
-  domain <- gets ic3Domain
-  fullAbs <- liftIO $ domainAbstract
-             (\vars -> argEq vars
-                       (liftArgs (stateFull state) (extractArgAnnotation vars)))
-             domain
-  liftedAbs <- case stateSuccessor state of
-    Nothing -> lift fullAbs (stateInputs state) Nothing
-    Just succ -> do
-      succ_state <- liftIO $ readIORef succ
-      lift fullAbs (stateInputs state) (Just $ bestAbstraction succ_state)
-  return (state { stateFullAst = Just fullAbs
-                , stateLiftedAst = liftedAbs })
--}
 lift :: AbstractState (LatchActs,ValueMap)
         -> Unpacked ValueMap
         -> Unpacked ValueMap
@@ -501,10 +473,6 @@ rebuildConsecution = do
   env <- get
   backend <- asks ic3DefaultBackend
   mdl <- asks ic3Model
-  {-
-  cons->getNumActLits() - k
-			< opt.rebuildIntercept
-					+ model.vars.toPrime.size() * opt.rebuildVarSlope -}
   -- TODO: Heuristic check to see if rebuild is neccessary
   case ic3Consecution env of
     Consecution { consSolver = solv } -> liftIO $ close solv
@@ -544,7 +512,8 @@ abstractConsecution :: Int -- ^ The level 'i'
                              )
 abstractConsecution fi abs_st succ = do
   --rebuildConsecution
-  ic3Debug 3 ("Original abstract state: "++show abs_st)
+  abs_st_str <- renderAbstractState abs_st
+  ic3Debug 3 ("Original abstract state: "++abs_st_str)
   env <- get
   res <- consecutionPerform (ic3Consecution env) $ stack $ do
     assert $ not' (toDomainTerm abs_st (ic3Domain env)
@@ -708,9 +677,13 @@ backtrackRefine obl obls enforceRefinement
 abstractGeneralize :: Int -> AbstractState (LatchActs,ValueMap)
                       -> IC3 Int
 abstractGeneralize level cube = do
-  ic3Debug 3 $ "mic: "++show cube
+  ic3DebugAct 3 $ do
+    cubeStr <- renderAbstractState cube
+    liftIO $ putStrLn $ "mic: "++cubeStr
   ncube <- mic level cube
-  ic3Debug 3 $ "mic done: "++show ncube
+  ic3DebugAct 3 $ do
+    ncubeStr <- renderAbstractState ncube
+    liftIO $ putStrLn $ "mic done: "++ncubeStr
   pushForward (level+1) ncube
   where
     pushForward level cube = do
@@ -837,7 +810,7 @@ check st = do
                                                 addBlkProperties
                                                 addEqProperties
                                                 addCmpProperties
-                                                addAssertProperties
+                                                --addAssertProperties
                                                 extend
                                                 extend
                                                 checkIt)
@@ -1012,7 +985,8 @@ interpolate j s = do
       when res $ error "Interpolation query is SAT"
       interp <- getInterpolant [ante,interpAnte st]
       let interp1 = cleanInterpolant interp
-      comment $ "Cleaned interpolant: "++show interp1
+      interp1Str <- renderExpr interp1
+      comment $ "Cleaned interpolant: "++interp1Str
       return $ fmap (relativizeInterpolant (interpReverse st)
                     ) $ splitInterpolant $ negateInterpolant interp1
   where
@@ -1028,14 +1002,14 @@ interpolate j s = do
                           Just arg' -> App (SMTOrd op) arg'
                           Nothing -> App (SMTOrd op) arg
       Nothing -> App (SMTOrd op) arg
-    cleanInterpolant (App (SMTArith Plus) [x]) = x
+    cleanInterpolant (App (SMTArith Plus) [x]) = cleanInterpolant x
     cleanInterpolant e = e
 
     removeToReal :: SMTExpr Rational -> Maybe (SMTExpr Integer)
     removeToReal (App SMTToReal e) = Just e
     removeToReal _ = Nothing
 
-    negateInterpolant (App SMTNot e) = e
+    negateInterpolant (App SMTNot e) = pushNegation e
     negateInterpolant (App (SMTLogic And) es) = App (SMTLogic Or) (fmap negateInterpolant es)
     negateInterpolant (App (SMTLogic Or) es) = App (SMTLogic And) (fmap negateInterpolant es)
     negateInterpolant (App (SMTOrd op) arg)
@@ -1047,7 +1021,14 @@ interpolate j s = do
         in App (SMTOrd nop) arg
     negateInterpolant e = App SMTNot e
 
+    pushNegation (App SMTNot e) = negateInterpolant e
+    pushNegation (App (SMTLogic op) es) = App (SMTLogic op) (fmap pushNegation es)
+    pushNegation e = e
+
     splitInterpolant (App (SMTLogic And) es) = concat (fmap splitInterpolant es)
+    -- Henning: Maybe it's a good idea not to refine with equalities:
+    splitInterpolant (App SMTEq [lhs,rhs]) = [App (SMTOrd Ge) (lhs,rhs)
+                                             ,App (SMTOrd Lt) (lhs,rhs)]
     splitInterpolant e = [e]
 
     relativizeInterpolant rev trm (blks,instrs)
@@ -1311,3 +1292,8 @@ renderState (acts,mp) = do
         trgName <- liftIO $ getNameString trg
         return (srcName++"."++trgName)
 
+renderAbstractState :: AbstractState (LatchActs,ValueMap)
+                       -> IC3 String
+renderAbstractState st = do
+  domain <- gets ic3Domain
+  liftIO $ renderDomainTerm st domain
