@@ -5,7 +5,6 @@ module CTIGAR where
 
 import Realization
 import Domain
-import Translate
 import State
 import SMTPool
 import LitOrder
