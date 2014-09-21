@@ -11,6 +11,7 @@ import SMTPool
 import LitOrder
 import RSM
 import Gates
+import Options
 
 import Language.SMTLib2
 import Language.SMTLib2.Connection
@@ -186,6 +187,24 @@ ic3DefaultConfig mdl
            , ic3RebuildIntercept = 1000
            , ic3RebuildVarSlope = 200
            }
+
+mkIC3Config :: RealizedBlocks -> Options -> IC3Config
+mkIC3Config mdl opts
+  = IC3Cfg { ic3Model = mdl
+           , ic3DefaultBackend = mkPipe (optBackendCons opts)
+           , ic3InterpolationBackend = mkPipe (optBackendInterp opts)
+           , ic3DebugLevel = 0
+           , ic3MaxSpurious = 0
+           , ic3MicAttempts = 1 `shiftL` 20
+           , ic3MaxDepth = 1
+           , ic3MaxJoins = 1 `shiftL` 20
+           , ic3MaxCTGs = 3
+           , ic3RebuildIntercept = 1000
+           , ic3RebuildVarSlope = 200
+           }
+  where
+    mkPipe cmd = let prog:args = words cmd
+                 in fmap AnyBackend $ createSMTPipe prog args
 
 runIC3 :: IC3Config -> IC3 a -> IO a
 runIC3 cfg act = do
@@ -800,13 +819,14 @@ strengthen = strengthen' True
                  consecutionPerform (ic3Consecution env) pop
                  return $ Just trivial)
 
-check :: RealizedBlocks -> IO (Maybe ErrorTrace)
-check st = do
-  backend <- createSMTPipe "z3" ["-in","-smt2"] >>= namedDebugBackend "base"
+check :: RealizedBlocks -> Options -> IO (Maybe ErrorTrace)
+check st opts = do
+  let prog:args = words (optBackendBase opts)
+  backend <- createSMTPipe prog args {- >>= namedDebugBackend "base" -}
   tr <- withSMTBackend backend (baseCases st)
   case tr of
     Just tr' -> return (Just tr')
-    Nothing -> runIC3 (ic3DefaultConfig st) (do
+    Nothing -> runIC3 (mkIC3Config st opts) (do
                                                 addBlkProperties
                                                 addEqProperties
                                                 addCmpProperties
