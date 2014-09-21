@@ -26,7 +26,6 @@ import Foreign.Storable (peek)
 import Foreign.C.String
 import Foreign.Marshal.Array
 
-import Data.Graph.Inductive.Graphviz
 import Language.SMTLib2.Pipe
 
 type ValueMap = Map (Ptr Instruction) (SMTExpr UntypedValue)
