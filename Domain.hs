@@ -166,6 +166,7 @@ toDomainTerms state dom vars
 domainHash :: Domain a -> Int
 domainHash dom = domainNextNode dom
 
+{-
 newtype Str = Str String
 
 instance Show Str where
@@ -183,7 +184,7 @@ domainDump dom
                      ) nodes
       let edges' = fmap (\(x,y,()) -> (x,y,Str "")) edges
           gr = mkGraph nodes' edges' :: Gr Str Str
-      return $ graphviz' gr
+      return $ graphviz' gr-}
 
 renderDomainTerm :: AbstractState a -> Domain a -> IO String
 renderDomainTerm st dom
