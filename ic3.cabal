@@ -1,0 +1,8 @@
+Name:           hctigar
+Version:        0.1
+Cabal-Version:  >= 1.2
+Build-Type:     Simple
+
+Executable hctigar
+  Main-Is:              Main.hs
+  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,smtlib2,smtlib2-debug,array,resource-pool,mtl
