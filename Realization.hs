@@ -656,9 +656,10 @@ analyzeInstruction i@(castDown -> Just phi) = do
 analyzeInstruction (castDown -> Just sw) = do
   cond <- switchInstGetCondition sw >>= analyzeValue
   def <- switchInstGetDefaultDest sw
-  begin <- switchInstCaseBegin sw
-  end <- switchInstCaseEnd sw
-  cases <- getCases begin end
+  cases <- switchInstGetCases sw >>=
+           mapM (\(val,trg) -> do
+                    APInt _ val' <- constantIntGetValue val >>= peek
+                    return (val',trg))
   return $ mkDefault def cases cond *>
     mkSwitch cases cond
   where
@@ -674,16 +675,6 @@ analyzeInstruction (castDown -> Just sw) = do
                                        .==. (constant i)
                          ) val) *>
         mkSwitch rest val
-    getCases cur end = do
-      eq <- caseItEq cur end
-      if eq
-        then return []
-        else (do
-                 APInt _ val <- caseItGetCaseValue cur >>= constantIntGetValue >>= peek
-                 blk <- caseItGetCaseSuccessor cur
-                 nxt <- caseItNext cur
-                 rest <- getCases nxt end
-                 return ((val,blk):rest))
 analyzeInstruction i = do
   valueDump i
   error "Unknown instruction"
