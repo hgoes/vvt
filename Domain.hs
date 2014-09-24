@@ -100,7 +100,7 @@ domainAdd abs dom = withSMTPool (domainPool dom) $
       Just nd -> {- liftIO (putStrLn "Already in.") >> -} return (nd,dom)
       Nothing -> do
         termStr <- renderExpr (term vars)
-        liftIO $ putStrLn ("Adding term "++termStr)
+        --liftIO $ putStrLn ("Adding term "++termStr)
         -- Because we have top and bottom nodes, these must succeed
         --liftIO $ putStrLn "Finding parents..."
         Just parents <- domainFindParents vars domainTop term

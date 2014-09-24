@@ -307,10 +307,10 @@ mergeLatchState Latched (Defined bb) = DefinedWhen bb
 realizeBlock :: Gr.Node -> BlockGraph (AnalyzationSt,RealizationMonad ())
                 -> RealizedBlocks -> IO RealizedBlocks
 realizeBlock blkNode gr blks = do
-  putStrLn $ "Realizing block "++(unsafePerformIO $ getNameString blk)
-  putStrLn $ "Reading: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys $ readVarsTrans ana))
-  putStrLn $ "Defining: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys $ defineVars ana))
-  putStrLn $ "Phi latches: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys phiLatches))
+  --putStrLn $ "Realizing block "++(unsafePerformIO $ getNameString blk)
+  --putStrLn $ "Reading: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys $ readVarsTrans ana))
+  --putStrLn $ "Defining: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys $ defineVars ana))
+  --putStrLn $ "Phi latches: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys phiLatches))
   ((),nenv) <- runStateT real env
   let nblk = RealizedBlock { latchedInstrs = latchedInstrsOut
                            , realizedActivation = act
@@ -959,7 +959,7 @@ getProgram entry file = do
   ctx <- newLLVMContext
   mod <- parseIR buf diag ctx
   applyOptimizations mod entry
-  moduleDump mod
+  --moduleDump mod
   moduleGetFunctionString mod entry
 
 applyOptimizations :: Ptr Module -> String -> IO ()
