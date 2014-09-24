@@ -11,6 +11,7 @@ data Options = Options { optBackendCons :: String
                        , optBackendInterp :: String
                        , optFunction :: String
                        , optShowHelp :: Bool
+                       , optTimeout :: Maybe Int
                        }
 
 defaultOptions :: Options
@@ -21,6 +22,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optBackendInterp = mathsat
                          , optFunction = "main"
                          , optShowHelp = False
+                         , optTimeout = Nothing
                          }
   where
     z3 = "z3 -smt2 -in"
@@ -48,7 +50,28 @@ allOpts
     ,Option [] ["backend-interp"]
      (ReqArg (\b opt -> opt { optBackendInterp = b }) "cmd")
      "The SMT solver used for interpolation [default: mathsat]"
+    ,Option ['t'] ["timeout"]
+     (ReqArg (\t opt -> opt { optTimeout = Just $ parseTime t }) "time")
+     "Abort the solver after a specified timeout"
     ]
+
+parseTime :: String -> Int
+parseTime str = parseNumber 0 0 str
+  where
+    parseNumber ful cur [] = ful+1000000*cur
+    parseNumber ful cur ('0':rest) = parseNumber ful (cur*10) rest
+    parseNumber ful cur ('1':rest) = parseNumber ful (cur*10+1) rest
+    parseNumber ful cur ('2':rest) = parseNumber ful (cur*10+2) rest
+    parseNumber ful cur ('3':rest) = parseNumber ful (cur*10+3) rest
+    parseNumber ful cur ('4':rest) = parseNumber ful (cur*10+4) rest
+    parseNumber ful cur ('5':rest) = parseNumber ful (cur*10+5) rest
+    parseNumber ful cur ('6':rest) = parseNumber ful (cur*10+6) rest
+    parseNumber ful cur ('7':rest) = parseNumber ful (cur*10+7) rest
+    parseNumber ful cur ('8':rest) = parseNumber ful (cur*10+8) rest
+    parseNumber ful cur ('9':rest) = parseNumber ful (cur*10+9) rest
+    parseNumber ful cur ('s':rest) = parseNumber (ful+1000000*cur) 0 rest
+    parseNumber ful cur ('m':rest) = parseNumber (ful+60000000*cur) 0 rest
+    parseNumber ful cur ('h':rest) = parseNumber (ful+3600000000*cur) 0 rest
 
 readOptions :: IO (Either [String] (String,Options))
 readOptions = do

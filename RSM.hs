@@ -1,4 +1,4 @@
-{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE PackageImports,FlexibleContexts #-}
 module RSM where
 
 import Realization
@@ -104,8 +104,8 @@ extractLine coeffs = do
                          xs -> app plus xs)
                        .<. (constant rconst)]
 
-mineStates :: SMTBackend b m => m b -> RSMState
-              -> m (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
+mineStates :: SMTBackend b IO => IO b -> RSMState
+              -> IO (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
 mineStates backend st
   = runStateT
     (do
@@ -130,7 +130,7 @@ mineStates backend st
       | Set.size cls > 6 = return $ Just (Set.empty,[])
     mineClass vars cls = do
       b <- backend
-      res <- withSMTBackend b $ do
+      res <- withSMTBackendExitCleanly b $ do
         setOption (ProduceUnsatCores True)
         setOption (ProduceModels True)
         coeffs <- createCoeffs vars
@@ -162,9 +162,9 @@ mineStates backend st
                                                    Set.union coreLines2 ncls,lines))
                 Nothing -> return Nothing
 
-analyzeTrace :: SMTBackend b m => m b -> State ValueMap (LatchActs,ValueMap)
+analyzeTrace :: SMTBackend b IO => IO b -> State ValueMap (LatchActs,ValueMap)
                 -> RSMState
-                -> m (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
+                -> IO (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
 analyzeTrace backend st rsm = do
   let nrsm = addRSMState (fst $ stateFull st) (Map.mapMaybe id $ snd $ stateLifted st) rsm
   mineStates backend nrsm

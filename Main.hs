@@ -6,6 +6,9 @@ import CTIGAR
 
 import System.IO
 import System.Exit
+import System.Timeout
+import Control.Concurrent
+import Control.Exception
 
 main = do
   opts <- readOptions
@@ -16,7 +19,23 @@ main = do
    Right (file,opts) -> do
      fun <- getProgram (optFunction opts) file
      st <- realizeFunction fun
-     tr <- check st opts
+     tr <- case optTimeout opts of
+            Nothing -> check st opts
+            Just to -> do
+              mainThread <- myThreadId
+              timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
+              res <- catch (do
+                               res <- check st opts
+                               killThread timeoutThread
+                               return (Just res)
+                           )
+                     (\ex -> case ex of
+                       ExitFailure _ -> return Nothing)
+              case res of
+               Just tr -> return tr
+               Nothing -> do
+                 hPutStrLn stderr "Timeout"
+                 exitWith (ExitFailure (-2))
      case tr of
       Nothing -> putStrLn "No bug found."
       Just tr' -> print tr'

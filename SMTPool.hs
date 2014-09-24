@@ -21,7 +21,7 @@ createSMTPool createBackend act
   = createPool (do
                    b <- createBackend
                    conn <- open b
-                   vars <- performSMT conn act
+                   vars <- performSMTExitCleanly conn act
                    return $ SMTInstance conn vars)
     (\(SMTInstance { instanceConn = conn }) -> close conn)
     1 5 10
@@ -31,4 +31,4 @@ withSMTPool pool act
   = withResource pool $
     \(SMTInstance { instanceConn = conn
                   , instanceVars = vars })
-    -> performSMT conn (act vars)
+    -> performSMTExitCleanly conn (act vars)

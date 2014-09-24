@@ -45,6 +45,7 @@ import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 import Data.Maybe (catMaybes)
 import Data.List (intersperse)
+import Control.Exception (finally)
 
 import Debug.Trace
 
@@ -145,14 +146,14 @@ splitLast (x:xs) = let (rest,last) = splitLast xs
 
 consecutionPerform :: Consecution inp st -> SMT a -> IC3 a
 consecutionPerform (Consecution { consSolver = conn }) act
-  = liftIO $ performSMT conn act
+  = liftIO $ performSMTExitCleanly conn act
 
 consecutionNew :: (SMTBackend b IO)
                   => IO b -> RealizedBlocks -> IO (Consecution ValueMap (LatchActs,ValueMap))
 consecutionNew backend mdl = do
   consBackend <- backend -- >>= namedDebugBackend "cons"
   consConn <- open consBackend
-  (consSt,consInp,consNxtInp,consSt',primedErrs) <- performSMT consConn $ do
+  (consSt,consInp,consNxtInp,consSt',primedErrs) <- performSMTExitCleanly consConn $ do
     setOption (ProduceModels True)
     setOption (ProduceUnsatCores True)
     blks <- createBlockVars "" mdl
@@ -171,6 +172,10 @@ consecutionNew backend mdl = do
     mapM assert asserts1
     return ((blks,instrs),inp,nxtInp,(nxtBlks,nxtInstrs),asserts2)
   return $ Consecution consConn consSt consInp consNxtInp consSt' primedErrs
+
+consecutionClose :: Consecution a b -> IO ()
+consecutionClose (Consecution { consSolver = solv })
+  = close solv
 
 ic3DefaultConfig :: RealizedBlocks -> IC3Config
 ic3DefaultConfig mdl
@@ -822,7 +827,7 @@ check :: RealizedBlocks -> Options -> IO (Maybe ErrorTrace)
 check st opts = do
   let prog:args = words (optBackendBase opts)
   backend <- createSMTPipe prog args {- >>= namedDebugBackend "base" -}
-  tr <- withSMTBackend backend (baseCases st)
+  tr <- withSMTBackendExitCleanly backend (baseCases st)
   case tr of
     Just tr' -> return (Just tr')
     Nothing -> runIC3 (mkIC3Config st opts) (do
@@ -845,7 +850,7 @@ check st opts = do
           liftIO $ do
             pipe <- createSMTPipe "z3" ["-in","-smt2"]
             backend <- namedDebugBackend "err" pipe
-            withSMTBackend backend $ do
+            withSMTBackendExitCleanly backend $ do
               acts0 <- createBlockVars "" real
               assert $ initialState real acts0
               latch0 <- createInstrVars "" real
