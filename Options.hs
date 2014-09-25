@@ -12,6 +12,7 @@ data Options = Options { optBackendCons :: String
                        , optFunction :: String
                        , optShowHelp :: Bool
                        , optTimeout :: Maybe Int
+                       , optVerbosity :: Int
                        }
 
 defaultOptions :: Options
@@ -23,6 +24,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optFunction = "main"
                          , optShowHelp = False
                          , optTimeout = Nothing
+                         , optVerbosity = 0
                          }
   where
     z3 = "z3 -smt2 -in"
@@ -53,6 +55,11 @@ allOpts
     ,Option ['t'] ["timeout"]
      (ReqArg (\t opt -> opt { optTimeout = Just $ parseTime t }) "time")
      "Abort the solver after a specified timeout"
+    ,Option ['v'] ["verbose"]
+     (OptArg (\v opt -> case v of
+               Nothing -> opt { optVerbosity = 1 }
+               Just vs -> opt { optVerbosity = read vs }) "level")
+     "How much debugging output to show"
     ]
 
 parseTime :: String -> Int

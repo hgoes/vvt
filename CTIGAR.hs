@@ -197,7 +197,7 @@ mkIC3Config mdl opts
   = IC3Cfg { ic3Model = mdl
            , ic3DefaultBackend = mkPipe (optBackendCons opts)
            , ic3InterpolationBackend = mkPipe (optBackendInterp opts)
-           , ic3DebugLevel = 0
+           , ic3DebugLevel = optVerbosity opts
            , ic3MaxSpurious = 0
            , ic3MicAttempts = 1 `shiftL` 20
            , ic3MaxDepth = 1
