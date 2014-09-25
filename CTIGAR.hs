@@ -1052,7 +1052,7 @@ interpolate j s = do
     splitInterpolant (App (SMTLogic And) es) = concat (fmap splitInterpolant es)
     -- Henning: Maybe it's a good idea not to refine with equalities:
     splitInterpolant (App SMTEq [lhs,rhs]) = [App (SMTOrd Ge) (lhs,rhs)
-                                             ,App (SMTOrd Lt) (lhs,rhs)]
+                                             ,App (SMTOrd Gt) (lhs,rhs)]
     splitInterpolant e = [e]
 
     relativizeInterpolant rev trm (blks,instrs)
