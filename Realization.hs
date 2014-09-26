@@ -255,6 +255,12 @@ analyzeConstant i = do
             else UntypedExprValue (constant $ fromIntegral rv :: SMTExpr Integer)
   return val
 
+defaultValue :: ProxyArgValue -> SMTExpr UntypedValue
+defaultValue (ProxyArgValue (cast -> Just (_::Integer)) _)
+  = UntypedExprValue (constant (0::Integer))
+defaultValue (ProxyArgValue (cast -> Just (_::Bool)) _)
+  = UntypedExprValue (constant False)
+
 analyzePhi :: ProxyArgValue -> [(Ptr BasicBlock,Ptr Value)]
               -> IO (Realization (LLVMInput -> SMTExpr UntypedValue))
 analyzePhi tp inps = do
@@ -264,6 +270,8 @@ analyzePhi tp inps = do
                     return (blk,pure $ const rc)
                   Nothing -> case castDown val of
                     Just i -> return (blk,reReadPhi blk i tp)
+                    Nothing -> case castDown val of
+                      Just (_::Ptr UndefValue) -> return (blk,pure $ \_ -> defaultValue tp)
                 ) inps
   return $ mkSwitch rinps
   where

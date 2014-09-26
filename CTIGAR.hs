@@ -166,6 +166,8 @@ consecutionNew backend mdl = do
     --assert (blockConstraint blks)
     (nxtInstrs,real2) <- declareOutputInstrs mdl real1 st1
     (asserts1,real3) <- declareAssertions mdl real2 st1
+    (assumps1,real4) <- declareAssumptions mdl real3 st1
+    mapM_ assert assumps1
     nxtInp <- createInputVars "nxt." mdl
     let st2 = (nxtBlks,nxtInp,nxtInstrs)
     (asserts2,_) <- declareAssertions mdl Map.empty st2
@@ -227,6 +229,8 @@ runIC3 cfg act = do
     inp <- createInputVars "inp." mdl
     (blks',real1) <- declareOutputActs mdl Map.empty (blks,inp,instrs)
     (instrs',real2) <- declareOutputInstrs mdl real1 (blks,inp,instrs)
+    (assumps,real3) <- declareAssumptions mdl real2 (blks,inp,instrs)
+    mapM_ assert assumps
     inp' <- createInputVars "inp.nxt." mdl
     (asserts,real1') <- declareAssertions mdl Map.empty (blks',inp',instrs')
     return $ LiftingState blks instrs inp blks' instrs' inp' asserts
@@ -244,6 +248,7 @@ runIC3 cfg act = do
     (nxtBlks,real1) <- declareOutputActs mdl Map.empty (blks,inp,instrs)
     (nxtInstrs,real2) <- declareOutputInstrs mdl real1 (blks,inp,instrs)
     (asserts,real3) <- declareAssertions mdl real2 (blks,inp,instrs)
+    (assumps,real4) <- declareAssumptions mdl real3 (blks,inp,instrs)
     nxtBlks' <- createBlockVars "nxt" mdl
     nxtInstrs' <- createInstrVars "nxt" mdl
     let rmp1 = Map.foldlWithKey
@@ -260,6 +265,7 @@ runIC3 cfg act = do
     ante <- interpolationGroup
     post <- interpolationGroup
     assertInterp (blockConstraint blks) ante
+    mapM_ (\asump -> assertInterp asump ante) assumps
     mapM_ (\assert -> assertInterp assert ante) asserts
     assertInterp (argEq nxtBlks' nxtBlks) ante
     assertInterp (argEq nxtInstrs' nxtInstrs) ante
@@ -351,8 +357,9 @@ extractState succ doLift = do
                                                  ,liftNxtInputs vars'
                                                  ,(liftNxtBlks vars',liftNxtInstrs vars'))
                                       (vars,inp,inp',nxt vars')
-                    str_part <- renderState part
-                    ic3Debug 3 ("Lifted state: "++str_part)
+                    ic3DebugAct 3 (do
+                                      str_part <- renderState part
+                                      liftIO $ putStrLn ("Lifted state: "++str_part))
                     return $ State { stateSuccessor = succ
                                    , stateLiftedAst = Nothing
                                    , stateFullAst = Nothing
@@ -735,19 +742,25 @@ baseCases st = do
   instrs0 <- createInstrVars "" st
   let st0 = (blks0,inp0,instrs0)
   assert $ initialState st blks0
+  comment "Assumptions:"
+  (assumps0,real0) <- declareAssumptions st Map.empty st0
+  mapM_ assert assumps0
   comment "Declare assertions:"
-  (asserts0,real0) <- declareAssertions st Map.empty st0
+  (asserts0,real1) <- declareAssertions st real0 st0
   comment "Declare output acts:"
-  (blks1,real1) <- declareOutputActs st real0 st0
+  (blks1,real2) <- declareOutputActs st real1 st0
   comment $ show $ fmap Map.keys blks1
   comment "Declare output instrs:"
-  (instrs1,real2) <- declareOutputInstrs st real1 st0
+  (instrs1,real3) <- declareOutputInstrs st real2 st0
   comment $ show instrs1
   comment "Inputs 2:"
   inp1 <- createInputVars "nxt" st
   let st1 = (blks1,inp1,instrs1)
+  comment "Assumptions 2:"
+  (assumps1,real0) <- declareAssumptions st Map.empty st1
+  mapM_ assert assumps1
   comment "Declare assertions 2:"
-  (asserts1,_) <- declareAssertions st Map.empty st1
+  (asserts1,_) <- declareAssertions st real0 st1
   assert $ not' $ app and' (asserts0++asserts1)
   res <- checkSat
   if res
