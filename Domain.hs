@@ -1,9 +1,10 @@
-{-# LANGUAGE ExistentialQuantification,FlexibleContexts,PackageImports #-}
+{-# LANGUAGE ExistentialQuantification,FlexibleContexts,PackageImports,GADTs #-}
 module Domain where
 
 import Language.SMTLib2
 import SMTPool
-import Language.SMTLib2.Internals (SMTExpr(..))
+import Language.SMTLib2.Internals (SMTExpr(..),SMTFunction(..))
+import Language.SMTLib2.Internals.Operators
 
 import Data.Graph.Inductive
 import Data.Map (Map)
@@ -35,7 +36,6 @@ data Domain a = Domain { domainGraph :: Gr (a -> SMTExpr Bool,SMTExpr Bool) ()
 --type AbstractState a = Map Node Bool
 type AbstractState a = Vector (Node,Bool)
 
-
 initialDomain :: SMTPool a -> Domain a
 initialDomain pool
   = Domain { domainGraph = mkGraph
@@ -60,18 +60,37 @@ collectVars expr vars
                       _ -> (cur,expr')
                    ) vars expr
 
+quickImplication :: SMTExpr Bool -> SMTExpr Bool -> Maybe Bool
+quickImplication (Const False ()) _ = Just True
+quickImplication _ (Const True ()) = Just True
+quickImplication (App (SMTOrd Lt) (Var a1 _,Var a2 _)) (App (SMTOrd Lt) (Var b1 _,Var b2 _))
+  = Just $ a1==b1 && a2==b2
+quickImplication (App SMTEq [Var a1 _,Var a2 _]) (App SMTEq [Var b1 _,Var b2 _])
+  | a1==b1 && a2==b2 = Just True
+  | a1==b2 && a2==b1 = Just True
+  | otherwise = Just False
+quickImplication (App (SMTOrd Lt) _) (App SMTEq _) = Just False
+quickImplication (App SMTEq _) (App (SMTOrd Lt) _) = Just False
+quickImplication _ _ = Nothing
+
+checkImplication :: SMTExpr Bool -> SMTExpr Bool -> SMT Bool
+checkImplication e1 e2 = stack $ do
+  assert e1
+  assert (not' e2)
+  r <- checkSat
+  return $ not r
+
 domainAdd :: (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
 domainAdd abs dom = withSMTPool (domainPool dom) $
                     \vars -> {-liftIO (putStrLn ("Adding term "++show (abs vars))) >> -} domainAdd' vars abs
   where
     domainFindParents vars cur term = do
       let curCtx = context (domainGraph dom) cur
-          (_,curTerm) = lab' curCtx
-      noImpl <- stack $ do
-        assert $ not' curTerm
-        assert (term vars)
-        checkSat
-      if noImpl
+          (curTermF,curTerm) = lab' curCtx
+      impl <- case quickImplication (term vars) (curTermF vars) of
+               Just r -> return r
+               Nothing -> checkImplication (term vars) curTerm
+      if not impl
         then return Nothing
         else (do
                  parents <- mapM (\s -> domainFindParents vars s term
@@ -82,12 +101,11 @@ domainAdd abs dom = withSMTPool (domainPool dom) $
 
     domainFindChildren vars cur term = do
       let curCtx = context (domainGraph dom) cur
-          (_,curTerm) = lab' curCtx
-      noImpl <- stack $ do
-        assert curTerm
-        assert $ not' (term vars)
-        checkSat
-      if noImpl
+          (curTermF,curTerm) = lab' curCtx
+      impl <- case quickImplication (curTermF vars) (term vars) of
+               Just r -> return r
+               Nothing -> checkImplication curTerm (term vars)
+      if not impl
         then return Nothing
         else (do
                  childs <- mapM (\s -> domainFindChildren vars s term
@@ -100,7 +118,7 @@ domainAdd abs dom = withSMTPool (domainPool dom) $
       Just nd -> {- liftIO (putStrLn "Already in.") >> -} return (nd,dom)
       Nothing -> do
         termStr <- renderExpr (term vars)
-        liftIO $ putStrLn ("Adding term "++termStr)
+        --liftIO $ putStrLn ("Adding term "++termStr)
         -- Because we have top and bottom nodes, these must succeed
         --liftIO $ putStrLn "Finding parents..."
         Just parents <- domainFindParents vars domainTop term
