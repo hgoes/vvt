@@ -71,6 +71,12 @@ quickImplication (App SMTEq [Var a1 _,Var a2 _]) (App SMTEq [Var b1 _,Var b2 _])
   | otherwise = Just False
 quickImplication (App (SMTOrd Lt) _) (App SMTEq _) = Just False
 quickImplication (App SMTEq _) (App (SMTOrd Lt) _) = Just False
+quickImplication (App (SMTOrd Le) (Var a1 _,Var a2 _)) (App (SMTOrd Le) (Var b1 _,Var b2 _))
+  = Just $ a1==b1 && a2==b2
+quickImplication (App (SMTOrd Lt) (Var a1 _,Var a2 _)) (App (SMTOrd Le) (Var b1 _,Var b2 _))
+  = Just $ a1==b1 && a2==b2
+quickImplication (App (SMTOrd Le) (Var _ _,Var _ _)) (App (SMTOrd Lt) (Var _ _,Var _ _))
+  = Just False
 quickImplication _ _ = Nothing
 
 checkImplication :: SMTExpr Bool -> SMTExpr Bool -> SMT Bool

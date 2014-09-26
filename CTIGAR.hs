@@ -832,7 +832,7 @@ check st opts = do
     Just tr' -> return (Just tr')
     Nothing -> runIC3 (mkIC3Config st opts) (do
                                                 addBlkProperties
-                                                addEqProperties
+                                                --addEqProperties
                                                 addCmpProperties
                                                 --addAssertProperties
                                                 extend
@@ -840,6 +840,9 @@ check st opts = do
                                                 checkIt)
   where
     checkIt = do
+      ic3DebugAct 1 (do
+                        lvl <- k
+                        liftIO $ putStrLn $ "Level "++show lvl)
       extend
       sres <- strengthen
       case sres of
@@ -992,18 +995,18 @@ interpolate j s = do
       ante <- interpolationGroup
       post <- interpolationGroup
       if j==0
-        then assertInterp (initialState (ic3Model cfg) (interpBlks st)) ante --(interpAnte st)
+        then assertInterp (translateToMathSAT $ initialState (ic3Model cfg) (interpBlks st)) ante --(interpAnte st)
         else (do
                  let frames = Vec.drop j (ic3Frames env)
                  mapM_ (\fr -> mapM_ (\ast -> do
                                          let trm = toDomainTerm ast (ic3Domain env)
                                                    (interpBlks st,interpInstrs st)
-                                         assertInterp (not' trm) ante --(interpAnte st)
+                                         assertInterp (translateToMathSAT $ not' trm) ante --(interpAnte st)
                                      ) (frameFrontier fr)
                        ) frames)
-      assertInterp (not' $ app and' $ assignPartial (interpBlks st,interpInstrs st) s)
+      assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial (interpBlks st,interpInstrs st) s)
         ante -- (interpAnte st)
-      assertInterp (app and' $ assignPartial (interpNxtBlks st,interpNxtInstrs st) s)
+      assertInterp (translateToMathSAT $ app and' $ assignPartial (interpNxtBlks st,interpNxtInstrs st) s)
         post -- (interpPost st)
       res <- checkSat
       when res $ error "Interpolation query is SAT"
@@ -1027,6 +1030,7 @@ interpolate j s = do
                           Nothing -> App (SMTOrd op) arg
       Nothing -> App (SMTOrd op) arg
     cleanInterpolant (App (SMTArith Plus) [x]) = cleanInterpolant x
+    cleanInterpolant (App (SMTDivisible n) x) = App SMTEq [App (SMTIntArith Mod) (x,Const n ()),Const 0 ()]
     cleanInterpolant e = e
 
     removeToReal :: SMTExpr Rational -> Maybe (SMTExpr Integer)
@@ -1067,6 +1071,19 @@ interpolate j s = do
                                    Just r -> r
                                _ -> expr)
                        ) () trm
+    translateToMathSAT :: SMTExpr a -> SMTExpr a
+    translateToMathSAT (App SMTEq [App (SMTIntArith Mod) (x,Const n ()),y])
+      = App (SMTDivisible n) (x-y)
+    translateToMathSAT (App SMTEq [y,App (SMTIntArith Mod) (x,Const n ())])
+      = App (SMTDivisible n) (x-y)
+    translateToMathSAT (App f args)
+      = let args1 = fromArgs args
+            args2 = fmap (\(UntypedExpr e)
+                          -> UntypedExpr $ translateToMathSAT e
+                         ) args1
+            Just (args3,[]) = toArgs (extractArgAnnotation args) args2
+        in App f args3
+    translateToMathSAT x = x
 
 mic :: Int -> AbstractState (LatchActs,ValueMap)
        -> IC3 (AbstractState (LatchActs,ValueMap))
@@ -1255,7 +1272,18 @@ addCmpProperties = do
                      -> (castUntypedExprValue (instrs Map.! i) :: SMTExpr Integer)
                         .<.
                         (castUntypedExprValue (instrs Map.! j))
-                    ):(mkCmps' i xs)
+                    ):
+                    (\(_,instrs)
+                     -> (castUntypedExprValue (instrs Map.! i) :: SMTExpr Integer)
+                        .>.
+                        (castUntypedExprValue (instrs Map.! j))
+                    ):
+                    (\(_,instrs)
+                     -> (castUntypedExprValue (instrs Map.! i) :: SMTExpr Integer)
+                        .<=.
+                        (castUntypedExprValue (instrs Map.! j))
+                    ):
+                    (mkCmps' i xs)
       | otherwise = mkCmps' i xs
 
 addBlkProperties :: IC3 ()
