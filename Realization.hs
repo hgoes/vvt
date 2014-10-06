@@ -946,7 +946,10 @@ instance Show ConcreteValues where
                        if instrHasName
                          then getNameString instr
                          else return $ show instr
-                     return $ instrName++"="++show val
+                     let valStr = case val of
+                           IntValue n -> show n
+                           BoolValue n -> show n
+                     return $ instrName++"="++valStr
                  ) (Map.toList $ latchValues cv)
     return $ "("++src++"~>"++trg++"|"++
       concat (intersperse "," vals)++"|"++
