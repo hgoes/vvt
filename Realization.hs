@@ -357,9 +357,11 @@ realizeBlock blkNode gr blks = do
                                (Map.findWithDefault Map.empty blk (realizedLatchActs blks))
                                latchIncs
     (act,gates1) = case acts of
-      [f] -> (f,realizedGates blks)
+      --[f] -> (f,realizedGates blks)
       xs -> let (expr,ngt) = addGate (realizedGates blks)
-                             (Gate (\inp -> app or' $ fmap (\f -> f inp) xs)
+                             (Gate (\inp -> case xs of
+                                             [f] -> f inp
+                                             _ -> app or' $ fmap (\f -> f inp) xs)
                               () (Just $ unsafePerformIO $ getNameString blk))
             in (const expr,ngt)
     acts = case realIncs of
