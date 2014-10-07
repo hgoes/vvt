@@ -69,14 +69,24 @@ quickImplication (App SMTEq [Var a1 _,Var a2 _]) (App SMTEq [Var b1 _,Var b2 _])
   | a1==b1 && a2==b2 = Just True
   | a1==b2 && a2==b1 = Just True
   | otherwise = Just False
-quickImplication (App (SMTOrd Lt) _) (App SMTEq _) = Just False
-quickImplication (App SMTEq _) (App (SMTOrd Lt) _) = Just False
+--quickImplication (App (SMTOrd Lt) _) (App SMTEq _) = Just False
+--quickImplication (App SMTEq _) (App (SMTOrd Lt) _) = Just False
 quickImplication (App (SMTOrd Le) (Var a1 _,Var a2 _)) (App (SMTOrd Le) (Var b1 _,Var b2 _))
   = Just $ a1==b1 && a2==b2
 quickImplication (App (SMTOrd Lt) (Var a1 _,Var a2 _)) (App (SMTOrd Le) (Var b1 _,Var b2 _))
   = Just $ a1==b1 && a2==b2
 quickImplication (App (SMTOrd Le) (Var _ _,Var _ _)) (App (SMTOrd Lt) (Var _ _,Var _ _))
   = Just False
+quickImplication (App (SMTOrd Gt) (Var a1 _,Var a2 _)) (App (SMTOrd Gt) (Var b1 _,Var b2 _))
+  = Just $ a1==b1 && a2==b2
+quickImplication (App (SMTOrd Gt) (Var a1 _,Var a2 _)) (App (SMTOrd Le) (Var b1 _,Var b2 _))
+  = Just $ a2==b1 && a1==b2
+quickImplication (App (SMTOrd Le) (Var _ _,Var _ _)) (App (SMTOrd Gt) (Var _ _,Var _ _))
+  = Just False
+quickImplication (App (SMTOrd Gt) (Var a1 _,Var a2 _)) (App (SMTOrd Lt) (Var b1 _,Var b2 _))
+  = Just $ a1==b2 && a2==b1
+quickImplication (App (SMTOrd Lt) (Var a1 _,Var a2 _)) (App (SMTOrd Gt) (Var b1 _,Var b2 _))
+  = Just $ a1==b2 && a2==b1
 quickImplication _ _ = Nothing
 
 checkImplication :: SMTExpr Bool -> SMTExpr Bool -> SMT Bool
