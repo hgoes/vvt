@@ -9,7 +9,7 @@ import System.Exit
 import System.Timeout
 import Control.Concurrent
 import Control.Exception
-import Prelude (Either(..),mapM_,Maybe(..),(>>),return)
+import Prelude (Either(..),mapM_,Maybe(..),(>>),return,Bool(..))
 
 main = do
   opts <- readOptions
@@ -19,7 +19,7 @@ main = do
      exitWith (ExitFailure (-1))
    Right (file,opts) -> do
      fun <- getProgram (optFunction opts) file
-     st <- realizeFunction fun
+     st <- realizeFunction (RealizationOptions True) fun
      tr <- case optTimeout opts of
             Nothing -> check st opts
             Just to -> do

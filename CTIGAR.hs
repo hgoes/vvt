@@ -38,7 +38,7 @@ import Data.Traversable
 import Prelude hiding (sequence_,concat,mapM_,or,and,mapM,foldl)
 import Data.Typeable
 import Foreign.Ptr (Ptr,nullPtr)
-import LLVM.FFI (BasicBlock,Instruction,getNameString)
+import LLVM.FFI (BasicBlock,Instruction,getNameString,hasName)
 import "mtl" Control.Monad.State (runStateT,execStateT,get,put,modify)
 import Data.Bits (shiftL)
 import Data.Vector (Vector)
