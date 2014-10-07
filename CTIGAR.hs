@@ -894,7 +894,7 @@ check st opts = do
           real <- asks ic3Model
           cex <- gets ic3CexState
           tr <- liftIO $ getWitnessTr cex
-          liftIO $ do
+          res <- liftIO $ do
             pipe <- createSMTPipe "z3" ["-in","-smt2"]
             backend <- namedDebugBackend "err" pipe
             withSMTBackendExitCleanly backend $ do
@@ -907,12 +907,19 @@ check st opts = do
                 then (do
                          tr'' <- getWitness real tr'
                          return (Just tr''))
-                else error $ "Error trace is infeasible."
+                else return Nothing
+          case res of
+           Nothing -> do
+             rtr <- mapM renderState tr
+             error $ "Error trace is infeasible:\n"++unlines rtr
+           Just res' -> return (Just res')
         Just trivial -> do
           pres <- propagate trivial
           if pres==0
             then checkIt
-            else return Nothing
+            else (do
+                     checkFixpoint pres
+                     return Nothing)
     getWitnessTr Nothing = return []
     getWitnessTr (Just st) = do
       rst <- readIORef st
@@ -1377,19 +1384,91 @@ renderState (acts,mp) = do
                  | (trg,srcs) <- Map.toList acts
                  , (src,Just act) <- Map.toList srcs ]
   instrs <- mapM (\(instr,val) -> do
-                     instrName <- liftIO $ getNameString instr
+                     isNamed <- liftIO $ hasName instr
+                     instrName <- if isNamed
+                                  then liftIO $ getNameString instr
+                                  else return "<unnamed>"
                      return $ instrName++"="++show val
                  ) [ (instr,val) | (instr,Just val) <- Map.toList mp ]
   return $ blk++"["++concat (intersperse "," instrs)++"]"
   where
     findBlk xs = case [ (trg,src) | (trg,src,True) <- xs ] of
       [(trg,src)] -> do
-        srcName <- liftIO $ getNameString src
-        trgName <- liftIO $ getNameString trg
+        srcIsNamed <- if src==nullPtr
+                      then return False
+                      else liftIO $ hasName src
+        srcName <- if srcIsNamed
+                   then liftIO $ getNameString src
+                   else return ""
+        trgIsNamed <- if trg==nullPtr
+                      then return False
+                      else liftIO $ hasName trg
+        trgName <- if trgIsNamed
+                   then liftIO $ getNameString trg
+                   else return "<unnamed>"
         return (srcName++"."++trgName)
+      [] -> return "<any>"
 
 renderAbstractState :: AbstractState (LatchActs,ValueMap)
                        -> IC3 String
 renderAbstractState st = do
   domain <- gets ic3Domain
   liftIO $ renderDomainTerm st domain
+
+-- | Dump the internal IC3 data-structures
+ic3Dump :: IC3 ()
+ic3Dump = do
+  frames <- gets ic3Frames
+  mapM_ (\(i,fr) -> do
+            liftIO $ putStrLn $ "Frame "++show i++":"
+            mapM_ (\cube -> do
+                      cubeStr <- renderAbstractState cube
+                      liftIO $ putStrLn $ "  "++cubeStr
+                  ) (Set.toList $ frameFrontier fr)
+        ) (zip [0..] (Vec.toList frames))
+
+checkFixpoint :: Int -> IC3 ()
+checkFixpoint level = do
+  frames <- gets ic3Frames
+  mdl <- asks ic3Model
+  domain <- gets ic3Domain
+  let fp inp = app and' [ not' $ toDomainTerm st domain inp
+                        | frame <- Vec.toList $ Vec.drop level frames
+                        , st <- Set.toList $ frameFrontier frame ]
+  backend <- liftIO $ createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "fp"
+  liftIO $ withSMTBackendExitCleanly backend $ do
+    incorrectInitial <- stack $ do
+      acts <- createBlockVars "" mdl
+      instrs <- createInstrVars "" mdl
+      assert $ initialState mdl acts
+      assert $ not' (fp (acts,instrs))
+      checkSat
+    when incorrectInitial (error "Fixpoint doesn't cover initial condition")
+    errorReachable <- stack $ do
+      acts <- createBlockVars "" mdl
+      assert $ blockConstraint acts
+      instrs <- createInstrVars "" mdl
+      assert $ fp (acts,instrs)
+      inp <- createInputVars "" mdl
+      (asserts,real0) <- declareAssertions mdl Map.empty (acts,inp,instrs)
+      assert $ app and' asserts
+      (acts',real1) <- declareOutputActs mdl real0 (acts,inp,instrs)
+      (instrs',real2) <- declareOutputInstrs mdl real1 (acts,inp,instrs)
+      inp' <- createInstrVars "nxt" mdl
+      (asserts',real3) <- declareAssertions mdl real2 (acts',inp',instrs')
+      assert $ not' $ app and' asserts'
+      checkSat
+    when errorReachable (error "Fixpoint doesn't imply property")
+    incorrectFix <- stack $ do
+      acts <- createBlockVars "" mdl
+      assert $ blockConstraint acts
+      instrs <- createInstrVars "" mdl
+      assert $ fp (acts,instrs)
+      inp <- createInputVars "" mdl
+      (asserts,real0) <- declareAssertions mdl Map.empty (acts,inp,instrs)
+      assert $ app and' asserts
+      (acts',real1) <- declareOutputActs mdl real0 (acts,inp,instrs)
+      (instrs',real2) <- declareOutputInstrs mdl real1 (acts,inp,instrs)
+      assert $ not' $ fp (acts',instrs')
+      checkSat
+    when incorrectFix (error "Fixpoint is doesn't hold in one transition")
