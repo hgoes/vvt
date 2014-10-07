@@ -39,4 +39,6 @@ main = do
                  exitWith (ExitFailure (-2))
      case tr of
       Nothing -> putStrLn "No bug found."
-      Just tr' -> print tr'
+      Just tr' -> do
+        putStrLn "Bug found:"
+        mapM_ print tr'
