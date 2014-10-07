@@ -542,8 +542,9 @@ abstractConsecution :: Int -- ^ The level 'i'
                              )
 abstractConsecution fi abs_st succ = do
   --rebuildConsecution
-  abs_st_str <- renderAbstractState abs_st
-  ic3Debug 3 ("Original abstract state: "++abs_st_str)
+  ic3DebugAct 3 $ do
+    abs_st_str <- renderAbstractState abs_st
+    liftIO $ putStrLn ("Original abstract state: "++abs_st_str)
   env <- get
   res <- consecutionPerform (ic3Consecution env) $ stack $ do
     assert $ not' (toDomainTerm abs_st (ic3Domain env)
@@ -723,14 +724,14 @@ abstractGeneralize level cube = do
                  consRes <- abstractConsecution level cube Nothing
                  case consRes of
                    Left ncube -> pushForward (level+1) ncube
-                   Right _ -> do
-                     ic3Debug 3 $ "Adding cube at level "++show level
-                     addAbstractCube level cube
-                     return level)
-        else (do
-                 ic3Debug 3 $ "Adding cube at level "++show level
-                 addAbstractCube level cube
-                 return level)
+                   Right _ -> addCube level cube)
+        else addCube level cube
+    addCube level cube = do
+      ic3DebugAct 3 $ do
+        cubeStr <- renderAbstractState cube
+        liftIO $ putStrLn $ "Adding cube at level "++show level++": "++cubeStr
+      addAbstractCube level cube
+      return level
 
 baseCases :: RealizedBlocks -> SMT (Maybe ErrorTrace)
 baseCases st = do
