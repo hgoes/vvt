@@ -46,6 +46,7 @@ import qualified Data.Vector as Vec
 import Data.Maybe (catMaybes)
 import Data.List (intersperse)
 import Control.Exception (finally)
+import Data.Either (partitionEithers)
 
 import Debug.Trace
 
@@ -327,6 +328,7 @@ extractSpuriousState env succ = do
                  , stateInputs = inps
                  , stateNxtInputs = nxtInps
                  , stateLifted = unmaskValue (undefined::(LatchActs,ValueMap)) full
+                 , stateLiftedInputs = unmaskValue (undefined::ValueMap) inps
                  , stateSpuriousLevel = 0
                  , stateNSpurious = 0
                  , stateSpuriousSucc = False
@@ -348,15 +350,16 @@ extractState succ doLift = do
                       Nothing -> return (\st -> app and' $ liftNxtAsserts st)
                       Just succ' -> do
                         succ'' <- liftIO $ readIORef succ'
-                        return (\st -> not' $ app and' $
-                                       assignPartial (liftNxtBlks st,liftNxtInstrs st)
-                                       (stateLifted succ''))
-                    part <- liftIO $ withSMTPool (ic3Lifting env) $
-                            \vars' -> liftState ((liftBlks vars',liftInstrs vars')
-                                                 ,liftInputs vars'
-                                                 ,liftNxtInputs vars'
-                                                 ,(liftNxtBlks vars',liftNxtInstrs vars'))
-                                      (vars,inp,inp',nxt vars')
+                        return (\st -> (not' $ app and' $
+                                        assignPartial (liftNxtBlks st,liftNxtInstrs st) (stateLifted succ'')){- .&&.
+                                       (app and' $ assignPartial (liftNxtInputs st) (stateLiftedInputs succ''))-}
+                               )
+                    (part,partInp) <- liftIO $ withSMTPool (ic3Lifting env) $
+                                      \vars' -> liftState ((liftBlks vars',liftInstrs vars'),
+                                                           liftInputs vars',
+                                                           liftNxtInputs vars',
+                                                           (liftNxtBlks vars',liftNxtInstrs vars'))
+                                                (vars,inp,inp',nxt vars')
                     ic3DebugAct 3 (do
                                       str_part <- renderState part
                                       liftIO $ putStrLn ("Lifted state: "++str_part))
@@ -367,6 +370,7 @@ extractState succ doLift = do
                                    , stateInputs = inp
                                    , stateNxtInputs = inp'
                                    , stateLifted = part
+                                   , stateLiftedInputs = partInp
                                    , stateSpuriousLevel = 0
                                    , stateSpuriousSucc = False
                                    , stateNSpurious = 0
@@ -378,32 +382,47 @@ extractState succ doLift = do
                                , stateInputs = inp
                                , stateNxtInputs = inp'
                                , stateLifted = unmaskValue (consVars cons) vars
+                               , stateLiftedInputs = unmaskValue (consInp cons) inp
                                , stateSpuriousLevel = 0
                                , stateSpuriousSucc = False
                                , stateNSpurious = 0
                                , stateDomainHash = 0 }
   liftIO $ newIORef state
 
-liftState :: (PartialArgs st,LiftArgs inp) => (st,inp,inp,st)
+liftState :: (PartialArgs st,PartialArgs inp) => (st,inp,inp,st)
              -> (Unpacked st,Unpacked inp,Unpacked inp,SMTExpr Bool)
-             -> SMT (PartialValue st)
-liftState (cur::st,inp,inp',nxt) vals@(vcur,vinp,vinp',vnxt) = stack $ do
+             -> SMT (PartialValue st,PartialValue inp)
+liftState (cur::st,inp::inp,inp',nxt) vals@(vcur,vinp,vinp',vnxt) = stack $ do
   let ann_cur = extractArgAnnotation cur
       ann_inp = extractArgAnnotation inp
-  ((cmp,len_st),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
-                                       cid <- assertId (arg1 .==. arg2)
-                                       return ((Map.insert cid n mp,n+1),[arg1,arg2],error "U3")
-                                   ) (Map.empty,0) [(cur,()),(liftArgs vcur ann_cur,())] ann_cur
-  assert $ argEq inp (liftArgs vinp ann_inp)
+  ((cmp1,len_st),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
+                                        cid <- assertId (arg1 .==. arg2)
+                                        return ((Map.insert cid (Left n) mp,n+1),
+                                                [arg1,arg2],
+                                                error "U3")
+                                    ) (Map.empty,0)
+                         [(cur,()),(liftArgs vcur ann_cur,())] ann_cur
+  ((cmp2,len_inp),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
+                                         cid <- assertId (arg1 .==. arg2)
+                                         return ((Map.insert cid (Right n) mp,n+1),
+                                                 [arg1,arg2],
+                                                 error "U3")
+                                     ) (cmp1,0)
+                          [(inp,()),(liftArgs vinp ann_inp,())] ann_inp
+  --assert $ argEq inp (liftArgs vinp ann_inp)
   assert $ argEq inp' (liftArgs vinp' ann_inp)
   assert vnxt
   res <- checkSat
   when res $ error "The model appears to be non-deterministic."
   core <- getUnsatCore
-  let part = toTruthValues len_st 0 (sort $ fmap (cmp Map.!) core)
+  let (coreSt,coreInp) = partitionEithers $ fmap (cmp2 Map.!) core
+      partSt = toTruthValues len_st 0 (sort coreSt)
+      partInp = toTruthValues len_inp 0 (sort coreInp)
       vcur' = unmaskValue (error "U1"::st) vcur
-      (vcur'',[]) = maskValue (error "U2"::st) vcur' part
-  return vcur''
+      vinp' = unmaskValue (error "U1"::inp) vinp
+      (vcur'',[]) = maskValue (error "U2"::st) vcur' partSt
+      (vinp'',[]) = maskValue (error "U2"::inp) vinp' partInp
+  return (vcur'',vinp'')
   where
     toTruthValues len n []
       | n==len = []
@@ -557,6 +576,13 @@ abstractConsecution fi abs_st succ = do
                       ) (0,Map.empty) (toDomainTerms abs_st (ic3Domain env)
                                        (consVarsPrimed $ ic3Consecution env))
     assert $ frameActivation' env fi
+    -- Henning: This tries to take the lifted inputs of the successor into account (doesn't do anything yet)
+    {-case succ of
+     Nothing -> return ()
+     Just s -> do
+       succ' <- liftIO $ readIORef s
+       assert $ app and' $ assignPartial (consNxtInp $ ic3Consecution env)
+         (stateLiftedInputs succ')-}
     res <- checkSat
     if res
       then (do
@@ -589,6 +615,10 @@ concreteConsecution fi st succ = do
     push
     assert $ frameActivation' env fi
     assert (app or' $ fmap not' $ assignPartial (consVars $ ic3Consecution env) st)
+    {-do
+      succ' <- liftIO $ readIORef succ
+      assert $ app and' $ assignPartial (consNxtInp $ ic3Consecution env)
+        (stateLiftedInputs succ')-}
     mapM_ assert (assignPartial (consVarsPrimed $ ic3Consecution env) st)
     checkSat
   res' <- if res

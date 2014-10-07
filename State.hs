@@ -92,6 +92,7 @@ data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
                           , stateInputs :: Unpacked inp
                           , stateNxtInputs :: Unpacked inp
                           , stateLifted :: PartialValue st
+                          , stateLiftedInputs :: PartialValue inp
                           , stateSpuriousLevel :: Int
                           , stateNSpurious :: Int
                           , stateSpuriousSucc :: Bool
