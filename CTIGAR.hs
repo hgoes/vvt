@@ -1108,6 +1108,8 @@ interpolate j s = do
     -- Henning: Maybe it's a good idea not to refine with equalities:
     splitInterpolant (App SMTEq [lhs,rhs]) = [App (SMTOrd Ge) (lhs,rhs)
                                              ,App (SMTOrd Gt) (lhs,rhs)]
+    splitInterpolant (App (SMTOrd Gt) (lhs,rhs)) = [App (SMTOrd Ge) (lhs,rhs)
+                                                   ,App (SMTOrd Gt) (lhs,rhs)]
     splitInterpolant e = [e]
 
     relativizeInterpolant rev trm (blks,instrs)
