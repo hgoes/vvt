@@ -1158,10 +1158,8 @@ mic' level ast recDepth = do
       | otherwise = do
         let (before,after) = Vec.splitAt i ast
             cp = before Vec.++ (Vec.tail after)
-        ic3Debug 3 "CTGDown"
         maxCTGs <- asks ic3MaxCTGs
         downRes <- ctgDown level cp i recDepth maxCTGs
-        ic3Debug 3 "CTGDown done."
         case downRes of
           Nothing -> mic'' ast (i+1) (attempts-1)
           Just ncp -> do
@@ -1184,7 +1182,7 @@ ctgDown = ctgDown' 0 0
   where
     ctgDown' ctgs joins level ast keepTo recDepth efMaxCTGs = do
       cfg <- ask
-      ic3Debug 3 ("ctgDown' ctgs="++
+      ic3Debug 5 ("ctgDown' ctgs="++
                   show ctgs++" joins="++
                   show joins++" level="++
                   show level++" keepTo="++
