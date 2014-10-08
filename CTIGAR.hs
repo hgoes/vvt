@@ -1452,11 +1452,15 @@ checkFixpoint level = do
       inp <- createInputVars "" mdl
       (asserts,real0) <- declareAssertions mdl Map.empty (acts,inp,instrs)
       assert $ app and' asserts
-      (acts',real1) <- declareOutputActs mdl real0 (acts,inp,instrs)
-      (instrs',real2) <- declareOutputInstrs mdl real1 (acts,inp,instrs)
-      inp' <- createInstrVars "nxt" mdl
-      (asserts',real3) <- declareAssertions mdl real2 (acts',inp',instrs')
+      (assumps,real1) <- declareAssumptions mdl real0 (acts,inp,instrs)
+      assert $ app and' assumps
+      (acts',real2) <- declareOutputActs mdl real1 (acts,inp,instrs)
+      (instrs',real3) <- declareOutputInstrs mdl real2 (acts,inp,instrs)
+      inp' <- createInputVars "nxt" mdl
+      (asserts',real0') <- declareAssertions mdl Map.empty (acts',inp',instrs')
       assert $ not' $ app and' asserts'
+      (assumps',real1') <- declareAssumptions mdl real0' (acts',inp',instrs')
+      assert $ app and' assumps'
       checkSat
     when errorReachable (error "Fixpoint doesn't imply property")
     incorrectFix <- stack $ do
@@ -1467,8 +1471,10 @@ checkFixpoint level = do
       inp <- createInputVars "" mdl
       (asserts,real0) <- declareAssertions mdl Map.empty (acts,inp,instrs)
       assert $ app and' asserts
-      (acts',real1) <- declareOutputActs mdl real0 (acts,inp,instrs)
-      (instrs',real2) <- declareOutputInstrs mdl real1 (acts,inp,instrs)
+      (assumps,real1) <- declareAssumptions mdl real0 (acts,inp,instrs)
+      assert $ app and' assumps
+      (acts',real2) <- declareOutputActs mdl real1 (acts,inp,instrs)
+      (instrs',real3) <- declareOutputInstrs mdl real2 (acts,inp,instrs)
       assert $ not' $ fp (acts',instrs')
       checkSat
     when incorrectFix (error "Fixpoint is doesn't hold in one transition")
