@@ -1,7 +1,7 @@
 {-# LANGUAGE PackageImports,FlexibleContexts #-}
 module RSM where
 
-import Realization
+import Realization2
 import State
 
 import Data.Map (Map)
@@ -18,7 +18,7 @@ import "mtl" Control.Monad.Trans (lift)
 import Prelude hiding (mapM,sequence)
 import Data.Traversable (mapM,sequence)
 
-data RSMState = RSMState { rsmLocations :: Map (Ptr BasicBlock,Ptr BasicBlock) RSMLoc
+data RSMState = RSMState { rsmLocations :: Map (Ptr BasicBlock) RSMLoc
                          }
 
 data RSMLoc = RSMLoc { rsmClasses :: Map (Set (Ptr Instruction)) (Set (Map (Ptr Instruction) Integer))
@@ -31,7 +31,7 @@ data Coeffs = Coeffs { coeffsVar :: Map (Ptr Instruction) (SMTExpr Integer)
 emptyRSM :: RSMState
 emptyRSM = RSMState Map.empty
 
-addRSMState :: Map (Ptr BasicBlock) (Map (Ptr BasicBlock) Bool)
+addRSMState :: Map (Ptr BasicBlock) Bool
                -> Map (Ptr Instruction) UntypedValue
                -> RSMState -> RSMState
 addRSMState blks instrs st

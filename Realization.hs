@@ -13,731 +13,118 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Traversable (mapAccumL,sequence,traverse,mapM)
-import Data.Foldable (foldlM)
-import Data.Typeable (cast)
-import Data.Either
-import "mtl" Control.Monad.State (StateT,runStateT,get,gets,put,modify,lift,liftIO)
-import "mtl" Control.Monad.Reader (ReaderT,runReaderT,asks)
-import Control.Applicative
-import Prelude hiding (sequence,mapM)
-import Data.List (intersperse)
-import System.IO.Unsafe
+import Data.Foldable (foldlM,concat)
 import Foreign.Storable (peek)
 import Foreign.C.String
 import Foreign.Marshal.Array
-import Data.Monoid
-import Data.Maybe (catMaybes)
-
-import Language.SMTLib2.Pipe
+import "mtl" Control.Monad.State (StateT,runStateT,get,gets,put,modify,lift,liftIO)
+import System.IO.Unsafe
+import Data.Traversable (mapAccumL,sequence,traverse,mapM)
+import Prelude hiding (sequence,mapM,concat)
+import Data.List (intersperse)
+import Data.Either (partitionEithers)
 
 type ValueMap = Map (Ptr Instruction) (SMTExpr UntypedValue)
 
--- | Stores activation condition for backward edges
---   Edges are stored in Target -> Source direction.
---   Map.fromList [(blk1,Map.fromList [(blk2,act)])] describes one edge, from blk2 to blk1 with condition act.
-type LatchActs = Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (SMTExpr Bool))
-
--- | Activation vars, inputs and latch instructions
-type LLVMInput = (LatchActs,ValueMap,ValueMap)
+type LatchActs = Map (Ptr BasicBlock) (SMTExpr Bool)
 
 data LatchState = Defined (Ptr BasicBlock)
                 | Latched
                 | DefinedWhen (Ptr BasicBlock)
 
-data Dependencies = Dependencies { dependsInstructions :: Set (Ptr Instruction)
-                                 , dependsBlocks :: Set (Ptr BasicBlock)
-                                 }
+data Analyzation = Analyzation { instructionState :: Map (Ptr Instruction) LatchState
+                               , implicitLatches :: Map (Ptr Instruction) (Ptr BasicBlock)
+                               , explicitLatches :: Map (Ptr Instruction)
+                                                    ([(Ptr BasicBlock,Ptr Value)],
+                                                     [(Ptr BasicBlock,Ptr Value)])
+                               , latchBlocks :: Map (Ptr BasicBlock) ()
+                               , analyzedBlocks :: Set (Ptr BasicBlock)
+                               , blkGraph :: BlockGraph
+                               }
 
-data RealizedBlock = RealizedBlock { latchedInstrs :: Map (Ptr Instruction)
-                                                      (ProxyArgValue,LatchState)
-                                   , realizedActivation :: LLVMInput -> SMTExpr Bool
-                                   , realizedOutgoings :: Map (Ptr BasicBlock) (LLVMInput -> SMTExpr Bool)
-                                   }
+-- | Activation vars, inputs and latch instructions
+type LLVMInput = (LatchActs,ValueMap,ValueMap)
 
-data RealizedBlocks = RealizedBlocks { realizedBlocks :: Map (Ptr BasicBlock) RealizedBlock
-                                     , realizedLatchActs :: Map (Ptr BasicBlock)
-                                                            (Map (Ptr BasicBlock) ())
-                                     , realizedLatches :: Map (Ptr Instruction) ProxyArgValue
+data Realization = Realization { edgeActivations :: Map (Ptr BasicBlock)
+                                                    (Map (Ptr BasicBlock)
+                                                     (LLVMInput -> SMTExpr Bool))
+                               , blockActivations :: Map (Ptr BasicBlock)
+                                                     (LLVMInput -> SMTExpr Bool)
+                               , instructions :: Map (Ptr Instruction)
+                                                 (LLVMInput -> SMTExpr UntypedValue)
+                               , inputs :: Map (Ptr Instruction) ProxyArgValue
+                               , forwardEdges :: Map (Ptr BasicBlock) [LLVMInput -> SMTExpr Bool]
+                               , asserts :: Map (Ptr BasicBlock) [LLVMInput -> SMTExpr Bool]
+                               , assumes :: [LLVMInput -> SMTExpr Bool]
+                               , gateMp :: GateMap LLVMInput
+                               }
+
+data BlockGraph = BlockGraph { nodeMap :: Map (Ptr BasicBlock) Gr.Node
+                             , dependencies :: Gr.Gr (Ptr BasicBlock) ()
+                             }
+
+data RealizedBlocks = RealizedBlocks { realizedLatchBlocks :: Map (Ptr BasicBlock)
+                                                              (LLVMInput -> SMTExpr Bool)
+                                     , realizedLatches :: Map (Ptr Instruction)
+                                                          (ProxyArgValue,
+                                                           LLVMInput -> SMTExpr UntypedValue)
                                      , realizedInputs :: Map (Ptr Instruction) ProxyArgValue
                                      , realizedGates :: GateMap LLVMInput
-                                     , realizedInstrs :: Map (Ptr Instruction)
-                                                         (ProxyArgValue,
-                                                          LLVMInput -> SMTExpr UntypedValue)
                                      , realizedAssumes :: [LLVMInput -> SMTExpr Bool]
                                      , realizedAsserts :: [LLVMInput -> SMTExpr Bool]
                                      , realizedInit :: Ptr BasicBlock
                                      }
 
-data BlockGraph a = BlockGraph { dependencies :: Gr.Gr a ()
-                               , nodeMap :: Map (Ptr BasicBlock) Gr.Node
-                               }
-
-data ConcreteValues = ConcreteValues { srcBlock :: Ptr BasicBlock
-                                     , trgBlock :: Ptr BasicBlock
+data ConcreteValues = ConcreteValues { block :: Ptr BasicBlock
                                      , latchValues :: Map (Ptr Instruction) SMT.Value
                                      , inputValues :: Map (Ptr Instruction) SMT.Value
                                      }
 
-data AnalyzationSt = AnalyzationSt { analyzedBlock :: Ptr BasicBlock
-                                   , readVars :: Map (Ptr Instruction) ProxyArgValue
-                                   , readVarsTrans :: Map (Ptr Instruction) ProxyArgValue
-                                   , phiReadVars :: Map (Ptr BasicBlock) (Map (Ptr Instruction) ProxyArgValue)
-                                   , defineVars :: Map (Ptr Instruction) (ProxyArgValue,Dependencies)
-                                   , defineInputs :: Map (Ptr Instruction) ProxyArgValue
-                                   , jumpsTo :: Map (Ptr BasicBlock) Dependencies
-                                   }
-
-data RealizationEnv = RealizationEnv { activation :: LLVMInput -> SMTExpr Bool
-                                     , phis :: Map (Ptr BasicBlock) (LLVMInput -> SMTExpr Bool,
-                                                                     Map (Ptr Instruction) (ProxyArgValue,
-                                                                                            LLVMInput -> SMTExpr UntypedValue)
-                                                                    )
-                                     , locals :: Map (Ptr Instruction)
-                                                 (ProxyArgValue,
-                                                  LLVMInput -> SMTExpr UntypedValue)
-                                     , newDefinitions :: Map (Ptr Instruction)
-                                                         (ProxyArgValue,
-                                                          LLVMInput -> SMTExpr UntypedValue)
-                                     , gateMp :: GateMap LLVMInput
-                                     , outgoing :: Map (Ptr BasicBlock) (LLVMInput -> SMTExpr Bool)
-                                     , assertions' :: [LLVMInput -> SMTExpr Bool]
-                                     , assumptions' :: [LLVMInput -> SMTExpr Bool]
-                                     }
+type ErrorTrace = [ConcreteValues]
 
 data RealizationOptions = RealizationOptions { useErrorState :: Bool
                                              }
 
-type RealizationMonad = ReaderT RealizationOptions (StateT RealizationEnv IO)
-
-newtype Realization a b = Realization { runRealization :: AnalyzationSt -> (a,AnalyzationSt,RealizationMonad b) }
-
-type ErrorTrace = [ConcreteValues]
-
-reReadVar :: Ptr Instruction -> ProxyArgValue
-             -> Realization Dependencies (LLVMInput -> SMTExpr UntypedValue)
-reReadVar i tp
-  = Realization $
-    \anaSt -> case Map.lookup i (defineVars anaSt) of
-               Nothing -> (mempty { dependsInstructions = Set.singleton i },
-                           anaSt { readVars = Map.insert i tp (readVars anaSt) },read)
-               Just (_,deps) -> (deps,anaSt,read)
-  where
-    read = do
-      loc <- gets locals
-      case Map.lookup i loc of
-       Just res -> return $ snd res
-       Nothing -> do
-         name <- liftIO $ getNameString i
-         error $ "Can't find local var "++name
-
-reReadPhi :: Ptr BasicBlock -> Ptr Instruction -> ProxyArgValue
-             -> Realization Dependencies (LLVMInput -> SMTExpr UntypedValue)
-reReadPhi blk i tp
-  = Realization $
-    \anaSt -> (mempty { dependsInstructions = Set.singleton i },
-               anaSt { phiReadVars = Map.insertWith Map.union blk
-                                     (Map.singleton i tp)
-                                     (phiReadVars anaSt) },
-               do
-                 blks <- gets phis
-                 case Map.lookup blk blks of
-                  Just (_,is) -> case Map.lookup i is of
-                    Just res -> return $ snd res)
-
-reDefineVar' :: Ptr Instruction -> ProxyArgValue
-                -> Realization Dependencies (LLVMInput -> SMTExpr UntypedValue)
-                -> Realization () ()
-reDefineVar' i (ProxyArgValue (_::a) ann) v
-  = reDefineVar i ann
-    (fmap (\f inp -> castUntypedExprValue (f inp) :: SMTExpr a) v)
-
-reDefineVar :: SMTValue a => Ptr Instruction -> SMTAnnotation a
-               -> Realization Dependencies (LLVMInput -> SMTExpr a)
-               -> Realization () ()
-reDefineVar i p (v::Realization Dependencies (LLVMInput -> SMTExpr a))
-  = Realization $
-    \anaSt -> let (deps,anaSt1,vgen) = runRealization v anaSt
-                  proxy = ProxyArgValue
-                          (undefined::a) p
-              in ((),
-                  anaSt1 { defineVars = Map.insert i
-                                        (proxy,deps)
-                                        (defineVars anaSt1) },
-                  do
-                    rv <- vgen
-                    name <- liftIO $ getNameString i
-                    st <- get
-                    let (expr,gmp) = addGate (gateMp st)
-                                     (Gate rv p (Just name))
-                    put $ st { gateMp = gmp
-                             , locals = Map.insert i (proxy,const (UntypedExprValue expr))
-                                        (locals st)
-                             , newDefinitions = Map.insert i (proxy,const (UntypedExprValue expr))
-                                                (newDefinitions st)
-                             })
-
-reMkInput :: Ptr Instruction -> ProxyArgValue
-             -> Realization () (LLVMInput -> SMTExpr UntypedValue)
-reMkInput i p
-  = Realization $ \anaSt -> ((),
-                             anaSt { defineVars = Map.insert i (p,mempty) (defineVars anaSt)
-                                   , defineInputs = Map.insert i p (defineInputs anaSt) },
-                             do
-                               let acc (_,inp,_) = inp Map.! i
-                               modify $ \st -> st { locals = Map.insert i
-                                                             (p,acc)
-                                                             (locals st)
-                                                  , newDefinitions = Map.insert i
-                                                                     (p,acc)
-                                                                     (newDefinitions st)
-                                                  }
-                               return acc)
-
-reJump :: Ptr BasicBlock
-          -> Realization Dependencies (LLVMInput -> SMTExpr Bool)
-          -> Realization () ()
-reJump blk cond
-  = Realization $
-    \anaSt -> let (deps,anaSt1,cgen) = runRealization cond anaSt
-              in ((),
-                  anaSt1 { jumpsTo = Map.insertWith mappend blk deps (jumpsTo anaSt1) },
-                  do
-                    c <- cgen
-                    modify $ \st -> st { outgoing = Map.insertWith (\c1 c2 inp -> (c1 inp) .||. (c2 inp))
-                                                    blk c
-                                                    (outgoing st) })
-
-reAssert :: Realization Dependencies (LLVMInput -> SMTExpr Bool)
-            -> Realization () ()
-reAssert cond
-  = Realization $
-    \anaSt -> let (deps,anaSt1,cgen) = runRealization cond anaSt
-              in ((),anaSt1,do
-                     c <- cgen
-                     errorSt <- asks useErrorState
-                     if errorSt
-                       then modify $ \st -> st { outgoing = Map.insertWith (\c1 c2 inp -> (c1 inp) .||. (c2 inp))
-                                                            nullPtr (\inp -> not' (c inp))
-                                                            (outgoing st) }
-                       else modify $ \st -> st { assertions' = c:(assertions' st) }
-                 )
-
-reAssume :: Realization Dependencies (LLVMInput -> SMTExpr Bool)
-            -> Realization () ()
-reAssume cond
-  = Realization $
-    \anaSt -> let (deps,anaSt1,cgen) = runRealization cond anaSt
-              in ((),anaSt1,do
-                     c <- cgen
-                     modify $ \st -> st { assumptions' = c:(assumptions' st) })
-
-emptyAnalyzationSt :: Ptr BasicBlock -> AnalyzationSt
-emptyAnalyzationSt blk
-  = AnalyzationSt { analyzedBlock = blk
-                  , phiReadVars = Map.empty
-                  , readVars = Map.empty
-                  , readVarsTrans = Map.empty
-                  , defineVars = Map.empty
-                  , defineInputs = Map.empty
-                  , jumpsTo = Map.empty
-                  }
-
-instance Functor (Realization a) where
-  fmap f (Realization x)
-    = Realization $ \anaSt -> let (v,anaSt',res) = x anaSt
-                              in (v,anaSt',fmap f res)
-
-instance Monoid a => Applicative (Realization a) where
-  pure x = Realization $ \anaSt -> (mempty,anaSt,return x)
-  (<*>) (Realization f) (Realization x)
-    = Realization $ \anaSt -> let (v1,anaSt1,rf) = f anaSt
-                                  (v2,anaSt2,rx) = x anaSt1
-                              in (mappend v1 v2,
-                                  anaSt2,do
-                                     rrf <- rf
-                                     rrx <- rx
-                                     return $ rrf rrx)
-
-analyzeValue :: Ptr Value -> IO (Realization Dependencies (LLVMInput -> SMTExpr UntypedValue))
-analyzeValue (castDown -> Just instr) = do
-  tp <- getType instr >>= translateType
-  return $ reReadVar instr tp
-analyzeValue (castDown -> Just i) = do
-  c <- analyzeConstant i
-  return (pure $ const c)
-
-analyzeConstant :: Ptr ConstantInt -> IO (SMTExpr UntypedValue)
-analyzeConstant i = do
-  tp <- getType i
-  bw <- getBitWidth tp
-  v <- constantIntGetValue i
-  rv <- apIntGetSExtValue v
-  let val = if bw==1
-            then UntypedExprValue (constant (rv/=0))
-            else UntypedExprValue (constant $ fromIntegral rv :: SMTExpr Integer)
-  return val
-
-defaultValue :: ProxyArgValue -> SMTExpr UntypedValue
-defaultValue (ProxyArgValue (cast -> Just (_::Integer)) _)
-  = UntypedExprValue (constant (0::Integer))
-defaultValue (ProxyArgValue (cast -> Just (_::Bool)) _)
-  = UntypedExprValue (constant False)
-
-analyzePhi :: ProxyArgValue -> [(Ptr BasicBlock,Ptr Value)]
-              -> IO (Realization Dependencies (LLVMInput -> SMTExpr UntypedValue))
-analyzePhi tp inps = do
-  rinps <- mapM (\(blk,val) -> case castDown val of
-                  Just c -> do
-                    rc <- analyzeConstant c
-                    return (blk,pure $ const rc)
-                  Nothing -> case castDown val of
-                    Just i -> return (blk,reReadPhi blk i tp)
-                    Nothing -> case castDown val of
-                      Just (_::Ptr UndefValue) -> return (blk,pure $ \_ -> defaultValue tp)
-                ) inps
-  return $ mkSwitch rinps
-  where
-    mkSwitch [(_,real)] = real
-    mkSwitch ((blk,real):reals)
-      = Realization $
-        \anaSt -> let (d1,anaSt1,act1) = runRealization real
-                                         (anaSt { phiReadVars = Map.insertWith
-                                                                Map.union
-                                                                blk
-                                                                Map.empty
-                                                                (phiReadVars anaSt)
-                                                })
-                      (d2,anaSt2,act2) = runRealization (mkSwitch reals) anaSt1
-                  in (mappend d1 d2,anaSt2,do
-                         phi <- gets phis
-                         case Map.lookup blk phi of
-                          Just (cond,_) -> do
-                            ifT <- act1
-                            ifF <- act2
-                            withProxyArgValue tp $
-                              \(_::a) _
-                              -> return $ \inp -> UntypedExprValue $
-                                                  ite (cond inp)
-                                                  (castUntypedExprValue (ifT inp) :: SMTExpr a)
-                                                  (castUntypedExprValue $ ifF inp)
-                          Nothing -> error $ "Phi block "++
-                                     (unsafePerformIO $ getNameString blk)++
-                                     " not found in "++
-                                     (show $ fmap (unsafePerformIO . getNameString) $
-                                      Map.keys phi))
-
-mergeLatchState :: LatchState -> LatchState -> LatchState
-mergeLatchState Latched Latched = Latched
-mergeLatchState (Defined bb) (Defined _) = Defined bb
-mergeLatchState (DefinedWhen bb) _ = DefinedWhen bb
-mergeLatchState _ (DefinedWhen bb) = DefinedWhen bb
-mergeLatchState (Defined bb) Latched = DefinedWhen bb
-mergeLatchState Latched (Defined bb) = DefinedWhen bb
-
-realizeBlock :: RealizationOptions -> Gr.Node -> BlockGraph (AnalyzationSt,RealizationMonad ())
-                -> RealizedBlocks -> IO RealizedBlocks
-realizeBlock opts blkNode gr blks = do
-  --putStrLn $ "Realizing block "++(unsafePerformIO $ getNameString blk)
-  --putStrLn $ "Reading: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys $ readVarsTrans ana))
-  --putStrLn $ "Defining: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys $ defineVars ana))
-  --putStrLn $ "Phi latches: "++(show $ fmap (unsafePerformIO . getNameString) (Map.keys phiLatches))
-  ((),nenv) <- runStateT (runReaderT real opts) env
-  let nblk = RealizedBlock { latchedInstrs = latchedInstrsOut
-                           , realizedActivation = act
-                           , realizedOutgoings = outgoing nenv }
-  return (blks { realizedBlocks = Map.insert blk nblk (realizedBlocks blks)
-               , realizedLatchActs = Map.insert blk nRealizedLatchActs (realizedLatchActs blks)
-               , realizedLatches = Map.union (Map.union (realizedLatches blks)
-                                              phiLatches)
-                                   (fmap fst latchedInstrsIn)
-               , realizedInputs = Map.union (realizedInputs blks)
-                                  (defineInputs ana)
-               , realizedGates = gateMp nenv
-               , realizedInstrs = Map.union (realizedInstrs blks) (newDefinitions nenv)
-               , realizedAssumes = (fmap (\ass inp -> (act inp) .=>. (ass inp)) $
-                                    assumptions' nenv)++
-                                   (realizedAssumes blks)
-               , realizedAsserts = (fmap (\ass inp -> (act inp) .=>. (ass inp)) $
-                                    assertions' nenv)++
-                                   (realizedAsserts blks)
-               })
-  where
-    (ana,real) = Gr.lab' $ Gr.context (dependencies gr) blkNode
-    blk = analyzedBlock ana
-    incs = fmap (Gr.lab' . (Gr.context $ dependencies gr)) $
-           Gr.pre (dependencies gr) blkNode
-    (realIncs,latchIncs) = partitionEithers $
-                           fmap (\(anaSt,real)
-                                 -> case Map.lookup (analyzedBlock anaSt)
-                                         (realizedBlocks blks) of
-                                     Just r -> Left (analyzedBlock anaSt,r)
-                                     Nothing -> Right (anaSt,real)
-                                ) incs
-    nRealizedLatchActs = case realIncs of
-                          [] -> Map.singleton nullPtr ()
-                          _ -> foldl (\l (inc,_) -> Map.insert (analyzedBlock inc) () l)
-                               (Map.findWithDefault Map.empty blk (realizedLatchActs blks))
-                               latchIncs
-    (act,gates1) = case acts of
-      --[f] -> (f,realizedGates blks)
-      xs -> let (expr,ngt) = addGate (realizedGates blks)
-                             (Gate (\inp -> case xs of
-                                             [f] -> f inp
-                                             _ -> app or' $ fmap (\f -> f inp) xs)
-                              () (Just $ unsafePerformIO $ getNameString blk))
-            in (const expr,ngt)
-    acts = case realIncs of
-      [] -> [ \(acts,_,_) -> (acts Map.! blk) Map.! nullPtr ]
-      _ -> [ case Map.lookup blk (realizedOutgoings inc) of
-              Just c -> \inp -> (realizedActivation inc inp) .&&. (c inp)
-           | (_,inc) <- realIncs ]++
-           [ \(acts,_,_) -> (acts Map.! blk) Map.! (analyzedBlock inc)
-           | (inc,_) <- latchIncs ]    
-    (phiLatches,phiInstrs) = Map.mapAccumWithKey
-                             (\latches phiBlk phiInstrs
-                              -> case Map.lookup phiBlk (realizedBlocks blks) of
-                                  Nothing -> (Map.union latches phiInstrs,
-                                              (\(acts,_,_) -> (acts Map.! blk)
-                                                              Map.! phiBlk,
-                                               Map.mapWithKey
-                                               (\phiInstr tp
-                                                -> (tp,\(_,_,instrs) -> instrs Map.! phiInstr))
-                                               phiInstrs))
-                                  Just rPhiBlk -> (latches,
-                                                   (realizedActivation rPhiBlk,
-                                                    Map.mapWithKey
-                                                    (\phiInstr _ -> getRealizedPhiVar phiInstr
-                                                                    blks rPhiBlk
-                                                    ) phiInstrs))
-                             ) (realizedLatches blks) (phiReadVars ana)
-    latchedInstrs1 = foldl (\cur (_,blk) -> Map.unionWith
-                                            (\(tp,c1) (_,c2) -> (tp,mergeLatchState c1 c2))
-                                            cur (latchedInstrs blk)
-                           ) Map.empty realIncs
-    latchedInstrs2 = case latchIncs of
-      [] -> latchedInstrs1
-      _ -> Map.unionWith
-           (\(tp,c1) (_,c2) -> (tp,mergeLatchState c1 c2))
-           latchedInstrs1 $
-           fmap (\tp -> (tp,Latched)
-                ) (readVarsTrans ana)
-    latchedInstrsOut = Map.union (fmap (\(tp,deps) -> (tp,Defined blk)) (defineVars ana))
-                       latchedInstrs2
-    latchedInstrsIn = Map.intersection latchedInstrs2 (readVars ana)
-    (gates2,instrsIn) = Map.mapAccumWithKey
-                        (\gates instr (tp,st) -> case st of
-                          Defined _ -> (gates,
-                                        (tp,case Map.lookup instr (realizedInstrs blks) of
-                                         Just (_,f) -> f))
-                          Latched -> (gates,
-                                      (tp,\(_,_,instrs) -> case Map.lookup instr instrs of
-                                        Just v -> v))
-                          DefinedWhen blk -> case Map.lookup blk (realizedBlocks blks) of
-                            Just cblk -> case Map.lookup instr (realizedInstrs blks) of
-                              Just (_,f)
-                                -> withProxyArgValue tp $
-                                   \(_::a) ann
-                                   -> let trans inp@(_,_,instrs)
-                                            = case Map.lookup instr instrs of
-                                             Just v -> ite (realizedActivation cblk inp)
-                                                       (castUntypedExprValue (f inp) :: SMTExpr a)
-                                                       (castUntypedExprValue v)
-                                          (expr,ngates) = addGate gates
-                                                          (Gate trans ann $
-                                                           Just $ (unsafePerformIO $ getNameString instr)++
-                                                           "_"++
-                                                           (unsafePerformIO $ getNameString blk))
-                                      in (ngates,(tp,const $ UntypedExprValue expr))
-                        ) gates1 latchedInstrsIn
-    env = RealizationEnv { activation = act
-                         , phis = phiInstrs
-                         , locals = instrsIn
-                         , newDefinitions = Map.empty
-                         , gateMp = gates2
-                         , outgoing = Map.empty
-                         , assertions' = []
-                         , assumptions' = []
-                         }
-    getRealizedPhiVar :: Ptr Instruction -> RealizedBlocks -> RealizedBlock
-                      -> (ProxyArgValue,
-                          LLVMInput -> SMTExpr UntypedValue)
-    getRealizedPhiVar instr blks blk
-      = case Map.lookup instr (latchedInstrs blk) of
-         Just (_,Defined _) -> case Map.lookup instr (realizedInstrs blks) of
-           Just r -> r
-         Just (tp,Latched) -> (tp,\(_,_,instrs) -> case Map.lookup instr instrs of
-                                Just r -> r)
-         Just (tp,DefinedWhen cblk) -> case Map.lookup cblk (realizedBlocks blks) of
-           Just cblk -> case Map.lookup instr (realizedInstrs blks) of
-             Just (_,f) -> withProxyArgValue tp $
-                           \(_::a) _
-                           -> (tp,\inp@(_,_,instrs)
-                                  -> UntypedExprValue $
-                                     case Map.lookup instr instrs of
-                                      Just v -> ite (realizedActivation cblk inp)
-                                                (castUntypedExprValue (f inp) :: SMTExpr a)
-                                                (castUntypedExprValue v))
-
-realizeFunction :: RealizationOptions -> Ptr Function -> IO RealizedBlocks
-realizeFunction opts fun = do
-  gr <- analyzeFunction fun
-  entr <- getEntryBlock fun
-  let [dfsTree] = Gr.dff [(nodeMap gr) Map.! entr] (dependencies gr)
-      order = reverse $ Gr.postorder dfsTree
-  foldlM (\cblks nd -> realizeBlock opts nd gr cblks
-         ) (RealizedBlocks { realizedInit = entr
-                           , realizedBlocks = Map.empty
-                           , realizedLatchActs = if useErrorState opts
-                                                 then Map.singleton nullPtr
-                                                      (Map.singleton nullPtr ())
-                                                 else Map.empty
-                           , realizedLatches = Map.empty
-                           , realizedInputs = Map.empty
-                           , realizedGates = Map.empty
-                           , realizedInstrs = Map.empty
-                           , realizedAssumes = []
-                           , realizedAsserts = if useErrorState opts
-                                               then [\(acts,_,_) -> not' ((acts Map.! nullPtr)
-                                                                          Map.! nullPtr)]
-                                               else [] })
-    order
-
-analyzeFunction :: Ptr Function -> IO (BlockGraph (AnalyzationSt,RealizationMonad ()))
-analyzeFunction fun = do
-  blks <- getBasicBlockList fun >>= ipListToList
-          >>= mapM (\blk -> do
-                       real <- analyzeBlock blk
-                       return $ runRealization real (emptyAnalyzationSt blk)
-                   )
-  let nodes = zip [0..] blks
-      node_mp = Map.fromList (fmap (\(i,(_,info,_)) -> (analyzedBlock info,i)) nodes)
-  edges <- mapM (\(i,(_,info,_)) -> do
-                    return [ (i,j,())
-                           | (succ,deps) <- Map.toList $ jumpsTo info
-                           , let j = node_mp ! succ ]
-                ) nodes
-  let gr1 = Gr.mkGraph nodes (concat edges)
-      gr2 = readTransitivity' gr1
-  return $ BlockGraph gr2 node_mp
-  where
-    readTransitivity' gr = readTransitivity
-                           (Gr.nmap (\(_,info,real) -> (info { readVarsTrans = readVars info },real)) gr) $
-                           Map.fromListWith Map.union
-                           [ (src,readVars info)
-                           | (trg,(_,info,_)) <- Gr.labNodes gr
-                           , src <- Gr.pre gr trg ]
-    
-    readTransitivity gr nds = case Map.minViewWithKey nds of
-      Nothing -> gr
-      Just ((nd,reads),nds')
-        -> let (Just (inc,_,(info,real),out),gr') = Gr.match nd gr
-               notDefined = Map.difference
-                            (Map.difference reads (defineVars info))
-                            (defineInputs info)
-               notRead = Map.difference notDefined (readVarsTrans info)
-           in if Map.null notRead
-              then readTransitivity gr nds'
-              else readTransitivity
-                   ((inc,nd,(info { readVarsTrans = Map.union (readVarsTrans info) notRead },
-                             real),out) Gr.& gr')
-                   (foldl (\mp (_,nd) -> Map.insertWith Map.union nd notRead mp) nds' inc)
-
-
-analyzeBlock :: Ptr BasicBlock -> IO (Realization () ())
-analyzeBlock blk = do
-  instrs <- getInstList blk >>= ipListToList
-  analyzeInstructions instrs
-
-analyzeInstructions :: [Ptr Instruction] -> IO (Realization () ())
-analyzeInstructions [] = return (pure ())
-analyzeInstructions (i:is) = do
-  ri <- analyzeInstruction i
-  ris <- analyzeInstructions is
-  return $ ri *> ris
-
-analyzeInstruction :: Ptr Instruction -> IO (Realization () ())
-analyzeInstruction i@(castDown -> Just opInst) = do
-  lhs <- getOperand opInst 0
-  rhs <- getOperand opInst 1
-  op <- binOpGetOpCode opInst
-  tp <- valueGetType lhs >>= translateType
-  flhs <- analyzeValue lhs
-  frhs <- analyzeValue rhs
-  return $ case op of
-   Add -> reDefineVar i () $
-          (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp) :: SMTExpr Integer) +
-                             (castUntypedExprValue (rrhs inp))) <$>
-          flhs <*> frhs
-   Sub -> reDefineVar i () $
-          (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp) :: SMTExpr Integer) -
-                             (castUntypedExprValue (rrhs inp))) <$>
-          flhs <*> frhs
-   Mul -> reDefineVar i () $
-          (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp) :: SMTExpr Integer) *
-                             (castUntypedExprValue (rrhs inp))) <$>
-          flhs <*> frhs
-   And -> if tp==(ProxyArgValue (undefined::Bool) ())
-          then reDefineVar i () $
-               (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp)) .&&.
-                                  (castUntypedExprValue (rrhs inp))) <$>
-               flhs <*> frhs
-          else error "And operator can't handle non-bool inputs."
-   Or -> if tp==(ProxyArgValue (undefined::Bool) ())
-         then reDefineVar i () $
-              (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp)) .||.
-                                 (castUntypedExprValue (rrhs inp))) <$>
-              flhs <*> frhs
-         else error "Or operator can't handle non-bool inputs."
-   Xor -> if tp==(ProxyArgValue (undefined::Bool) ())
-          then reDefineVar i () $
-               (\rlhs rrhs inp -> app xor
-                                  [castUntypedExprValue (rlhs inp)
-                                  ,castUntypedExprValue (rrhs inp)]) <$>
-               flhs <*> frhs
-          else error "Xor operator can't handle non-bool inputs."
-   _ -> error $ "Unknown operator: "++show op
-analyzeInstruction (castDown -> Just brInst) = do
-  is_cond <- branchInstIsConditional brInst
-  if is_cond
-    then (do
-             ifTrue <- terminatorInstGetSuccessor brInst 0
-             ifFalse <- terminatorInstGetSuccessor brInst 1
-             cond <- branchInstGetCondition brInst >>= analyzeValue
-             return $ reJump ifTrue (fmap (\c inp -> castUntypedExprValue (c inp))
-                                     cond) *>
-               reJump ifFalse (fmap (\c inp -> not' $ castUntypedExprValue (c inp))
-                               cond))
-    else (do
-             trg <- terminatorInstGetSuccessor brInst 0
-             return $ reJump trg (pure (const $ constant True)))
-analyzeInstruction i@(castDown -> Just call) = do
-  fname <- getFunctionName call
-  case fname of
-   '_':'_':'u':'n':'d':'e':'f':_ -> do
-     tp <- getType i >>= translateType
-     return $ reMkInput i tp *> pure ()
-   "assert" -> do
-     cond <- callInstGetArgOperand call 0 >>= analyzeValue
-     return $ reAssert $ fmap (\c inp -> castUntypedExprValue (c inp)) cond
-   "assume" -> do
-     cond <- callInstGetArgOperand call 0 >>= analyzeValue
-     return $ reAssume $ fmap (\c inp -> castUntypedExprValue (c inp)) cond
-   _ -> error $ "Unknown function "++fname
-analyzeInstruction i@(castDown -> Just icmp) = do
-  op <- getICmpOp icmp
-  lhs <- getOperand icmp 0 >>= analyzeValue
-  rhs <- getOperand icmp 1 >>= analyzeValue
-  return $ case op of
-   I_EQ -> reDefineVar i () $
-           (\rlhs rrhs inp -> entypeValue (.==. (castUntypedExprValue (rrhs inp))
-                                          ) (rlhs inp)) <$>
-           lhs <*> rhs
-   I_NE -> reDefineVar i () $
-           (\rlhs rrhs inp -> entypeValue (\lhs' -> not' $
-                                                    lhs' .==. (castUntypedExprValue (rrhs inp))
-                                          ) (rlhs inp)) <$>
-           lhs <*> rhs
-   I_SGE -> reDefineVar i () $
-            (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp) :: SMTExpr Integer) .>=.
-                               (castUntypedExprValue (rrhs inp))) <$>
-            lhs <*> rhs
-   I_SGT -> reDefineVar i () $
-            (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp) :: SMTExpr Integer) .>.
-                               (castUntypedExprValue (rrhs inp))) <$>
-            lhs <*> rhs
-   I_SLE -> reDefineVar i () $
-            (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp) :: SMTExpr Integer) .<=.
-                               (castUntypedExprValue (rrhs inp))) <$>
-            lhs <*> rhs
-   I_SLT -> reDefineVar i () $
-            (\rlhs rrhs inp -> (castUntypedExprValue (rlhs inp) :: SMTExpr Integer) .<.
-                               (castUntypedExprValue (rrhs inp))) <$>
-            lhs <*> rhs
-analyzeInstruction i@(castDown -> Just ret) = do
-  rval <- returnInstGetReturnValue ret
-  return $ pure ()
-analyzeInstruction i@(castDown -> Just (zext::Ptr ZExtInst)) = do
-  op <- getOperand zext 0
-  tp <- valueGetType op >>= translateType
-  fop <- analyzeValue op
-  if tp==(ProxyArgValue (undefined::Bool) ())
-    then return $ reDefineVar i () $
-         fmap (\v inp -> ite (castUntypedExprValue (v inp))
-                         (constant (1::Integer))
-                         (constant 0)) fop
-    else withProxyArgValue tp $
-         \(_::a) ann -> return $ reDefineVar i ann $
-                        fmap (\v inp -> castUntypedExprValue (v inp) :: SMTExpr a) fop
-analyzeInstruction i@(castDown -> Just select) = do
-  cond <- selectInstGetCondition select >>= analyzeValue
-  tVal <- selectInstGetTrueValue select
-  tp <- valueGetType tVal >>= translateType
-  tVal' <- analyzeValue tVal
-  fVal' <- selectInstGetFalseValue select >>= analyzeValue
-  withProxyArgValue tp $
-    \(_::a) ann -> return $ reDefineVar i ann $
-                   (\c t f inp -> ite (castUntypedExprValue $ c inp)
-                                  (castUntypedExprValue (t inp) :: SMTExpr a)
-                                  (castUntypedExprValue (f inp))) <$>
-                   cond <*> tVal' <*> fVal'
-analyzeInstruction i@(castDown -> Just phi) = do
-  num <- phiNodeGetNumIncomingValues phi
-  tp <- valueGetType i >>= translateType
-  trg <- instructionGetParent i
-  phis <- mapM (\n -> do
-                   iblk <- phiNodeGetIncomingBlock phi n
-                   ival <- phiNodeGetIncomingValue phi n
-                   return (iblk,ival)
-               ) [0..(num-1)]
-  ana <- analyzePhi tp phis
-  return $ reDefineVar' i tp ana
-analyzeInstruction (castDown -> Just sw) = do
-  cond <- switchInstGetCondition sw >>= analyzeValue
-  def <- switchInstGetDefaultDest sw
-  cases <- switchInstGetCases sw >>=
-           mapM (\(val,trg) -> do
-                    APInt _ val' <- constantIntGetValue val >>= peek
-                    return (val',trg))
-  return $ mkDefault def cases cond *>
-    mkSwitch cases cond
-  where
-    mkDefault def cases val
-      = reJump def (fmap (\rval inp -> app and' [ not' $
-                                                  (castUntypedExprValue (rval inp)) .==.
-                                                  (constant i)
-                                                | (i,_) <- cases ]
-                         ) val)
-    mkSwitch [] _ = pure ()
-    mkSwitch ((i,blk):rest) val
-      = reJump blk (fmap (\rval inp -> (castUntypedExprValue (rval inp))
-                                       .==. (constant i)
-                         ) val) *>
-        mkSwitch rest val
-analyzeInstruction i = do
-  valueDump i
-  error "Unknown instruction"
-
-(!) :: (ValueC a,Show b) => Map (Ptr a) b -> Ptr a -> b
-(!) mp x = case Map.lookup x mp of
-  Just y -> y
-  Nothing -> error $ "Key "++(unsafePerformIO $ getNameString x)++" not found in "
-             ++show [ (unsafePerformIO $ getNameString i,v) | (i,v) <- Map.toList mp]
-
-blockGraph :: Ptr Function -> IO (BlockGraph (Ptr BasicBlock))
+blockGraph :: Ptr Function -> IO BlockGraph
 blockGraph fun = do
   blks <- getBasicBlockList fun >>= ipListToList
   let nodes = zip [0..] blks
-      node_mp = Map.fromList (fmap (\(i,blk) -> (blk,i)) nodes)
-  edges <- mapM (\(i,blk) -> do
-                    term <- getTerminator blk
-                    no_succs <- terminatorInstGetNumSuccessors term
-                    succs <- mapM (terminatorInstGetSuccessor term) [0..no_succs-1]
-                    return [ (i,j,())
-                           | succ <- succs
-                           , let j = node_mp ! succ ]
-                ) nodes
-  return $ BlockGraph (Gr.mkGraph nodes (concat edges)) node_mp
+      nodeMp = Map.fromList [ (blk,nd) | (nd,blk) <- nodes ]
+  lst <- mapM (\(nd,blk) -> do
+                  term <- getTerminator blk
+                  num <- terminatorInstGetNumSuccessors term
+                  succBlks <- mapM (terminatorInstGetSuccessor term) [0..num-1]
+                  return [ (nd,nodeMp Map.! blk',())
+                         | blk' <- succBlks ]
+              ) nodes
+  return $ BlockGraph { nodeMap = nodeMp
+                      , dependencies = Gr.mkGraph nodes (concat lst)
+                      }
+
+analyzeBlock :: Analyzation -> Ptr BasicBlock -> IO Analyzation
+analyzeBlock ana blk = do
+  instrs <- getInstList blk >>= ipListToList
+  foldlM (analyzeInstruction backedges) ana' instrs
+  where
+    nd = (nodeMap $ blkGraph ana) Map.! blk
+    incs = Set.fromList $ fmap (\nd -> case Gr.lab (dependencies $ blkGraph ana) nd of
+                                        Just b -> b
+                               ) $ Gr.pre (dependencies $ blkGraph ana) nd
+    backedges = Set.difference incs (analyzedBlocks ana)
+    hasBackedge = not $ Set.null backedges
+    isInit = Set.null incs
+    nInstrState = if hasBackedge
+                  then fmap (\s -> case s of
+                              Latched -> Latched
+                              Defined blk' -> DefinedWhen blk'
+                              DefinedWhen blk' -> DefinedWhen blk'
+                            ) (instructionState ana)
+                  else instructionState ana
+    ana' = ana { instructionState = nInstrState
+               , analyzedBlocks = Set.insert blk (analyzedBlocks ana)
+               , latchBlocks = if hasBackedge || isInit
+                               then Map.insert blk () (latchBlocks ana)
+                               else latchBlocks ana }
 
 translateType :: Ptr Type -> IO ProxyArgValue
 translateType (castDown -> Just itp) = do
@@ -748,6 +135,377 @@ translateType (castDown -> Just itp) = do
 translateType tp = do
   typeDump tp
   error "Can't translate type"
+
+analyzeValue :: Analyzation -> Ptr Value -> IO Analyzation
+analyzeValue ana (castDown -> Just instr)
+  = case Map.lookup instr (instructionState ana) of
+  Just (Defined _) -> return ana
+  Just (DefinedWhen blk)
+    -> return $ ana { implicitLatches = Map.insert instr blk
+                                        (implicitLatches ana)
+                    }
+  Nothing -> return ana
+  {-Nothing -> return $ ana { instructionState = Map.insert instr Latched
+                                               (instructionState ana)
+                          , implicitLatches = Map.insert instr ()
+                                              (implicitLatches ana)
+                          }-}
+analyzeValue ana _ = return ana
+
+analyzeInstruction :: Set (Ptr BasicBlock) -> Analyzation -> Ptr Instruction -> IO Analyzation
+analyzeInstruction backedges ana i@(castDown -> Just phi) = do
+  blk <- instructionGetParent i
+  numPhi <- phiNodeGetNumIncomingValues phi
+  phis <- mapM (\n -> do
+                   blk <- phiNodeGetIncomingBlock phi n
+                   val <- phiNodeGetIncomingValue phi n
+                   return (blk,val)
+               ) [0..numPhi-1]
+  ana1 <- foldlM analyzeValue ana (fmap snd phis)
+  let splitPhis = partitionEithers $
+                  fmap (\(blk,val) -> if Set.member blk backedges
+                                      then Left (blk,val)
+                                      else Right (blk,val)
+                       ) phis
+  return $ ana1 { explicitLatches = Map.insert i splitPhis
+                                    (explicitLatches ana1)
+                , instructionState = Map.insert i (Defined blk)
+                                     (instructionState ana1)
+                }
+analyzeInstruction _ ana i = do
+  blk <- instructionGetParent i
+  numOps <- getNumOperands i
+  ops <- mapM (getOperand i) [0..numOps-1]
+  ana1 <- foldlM analyzeValue ana ops
+  return $ ana1 { instructionState = Map.insert i (Defined blk) (instructionState ana1) }
+
+realizeFunction :: RealizationOptions -> Analyzation -> Ptr Function
+                   -> IO Realization
+realizeFunction opts ana fun = do
+  blks <- getBasicBlockList fun >>= ipListToList
+  let initInstrs1 = Map.mapWithKey (\i _ (_,_,instrs) -> instrs Map.! i) (implicitLatches ana)
+      initInstrs2 = Map.mapWithKey (\i _ (_,_,instrs) -> instrs Map.! i) (explicitLatches ana)
+      initInstrs = Map.union initInstrs1 initInstrs2
+      real = Realization { edgeActivations = Map.empty
+                         , blockActivations = if useErrorState opts
+                                              then Map.singleton nullPtr
+                                                   (\(acts,_,_) -> acts Map.! nullPtr)
+                                              else Map.empty
+                         , instructions = initInstrs
+                         , inputs = Map.empty
+                         , forwardEdges = Map.empty
+                         , asserts = Map.empty
+                         , assumes = []
+                         , gateMp = emptyGateMap
+                         }
+  foldlM (realizeBlock opts ana) real blks
+             
+
+realizeValue :: Analyzation -> Realization -> Ptr Value
+                -> IO (LLVMInput -> SMTExpr UntypedValue)
+realizeValue ana real (castDown -> Just instr)
+  = case Map.lookup instr (instructions real) of
+     Just res -> return res
+realizeValue ana real (castDown -> Just i) = do
+  tp <- getType i
+  bw <- getBitWidth tp
+  v <- constantIntGetValue i
+  rv <- apIntGetSExtValue v
+  let val = if bw==1
+            then UntypedExprValue (constant (rv/=0))
+            else UntypedExprValue (constant $ fromIntegral rv :: SMTExpr Integer)
+  return (const val)
+
+realizeBlock :: RealizationOptions -> Analyzation -> Realization -> Ptr BasicBlock
+                -> IO Realization
+realizeBlock opts ana real blk = do
+  name <- getNameString blk
+  let latchCond = case Map.lookup blk (latchBlocks ana) of
+        Just _ -> [\(acts,_,_) -> acts Map.! blk]
+        Nothing -> []
+      normalCond = case Map.lookup blk (forwardEdges real) of
+          Just incs -> incs
+          Nothing -> []
+      conds = latchCond++normalCond
+      (act,gates1) = let (act',gates') = addGate (gateMp real)
+                                         (Gate { gateTransfer = case conds of
+                                                  [f] -> \inp -> f inp
+                                                  _ -> \inp -> app or' [ f inp | f <- conds ]
+                                               , gateAnnotation = ()
+                                               , gateName = Just name })
+                     in (const act',gates')
+      real' = real { blockActivations = Map.insert blk act
+                                        (blockActivations real)
+                   , gateMp = gates1
+                   , forwardEdges = Map.delete blk (forwardEdges real) }
+  instrs <- getInstList blk >>= ipListToList
+  foldlM (realizeInstruction opts ana) real' instrs
+
+defineInstr' :: Analyzation -> Realization -> Ptr Instruction -> ProxyArgValue
+               -> (LLVMInput -> SMTExpr UntypedValue)
+               -> IO Realization
+defineInstr' ana real instr tp f
+  = withProxyArgValue tp $
+    \(_::a) ann
+    -> defineInstr ana real instr ann
+       (\inp -> castUntypedExprValue (f inp) :: SMTExpr a)
+
+defineInstr :: SMTValue a => Analyzation -> Realization -> Ptr Instruction -> SMTAnnotation a
+               -> (LLVMInput -> SMTExpr a)
+               -> IO Realization
+defineInstr ana real instr tp (f::LLVMInput -> SMTExpr a) = do
+  name <- getNameString instr
+  let trans = case Map.lookup instr (implicitLatches ana) of
+        Just blk -> case Map.lookup blk (blockActivations real) of
+          Just act -> \inp@(_,_,instrs)
+                      -> ite (act inp)
+                         (f inp)
+                         (castUntypedExprValue $ instrs Map.! instr)
+        Nothing -> f
+      (expr,ngates) = addGate (gateMp real)
+                      (Gate { gateTransfer = trans
+                            , gateAnnotation = tp
+                            , gateName = Just name })
+  return $ real { gateMp = ngates
+                , instructions = Map.insert instr (const $ UntypedExprValue expr)
+                                 (instructions real)
+                }
+
+realizeDefInstruction :: Analyzation -> Realization -> Ptr Instruction
+                      -> (forall a. SMTValue a => SMTAnnotation a -> (LLVMInput -> SMTExpr a)
+                          -> IO b)
+                      -> IO b
+realizeDefInstruction ana real i@(castDown -> Just opInst) f = do
+  lhs <- getOperand opInst 0
+  rhs <- getOperand opInst 1
+  op <- binOpGetOpCode opInst
+  tp <- valueGetType lhs >>= translateType
+  flhs <- realizeValue ana real lhs
+  frhs <- realizeValue ana real rhs
+  case op of
+   Add -> f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer) +
+                         (castUntypedExprValue (frhs inp))
+   Sub -> f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer) -
+                         (castUntypedExprValue (frhs inp))
+   Mul -> f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer) *
+                         (castUntypedExprValue (frhs inp))
+   And -> if tp==(ProxyArgValue (undefined::Bool) ())
+          then f () $ \inp -> (castUntypedExprValue (flhs inp)) .&&.
+                              (castUntypedExprValue (frhs inp))
+          else error "And operator can't handle non-bool inputs."
+   Or -> if tp==(ProxyArgValue (undefined::Bool) ())
+         then f () $ \inp -> (castUntypedExprValue (flhs inp)) .||.
+                             (castUntypedExprValue (frhs inp))
+         else error "Or operator can't handle non-bool inputs."
+   Xor -> if tp==(ProxyArgValue (undefined::Bool) ())
+          then f () $ \inp -> app xor
+                              [castUntypedExprValue (flhs inp)
+                              ,castUntypedExprValue (frhs inp)]
+          else error "Xor operator can't handle non-bool inputs."
+   _ -> error $ "Unknown operator: "++show op
+realizeDefInstruction ana real i@(castDown -> Just call) f = do
+  fname <- getFunctionName call
+  case fname of
+   '_':'_':'u':'n':'d':'e':'f':_ -> do
+     tp <- getType i >>= translateType
+     withProxyArgValue tp $
+       \(_::a) ann -> f ann (\(_,inp,_) -> castUntypedExprValue (inp Map.! i) :: SMTExpr a)
+realizeDefInstruction ana real i@(castDown -> Just icmp) f = do
+  op <- getICmpOp icmp
+  lhs <- getOperand icmp 0 >>= realizeValue ana real
+  rhs <- getOperand icmp 1 >>= realizeValue ana real
+  case op of
+   I_EQ -> f () $ \inp -> entypeValue (.==. (castUntypedExprValue (rhs inp)))
+                          (lhs inp)
+   I_NE -> f () $ \inp -> entypeValue (\lhs' -> not' $
+                                                lhs' .==. (castUntypedExprValue (rhs inp)))
+                          (lhs inp)
+   I_SGE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>=.
+                           (castUntypedExprValue (rhs inp))
+   I_SGT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>.
+                           (castUntypedExprValue (rhs inp))
+   I_SLE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<=.
+                           (castUntypedExprValue (rhs inp))
+   I_SLT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<.
+                           (castUntypedExprValue (rhs inp))
+realizeDefInstruction ana real i@(castDown -> Just (zext::Ptr ZExtInst)) f = do
+  op <- getOperand zext 0
+  tp <- valueGetType op >>= translateType
+  fop <- realizeValue ana real op
+  if tp==(ProxyArgValue (undefined::Bool) ())
+    then f () $ \inp -> ite (castUntypedExprValue (fop inp))
+                        (constant (1::Integer))
+                        (constant 0)
+    else (withProxyArgValue tp $
+          \(_::a) ann -> f ann (\inp -> castUntypedExprValue (fop inp) :: SMTExpr a))
+realizeDefInstruction ana real i@(castDown -> Just select) f = do
+  cond <- selectInstGetCondition select >>= realizeValue ana real
+  tVal <- selectInstGetTrueValue select
+  tp <- valueGetType tVal >>= translateType
+  tVal' <- realizeValue ana real tVal
+  fVal' <- selectInstGetFalseValue select >>= realizeValue ana real
+  withProxyArgValue tp $
+    \(_::a) ann
+    -> f ann $ \inp -> ite (castUntypedExprValue $ cond inp)
+                       (castUntypedExprValue $ tVal' inp :: SMTExpr a)
+                       (castUntypedExprValue $ fVal' inp)
+realizeDefInstruction ana real i@(castDown -> Just phi) f
+  = case Map.lookup i (explicitLatches ana) of
+     Just (recPhis,phis) -> do
+       trg <- instructionGetParent i
+       let edges = case Map.lookup trg (edgeActivations real) of
+             Just ed -> ed
+       num <- phiNodeGetNumIncomingValues phi
+       tp <- valueGetType i >>= translateType
+       phis' <- mapM (\(blk,val) -> do
+                         val' <- realizeValue ana real val
+                         let edge = case Map.lookup blk edges of
+                               Just act -> act
+                         return (edge,val')
+                     ) phis
+       withProxyArgValue tp $
+         \(_::a) ann
+          -> let mkITE [(_,val)] inp
+                   | null recPhis = castUntypedExprValue (val inp)
+                 mkITE [] (_,_,instrs) = castUntypedExprValue (instrs Map.! i)
+                 mkITE ((cond,val):xs) inp
+                   = ite (cond inp)
+                     (castUntypedExprValue (val inp))
+                     (mkITE xs inp)
+             in f ann (\inp -> mkITE phis' inp :: SMTExpr a)
+realizeDefInstruction ana real i f = do
+  valueDump i
+  error "Unknown instruction"
+
+realizeInstruction :: RealizationOptions -> Analyzation -> Realization -> Ptr Instruction -> IO Realization
+realizeInstruction opts ana real i@(castDown -> Just brInst) = do
+  src <- instructionGetParent brInst
+  srcName <- getNameString src
+  is_cond <- branchInstIsConditional brInst
+  let act = case Map.lookup src (blockActivations real) of
+        Just a -> a
+      restr inp = if useErrorState opts
+                  then (case Map.lookup src (asserts real) of
+                         Just conds -> [ c inp | c <- conds ]
+                         Nothing -> [])
+                  else []
+  if is_cond
+    then (do
+             ifTrue <- terminatorInstGetSuccessor brInst 0
+             ifTrueName <- getNameString ifTrue
+             ifFalse <- terminatorInstGetSuccessor brInst 1
+             ifFalseName <- getNameString ifFalse
+             cond <- branchInstGetCondition brInst >>= realizeValue ana real
+             let rcond inp = castUntypedExprValue (cond inp)
+                 tCond inp = app and' $ [act inp,rcond inp]++(restr inp)
+                 fCond inp = app and' $ [act inp,not' $ rcond inp]++(restr inp)
+                 (tGate,gates1) = addGate (gateMp real)
+                                  (Gate { gateTransfer = tCond
+                                        , gateAnnotation = ()
+                                        , gateName = Just $ srcName++"."++ifTrueName })
+                 (fGate,gates2) = addGate gates1
+                                  (Gate { gateTransfer = fCond
+                                        , gateAnnotation = ()
+                                        , gateName = Just $ srcName++"."++ifFalseName })
+             return $ real { edgeActivations = Map.insertWith Map.union
+                                               ifTrue
+                                               (Map.singleton src (const tGate)) $
+                                               Map.insertWith Map.union
+                                               ifFalse
+                                               (Map.singleton src (const fGate)) $
+                                               edgeActivations real
+                           , forwardEdges = Map.insertWith (++)
+                                            ifTrue [const tGate] $
+                                            Map.insertWith (++)
+                                            ifFalse [const fGate] $
+                                            forwardEdges real
+                           , gateMp = gates2 })
+    else (do
+             trg <- terminatorInstGetSuccessor brInst 0
+             return $ real { edgeActivations = Map.insertWith Map.union
+                                               trg
+                                               (Map.singleton src act)
+                                               (edgeActivations real)
+                           , forwardEdges = Map.insertWith (++)
+                                            trg [\inp -> case restr inp of
+                                                          [] -> act inp
+                                                          xs -> app and' $ [act inp]++xs]
+                                            (forwardEdges real)
+                           })
+realizeInstruction opts ana real i@(castDown -> Just call) = do
+  blk <- instructionGetParent i
+  let act = case Map.lookup blk (blockActivations real) of
+        Just a -> a
+  fname <- getFunctionName call
+  case fname of
+   '_':'_':'u':'n':'d':'e':'f':_ -> do
+     tp <- getType i >>= translateType
+     defineInstr' ana (real { inputs = Map.insert i tp (inputs real)
+                            }) i tp (\(_,inp,_) -> inp Map.! i)
+   "assert" -> do
+     cond <- callInstGetArgOperand call 0 >>= realizeValue ana real
+     return $ real { asserts = Map.insertWith (++)
+                               blk [\inp -> castUntypedExprValue (cond inp)]
+                               (asserts real) }
+   "assume" -> do
+     cond <- callInstGetArgOperand call 0 >>= realizeValue ana real
+     return $ real { assumes = (\inp -> (act inp) .=>. (castUntypedExprValue (cond inp))):
+                               (assumes real) }
+   _ -> error $ "Unknown function "++fname
+realizeInstruction opts ana real i@(castDown -> Just ret) = do
+  rval <- returnInstGetReturnValue ret
+  return real
+realizeInstruction opts ana real (castDown -> Just sw) = do
+  src <- instructionGetParent sw
+  srcName <- getNameString src
+  cond <- switchInstGetCondition sw >>= realizeValue ana real
+  def <- switchInstGetDefaultDest sw
+  defName <- getNameString def
+  cases <- switchInstGetCases sw >>=
+           mapM (\(val,trg) -> do
+                    APInt _ val' <- constantIntGetValue val >>= peek
+                    return (val',trg))
+  let act = case Map.lookup src (blockActivations real) of
+        Just a -> a
+      (defEdge,ngates) = addGate (gateMp real)
+                         (Gate { gateTransfer = \inp -> app and' ((act inp):
+                                                                  [ not' $
+                                                                    (castUntypedExprValue (cond inp))
+                                                                    .==.
+                                                                    (constant val)
+                                                                  | (val,_) <- cases ])
+                               , gateAnnotation = ()
+                               , gateName = Just $ srcName++"."++defName
+                               })
+  foldlM (\real (val,trg) -> do
+             trgName <- getNameString trg
+             let (edge,ngates) = addGate (gateMp real)
+                                 (Gate { gateTransfer = \inp -> (act inp) .&&.
+                                                                ((castUntypedExprValue (cond inp))
+                                                                 .==.
+                                                                 (constant val))
+                                       , gateAnnotation = ()
+                                       , gateName = Just $ srcName++"."++trgName })
+             return $ real { gateMp = ngates
+                           , edgeActivations = Map.insertWith Map.union
+                                               trg
+                                               (Map.singleton src (const edge))
+                                               (edgeActivations real)
+                           , forwardEdges = Map.insertWith (++)
+                                            trg [const edge]
+                                            (forwardEdges real)
+                           }
+         ) (real { gateMp = ngates
+                 , edgeActivations = Map.insertWith Map.union
+                                     def
+                                     (Map.singleton src (const defEdge))
+                                     (edgeActivations real)
+                 , forwardEdges = Map.insertWith (++)
+                                  def [const defEdge]
+                                  (forwardEdges real) }) cases
+realizeInstruction opts ana real i
+  = realizeDefInstruction ana real i $
+    defineInstr ana real i
 
 getFunctionName :: Ptr CallInst -> IO String
 getFunctionName ci = do
@@ -763,39 +521,124 @@ getFunctionName ci = do
           val <- getOperand c 0
           getFunctionName' val
 
+getModel :: RealizationOptions -> Ptr Function -> IO RealizedBlocks
+getModel opts fun = do
+  gr <- blockGraph fun
+  blks <- getBasicBlockList fun >>= ipListToList
+  ana <- foldlM analyzeBlock (Analyzation { instructionState = Map.empty
+                                          , implicitLatches = Map.empty
+                                          , explicitLatches = Map.empty
+                                          , latchBlocks = if useErrorState opts
+                                                          then Map.singleton nullPtr ()
+                                                          else Map.empty
+                                          , analyzedBlocks = Set.empty
+                                          , blkGraph = gr }) blks
+  real <- realizeFunction opts ana fun
+  getModel' opts (head blks) ana real
+
+getModel' :: RealizationOptions -> Ptr BasicBlock -> Analyzation -> Realization
+             -> IO RealizedBlocks
+getModel' opts init ana real = do
+  (phiInstrs,real2) <- runStateT
+                       (Map.traverseWithKey
+                        (\i (phis,_) -> do
+                            creal <- get
+                            trg <- lift $ instructionGetParent i
+                            tp <- lift $ getType i >>= translateType
+                            name <- lift $ getNameString i
+                            phis' <- mapM (\(src,val) -> do
+                                              let act = case Map.lookup trg (edgeActivations creal) of
+                                                    Just acts -> case Map.lookup src acts of
+                                                      Just a -> a
+                                              val' <- lift $ realizeValue ana creal val
+                                              return (act,val')
+                                          ) phis
+                            withProxyArgValue tp $
+                              \(_::a) ann -> do
+                                let (expr,ngates) = addGate (gateMp creal)
+                                                    (Gate { gateTransfer = mkITE i phis' :: LLVMInput -> SMTExpr a
+                                                          , gateAnnotation = ann
+                                                          , gateName = Just name })
+                                put $ creal { gateMp = ngates }
+                                return (tp,const $ UntypedExprValue expr)
+                        ) (explicitLatches ana)
+                       ) real1
+  latchInstrs' <- Map.traverseWithKey (\i val -> do
+                                          tp <- getType i >>= translateType
+                                          return (tp,val)
+                                      ) latchInstrs
+  return $ RealizedBlocks { realizedLatchBlocks = latchBlks
+                          , realizedLatches = Map.union phiInstrs latchInstrs'
+                          , realizedInputs = inputs real2
+                          , realizedGates = gateMp real2
+                          , realizedAssumes = assumes real2
+                          , realizedAsserts = rasserts
+                          , realizedInit = init
+                          }
+  where
+    (gates1,latchBlks) = Map.mapAccumWithKey
+                         (\gates blk _
+                           -> if blk==nullPtr && useErrorState opts
+                              then (let (act,gates') = addGate gates
+                                                       (Gate { gateTransfer = \inp -> app or' [ not' (c inp)
+                                                                                              | c <- allAsserts ]
+                                                             , gateAnnotation = ()
+                                                             , gateName = Just "err" })
+                                    in (gates',const act))
+                              else case Map.lookup blk (forwardEdges real) of
+                                    Nothing -> (gates,const $ constant False)
+                                    Just incs -> let name = unsafePerformIO $ getNameString blk
+                                                     (act',gates') = addGate gates
+                                                                     (Gate { gateTransfer = case incs of
+                                                                              [f] -> f
+                                                                              _ -> \inp -> app or' [ f inp | f <- incs ]
+                                                                           , gateAnnotation = ()
+                                                                           , gateName = Just name })
+                                                 in (gates',const act')
+                         ) (gateMp real) (latchBlocks ana)
+    {-latchBlks' = if useErrorState opts
+                 then Map.insert nullPtr
+                      (\inp -> case allAsserts of
+                                [c] -> not' $ c inp
+                                cs -> app or' [ not' $ c inp | c <- cs ])
+                      latchBlks
+                 else latchBlks-}
+    real1 = real { gateMp = gates1 }
+    latchInstrs = Map.intersection (instructions real1) (implicitLatches ana)
+    mkITE i [] (_,_,instrs) = castUntypedExprValue (instrs Map.! i)
+    --mkITE [(_,val)] inp = castUntypedExprValue (val inp)
+    mkITE i ((cond,val):xs) inp = ite (cond inp) (castUntypedExprValue $ val inp) (mkITE i xs inp)
+    rasserts = if useErrorState opts
+               then (case Map.lookup nullPtr (blockActivations real1) of
+                      Just act -> [\inp -> not' (act inp)])
+               else allAsserts
+    allAsserts = concat $
+                 Map.mapWithKey
+                 (\blk ass
+                  -> case Map.lookup blk (blockActivations real1) of
+                      Just act -> if null ass
+                                  then [\inp -> not' (act inp)]
+                                  else [\inp -> (act inp) .=>. (a inp)
+                                       | a <- ass ]
+                 ) (asserts real1)
+-- Interface starts here:
+
 createBlockVars :: String -> RealizedBlocks -> SMT LatchActs
 createBlockVars pre st
   = sequence $ Map.mapWithKey
-    (\trg -> sequence . Map.mapWithKey
-             (\src _ -> do
-                 name <- if trg==nullPtr &&
-                            src==nullPtr
-                         then return "err"
-                         else liftIO $ do
-                           trgHasName <- if trg==nullPtr
-                                         then return False
-                                         else hasName trg
-                           srcHasName <- if src==nullPtr
-                                         then return False
-                                         else hasName src
-                           trgName <- if trgHasName
-                                      then getNameString trg
-                                      else return "bb"
-                           srcName <- if srcHasName
-                                      then getNameString src
-                                      else return "bb"
-                           return (pre++srcName++"."++trgName)
-                 varNamed name)
-    ) (realizedLatchActs st)
+    (\blk _ -> do
+        name <- if blk==nullPtr
+                then return "err"
+                else liftIO $ getNameString blk
+        varNamed (pre++"L."++name)
+    ) (realizedLatchBlocks st)
 
 -- | Encode the fact that only exactly one block may be active
 blockConstraint :: LatchActs -> SMTExpr Bool
 blockConstraint blks
   = app or' $
     fmap (app and') $
-    exactlyOne [] [ act
-                  | (_,trgs) <- Map.toList blks
-                  , (_,act) <- Map.toList trgs ]
+    exactlyOne [] (Map.elems blks)
   where
     exactlyOne prev [x] = [prev++[x]]
     exactlyOne prev (x:xs)
@@ -805,13 +648,13 @@ blockConstraint blks
 createInstrVars :: String -> RealizedBlocks -> SMT ValueMap
 createInstrVars pre st
   = sequence $ Map.mapWithKey
-    (\instr ann -> do
+    (\instr (ann,_) -> do
         name <- liftIO $ do
               hn <- hasName instr
               n <- if hn
                    then getNameString instr
                    else return "instr"
-              return (pre++n)
+              return (pre++"L."++n)
         varNamedAnn name ann
     ) (realizedLatches st)
 
@@ -824,7 +667,7 @@ createInputVars pre st
               n <- if hn
                    then getNameString instr
                    else return "input"
-              return (pre++n)
+              return (pre++"I."++n)
         varNamedAnn name ann
     ) (realizedInputs st)
 
@@ -834,79 +677,29 @@ declareOutputActs :: (Monad m,Functor m) => RealizedBlocks -> RealizedGates -> L
 declareOutputActs st real inp
   = runStateT
     (Map.traverseWithKey
-     (\trg srcs
-      -> if trg==nullPtr
-         then (do
-                  acts <- Map.traverseWithKey
-                          (\src blk -> case Map.lookup nullPtr (realizedOutgoings blk) of
-                            Nothing -> return Nothing
-                            Just act -> do
-                              let f = (realizedActivation blk inp) .&&. (act inp)
-                              real <- get
-                              (expr,nreal) <- lift $ declareGate f real
-                                              (realizedGates st) inp
-                              put nreal
-                              return (Just expr)
-                          ) (realizedBlocks st)
-                  return $ Map.singleton nullPtr (case catMaybes $ Map.elems acts of
-                                                   [act] -> act
-                                                   xs -> app or' xs))
-         else Map.traverseWithKey
-              (\src _ -> do
-                  real <- get
-                  case Map.lookup src (realizedBlocks st) of
-                   Just blk -> do
-                     let cond = case Map.lookup trg (realizedOutgoings blk) of
-                           Just c -> c
-                         f = (realizedActivation blk inp) .&&. (cond inp)
-                     (expr,nreal) <- lift $ declareGate f real
-                                     (realizedGates st) inp
-                     put nreal
-                     return expr
-                   Nothing
-                     | src==nullPtr -> return (constant False)
-              ) srcs
-     ) (realizedLatchActs st)
+     (\trg act -> do
+         real <- get
+         (expr,nreal) <- lift $ declareGate (act inp) real
+                         (realizedGates st) inp
+         put nreal
+         return expr
+     ) (realizedLatchBlocks st)
     ) real
 
 declareOutputInstrs :: (Monad m,Functor m) => RealizedBlocks -> RealizedGates -> LLVMInput
                        -> SMT' m (ValueMap
                                  ,RealizedGates)
-declareOutputInstrs st real inp@(acts,_,instrs)
+declareOutputInstrs st real inp
   = runStateT
     (Map.traverseWithKey
-     (\instr tp -> do
+     (\instr (tp,val) -> do
          real <- get
-         let trans = case Map.lookup instr allLatch of
-               Just (_,Defined _) -> case Map.lookup instr (realizedInstrs st) of
-                 Just (_,f) -> f inp
-               Just (_,Latched) -> case Map.lookup instr instrs of
-                 Just v -> v
-               Just (_,DefinedWhen cblk) -> case Map.lookup cblk (realizedBlocks st) of
-                 Just cblk -> case Map.lookup instr (realizedInstrs st) of
-                   Just (_,f) -> withProxyArgValue tp $
-                                 \(_::a) _
-                                 -> UntypedExprValue $
-                                    ite (realizedActivation cblk inp)
-                                    (castUntypedExprValue (f inp) :: SMTExpr a)
-                                    (castUntypedExprValue $ instrs Map.! instr)
-         (expr,nreal) <- lift $ declareGate trans real (realizedGates st) inp
+         (expr,nreal) <- lift $ declareGate (val inp) real
+                         (realizedGates st) inp
          put nreal
          return expr
      ) (realizedLatches st)
     ) real
-  where
-    allLatch = Map.foldlWithKey
-               (\clatch trg srcs
-                 -> Map.foldlWithKey
-                    (\clatch src _
-                      -> case Map.lookup src (realizedBlocks st) of
-                          Just blk -> Map.unionWith (\(tp,c1) (_,c2) -> (tp,mergeLatchState c1 c2))
-                                      clatch (latchedInstrs blk)
-                          Nothing
-                            | src==nullPtr -> clatch
-                    ) clatch srcs
-               ) Map.empty (realizedLatchActs st)
 
 declareAssertions :: (Monad m,Functor m) => RealizedBlocks -> RealizedGates -> LLVMInput
                      -> SMT' m ([SMTExpr Bool]
@@ -934,26 +727,29 @@ declareAssumptions st real inp
 
 initialState :: RealizedBlocks -> LatchActs -> SMTExpr Bool
 initialState st acts
-  = app and' [ if trgBlk==realizedInit st &&
-                  srcBlk==nullPtr
+  = app and' [ if blk==realizedInit st
                then act
                else not' act
-             | (trgBlk,srcs) <- Map.toList acts
-             , (srcBlk,act) <- Map.toList srcs ]
+             | (blk,act) <- Map.toList acts ]
+
+blockAnnotation :: RealizedBlocks -> ArgAnnotation LatchActs
+blockAnnotation st = fmap (const ()) (realizedLatchBlocks st)
+
+latchAnnotation :: RealizedBlocks -> ArgAnnotation ValueMap
+latchAnnotation st = fmap fst (realizedLatches st)
 
 getConcreteValues :: Monad m => RealizedBlocks -> LLVMInput -> SMT' m ConcreteValues
-getConcreteValues st (acts,instrs,inps) = do
-  acts' <- mapM (mapM getValue) acts
-  (trg,src) <- case [ (trg,src)
-                    | (trg,srcs) <- Map.toList acts'
-                    , (src,act) <- Map.toList srcs
-                    , act ] of
-                 [] -> error "Realization.getConcreteValues: No latch block is active."
-                 x:_ -> return x
-  vals <- concretizeMap instrs (realizedLatches st)
+getConcreteValues st (acts,inps,instrs) = do
+  acts' <- mapM getValue acts
+  blk <- case [ blk
+              | (blk,act) <- Map.toList acts'
+              , act ] of
+          [] -> error "Realization.getConcreteValues: No latch block is active."
+          [x] -> return x
+          _ -> error "Realization.getConcreteValues: More than one block is active."
+  vals <- concretizeMap instrs (fmap fst $ realizedLatches st)
   inps' <- concretizeMap inps (realizedInputs st)
-  return $ ConcreteValues { srcBlock = src
-                          , trgBlock = trg
+  return $ ConcreteValues { block = blk
                           , latchValues = vals
                           , inputValues = inps' }
   where
@@ -970,53 +766,14 @@ getConcreteValues st (acts,instrs,inps) = do
                   ) (Map.intersectionWith (,) mp tps)
       return $ Map.mapMaybe id res
 
-
-instance Show ConcreteValues where
-  show cv = unsafePerformIO $ do
-    trg <- do
-      trgHasName <- hasName (trgBlock cv)
-      if trgHasName
-        then getNameString (trgBlock cv)
-        else return $ show (trgBlock cv)
-    src <- if srcBlock cv==nullPtr
-           then return ""
-           else (do
-                    srcHasName <- hasName (srcBlock cv)
-                    if srcHasName
-                      then getNameString (srcBlock cv)
-                      else return $ show (srcBlock cv))
-    vals <- mapM (\(instr,val) -> do
-                     instrName <- do
-                       instrHasName <- hasName instr
-                       if instrHasName
-                         then getNameString instr
-                         else return $ show instr
-                     return $ instrName++"="++show val
-                 ) (Map.toList $ latchValues cv)
-    inps <- mapM (\(instr,val) -> do
-                     instrName <- do
-                       instrHasName <- hasName instr
-                       if instrHasName
-                         then getNameString instr
-                         else return $ show instr
-                     let valStr = case val of
-                           IntValue n -> show n
-                           BoolValue n -> show n
-                     return $ instrName++"="++valStr
-                 ) (Map.toList $ latchValues cv)
-    return $ "("++src++"~>"++trg++"|"++
-      concat (intersperse "," vals)++"|"++
-      concat (intersperse "," inps)++")"
-
-extractBlock :: Map (Ptr BasicBlock) (Map (Ptr BasicBlock) Bool) -> (Ptr BasicBlock,Ptr BasicBlock)
+extractBlock :: Map (Ptr BasicBlock) Bool -> Ptr BasicBlock
 extractBlock mp = case blks of
   [x] -> x
   [] -> error "No basic block is active in state."
   _ -> error "More than one basic block is active in state."
   where
-    blks = [ (src,trg) | (trg,srcs) <- Map.toList mp
-                       , (src,act) <- Map.toList srcs
-                       , act ]
+    blks = [ blk | (blk,act) <- Map.toList mp
+                 , act ]
 
 getProgram :: String -> String -> IO (Ptr Function)
 getProgram entry file = do
@@ -1054,25 +811,32 @@ passes entry
     ,APass createCFGSimplificationPass
     ,APass createInstructionNamerPass]
 
-instance Monoid Dependencies where
-  mempty = Dependencies Set.empty Set.empty
-  mappend d1 d2
-    = Dependencies { dependsInstructions = (dependsInstructions d1) `Set.union`
-                                           (dependsInstructions d2)
-                   , dependsBlocks = (dependsBlocks d1) `Set.union`
-                                     (dependsBlocks d2)
-                   }
-
-combine :: (a1 -> a2 -> a3) -> (b1 -> b2 -> RealizationMonad b3)
-           -> Realization a1 b1
-           -> Realization a2 b2
-           -> Realization a3 b3
-combine f g r1 r2
-  = Realization $
-    \anaSt -> let (x1,anaSt1,real1) = runRealization r1 anaSt
-                  (x2,anaSt2,real2) = runRealization r2 anaSt1
-              in (f x1 x2,anaSt2,
-                  do
-                    y1 <- real1
-                    y2 <- real2
-                    g y1 y2)
+instance Show ConcreteValues where
+  show cv = unsafePerformIO $ do
+    blk <- do
+      isNamed <- hasName (block cv)
+      if isNamed
+        then getNameString (block cv)
+        else return $ show (block cv)
+    vals <- mapM (\(instr,val) -> do
+                     instrName <- do
+                       instrHasName <- hasName instr
+                       if instrHasName
+                         then getNameString instr
+                         else return $ show instr
+                     return $ instrName++"="++renderVal val
+                 ) (Map.toList $ latchValues cv)
+    inps <- mapM (\(instr,val) -> do
+                     instrName <- do
+                       instrHasName <- hasName instr
+                       if instrHasName
+                         then getNameString instr
+                         else return $ show instr
+                     return $ instrName++"="++renderVal val
+                 ) (Map.toList $ inputValues cv)
+    return $ "("++blk++"|"++
+      concat (intersperse "," vals)++"|"++
+      concat (intersperse "," inps)++")"
+    where
+      renderVal (IntValue n) = show n
+      renderVal (BoolValue n) = show n

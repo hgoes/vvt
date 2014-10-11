@@ -1,6 +1,6 @@
 module Main where
 
-import Realization
+import Realization2
 import Options
 import CTIGAR
 
@@ -19,7 +19,8 @@ main = do
      exitWith (ExitFailure (-1))
    Right (file,opts) -> do
      fun <- getProgram (optFunction opts) file
-     st <- realizeFunction (RealizationOptions True) fun
+     --st <- realizeFunction (RealizationOptions True) fun
+     st <- getModel (RealizationOptions { useErrorState = True }) fun
      tr <- case optTimeout opts of
             Nothing -> check st opts
             Just to -> do

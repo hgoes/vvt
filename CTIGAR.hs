@@ -3,7 +3,7 @@
              ViewPatterns #-}
 module CTIGAR where
 
-import Realization
+import Realization2
 import Domain
 import State
 import SMTPool
@@ -99,7 +99,7 @@ data InterpolationState = InterpolationState { interpBlks :: LatchActs
                                              , interpAsserts :: [SMTExpr Bool]
                                              , interpAnte :: InterpolationGroup
                                              , interpPost :: InterpolationGroup
-                                             , interpReverse :: Map Integer (Either (Ptr BasicBlock,Ptr BasicBlock) (Ptr Instruction))
+                                             , interpReverse :: Map Integer (Either (Ptr BasicBlock) (Ptr Instruction))
                                              }
 
 data LiftingState = LiftingState { liftBlks :: LatchActs
@@ -159,12 +159,11 @@ consecutionNew backend mdl = do
     setOption (ProduceUnsatCores True)
     blks <- createBlockVars "" mdl
     assert (blockConstraint blks)
-    --blks <- createIntBlockVar "block" mdl
     inp <- createInputVars "" mdl
     instrs <- createInstrVars "" mdl
     let st1 = (blks,inp,instrs)
     (nxtBlks,real1) <- declareOutputActs mdl Map.empty st1
-    --assert (blockConstraint blks)
+    assert (blockConstraint nxtBlks)
     (nxtInstrs,real2) <- declareOutputInstrs mdl real1 st1
     (asserts1,real3) <- declareAssertions mdl real2 st1
     (assumps1,real4) <- declareAssumptions mdl real3 st1
@@ -226,6 +225,7 @@ runIC3 cfg act = do
   lifting <- createSMTPool liftingBackend $ do
     setOption (ProduceUnsatCores True)
     blks <- createBlockVars "" mdl
+    assert $ blockConstraint blks
     instrs <- createInstrVars "" mdl
     inp <- createInputVars "inp." mdl
     (blks',real1) <- declareOutputActs mdl Map.empty (blks,inp,instrs)
@@ -253,11 +253,8 @@ runIC3 cfg act = do
     nxtBlks' <- createBlockVars "nxt" mdl
     nxtInstrs' <- createInstrVars "nxt" mdl
     let rmp1 = Map.foldlWithKey
-               (\rmp trg srcs
-                -> Map.foldlWithKey
-                   (\rmp src (Var idx _)
-                     -> Map.insert idx (Left (trg,src)) rmp
-                   ) rmp srcs
+               (\rmp blk (Var idx _)
+                -> Map.insert idx (Left blk) rmp
                ) Map.empty nxtBlks'
         rmp2 = Map.foldlWithKey
                (\rmp instr (Var idx _)
@@ -351,7 +348,7 @@ extractState succ doLift = do
                       Just succ' -> do
                         succ'' <- liftIO $ readIORef succ'
                         return (\st -> (not' $ app and' $
-                                        assignPartial (liftNxtBlks st,liftNxtInstrs st) (stateLifted succ'')){- .&&.
+                                        assignPartial (liftNxtBlks st,liftNxtInstrs st) (stateLifted succ'')) {-.&&.
                                        (app and' $ assignPartial (liftNxtInputs st) (stateLiftedInputs succ''))-}
                                )
                     (part,partInp) <- liftIO $ withSMTPool (ic3Lifting env) $
@@ -410,7 +407,7 @@ liftState (cur::st,inp::inp,inp',nxt) vals@(vcur,vinp,vinp',vnxt) = stack $ do
                                      ) (cmp1,0)
                           [(inp,()),(liftArgs vinp ann_inp,())] ann_inp
   --assert $ argEq inp (liftArgs vinp ann_inp)
-  assert $ argEq inp' (liftArgs vinp' ann_inp)
+  --assert $ argEq inp' (liftArgs vinp' ann_inp)
   assert vnxt
   res <- checkSat
   when res $ error "The model appears to be non-deterministic."
@@ -442,7 +439,7 @@ initiationAbstract state = do
       assert $ toDomainTerm state (ic3Domain env) vars
       checkSat
 
-initiationConcrete :: (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (Maybe Bool)),
+initiationConcrete :: (Map (Ptr BasicBlock) (Maybe Bool),
                        Map (Ptr Instruction) (Maybe UntypedValue)) -> IC3 Bool
 initiationConcrete vals = do
   env <- get
@@ -466,7 +463,8 @@ updateAbstraction ref = do
     then return False
     else (do
              full <- liftIO $ domainAbstract
-                     (\x -> argEq x (liftArgs (stateFull st) (realizedLatchActs mdl,realizedLatches mdl)){-app and' $ assignPartial x (stateLifted st)-})
+                     (\x -> argEq x (liftArgs (stateFull st) (blockAnnotation mdl,
+                                                              latchAnnotation mdl)){-app and' $ assignPartial x (stateLifted st)-})
                      dom
              lifted <- case stateSuccessor st of
                Nothing -> lift full (stateInputs st) (stateNxtInputs st) Nothing
@@ -577,12 +575,12 @@ abstractConsecution fi abs_st succ = do
                                        (consVarsPrimed $ ic3Consecution env))
     assert $ frameActivation' env fi
     -- Henning: This tries to take the lifted inputs of the successor into account (doesn't do anything yet)
-    {-case succ of
+    case succ of
      Nothing -> return ()
      Just s -> do
        succ' <- liftIO $ readIORef s
        assert $ app and' $ assignPartial (consNxtInp $ ic3Consecution env)
-         (stateLiftedInputs succ')-}
+         (stateLiftedInputs succ')
     res <- checkSat
     if res
       then (do
@@ -605,7 +603,7 @@ abstractConsecution fi abs_st succ = do
       return $ Left absCore'
 
 concreteConsecution :: Int
-                       -> (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (Maybe Bool)),
+                       -> (Map (Ptr BasicBlock) (Maybe Bool),
                            Map (Ptr Instruction) (Maybe UntypedValue))
                        -> IORef (State ValueMap (LatchActs,ValueMap))
                        -> IC3 (Maybe (IORef (State ValueMap (LatchActs,ValueMap))))
@@ -615,10 +613,10 @@ concreteConsecution fi st succ = do
     push
     assert $ frameActivation' env fi
     assert (app or' $ fmap not' $ assignPartial (consVars $ ic3Consecution env) st)
-    {-do
+    do
       succ' <- liftIO $ readIORef succ
       assert $ app and' $ assignPartial (consNxtInp $ ic3Consecution env)
-        (stateLiftedInputs succ')-}
+        (stateLiftedInputs succ')
     mapM_ assert (assignPartial (consVarsPrimed $ ic3Consecution env) st)
     checkSat
   res' <- if res
@@ -780,7 +778,6 @@ baseCases st = do
   (asserts0,real1) <- declareAssertions st real0 st0
   comment "Declare output acts:"
   (blks1,real2) <- declareOutputActs st real1 st0
-  comment $ show $ fmap Map.keys blks1
   comment "Declare output instrs:"
   (instrs1,real3) <- declareOutputInstrs st real2 st0
   comment $ show instrs1
@@ -870,7 +867,7 @@ strengthen = strengthen' True
 check :: RealizedBlocks -> Options -> IO (Maybe ErrorTrace)
 check st opts = do
   let prog:args = words (optBackendBase opts)
-  backend <- createSMTPipe prog args {- >>= namedDebugBackend "base" -}
+  backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
   case tr of
     Just tr' -> return (Just tr')
@@ -895,8 +892,7 @@ check st opts = do
           cex <- gets ic3CexState
           tr <- liftIO $ getWitnessTr cex
           res <- liftIO $ do
-            pipe <- createSMTPipe "z3" ["-in","-smt2"]
-            backend <- namedDebugBackend "err" pipe
+            backend <- createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "err" pipe
             withSMTBackendExitCleanly backend $ do
               acts0 <- createBlockVars "" real
               assert $ initialState real acts0
@@ -1116,8 +1112,8 @@ interpolate j s = do
       = snd $ foldExpr (\_ expr
                         -> ((),case expr of
                                Var idx ann -> case Map.lookup idx rev of
-                                 Just (Left (trg,src))
-                                   -> case cast ((blks Map.! trg) Map.! src) of
+                                 Just (Left blk)
+                                   -> case cast (blks Map.! blk) of
                                    Just r -> r
                                  Just (Right instr)
                                    -> case entypeValue cast (instrs Map.! instr) of
@@ -1277,7 +1273,7 @@ frameActivation' env fi
 addEqProperties :: IC3 ()
 addEqProperties = do
   mdl <- asks ic3Model
-  let props = mkEqs (Map.toList (realizedLatches mdl))
+  let props = mkEqs (Map.toList (latchAnnotation mdl))
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm -> do
                         (_,ndom) <- liftIO $ domainAdd trm cdomain
@@ -1300,7 +1296,7 @@ addEqProperties = do
 addCmpProperties :: IC3 ()
 addCmpProperties = do
   mdl <- asks ic3Model
-  let props = mkCmps (Map.toList (realizedLatches mdl))
+  let props = mkCmps (Map.toList (latchAnnotation mdl))
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm -> do
                         (_,ndom) <- liftIO $ domainAdd trm cdomain
@@ -1340,9 +1336,7 @@ addCmpProperties = do
 addBlkProperties :: IC3 ()
 addBlkProperties = do
   mdl <- asks ic3Model
-  let props = mkActs [ (trg,src)
-                     | (trg,srcs) <- Map.toList (realizedLatchActs mdl)
-                     , (src,act) <- Map.toList srcs ] []
+  let props = mkActs (Map.keys (blockAnnotation mdl)) []
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm -> do
                         (_,ndom) <- liftIO $ domainAdd trm cdomain
@@ -1351,11 +1345,11 @@ addBlkProperties = do
   modify $ \env -> env { ic3Domain = ndomain }
   where
     mkActs [] _ = []
-    mkActs ((trg,src):xs) ys = (\(acts,_) -> app and'
-                                             (((acts Map.! trg) Map.! src):
-                                              [ not' $ ((acts Map.! trg') Map.! src')
-                                              | (trg',src') <- xs++ys ])
-                               ):(mkActs xs ((trg,src):ys))
+    mkActs (blk:xs) ys = (\(acts,_) -> app and'
+                                       ((acts Map.! blk):
+                                        [ not' $ acts Map.! blk'
+                                        | blk' <- xs++ys ])
+                         ):(mkActs xs (blk:ys))
 
 addAssertProperties :: IC3 ()
 addAssertProperties = do
@@ -1377,12 +1371,11 @@ addAssertProperties = do
     defInput (ProxyArgValue (cast -> Just (_::Integer)) ann)
       = UntypedExprValue (constant (0::Integer))
 
-renderState :: (Map (Ptr BasicBlock) (Map (Ptr BasicBlock) (Maybe Bool)),
+renderState :: (Map (Ptr BasicBlock) (Maybe Bool),
                 Map (Ptr Instruction) (Maybe UntypedValue)) -> IC3 String
 renderState (acts,mp) = do
-  blk <- findBlk [ (trg,src,act)
-                 | (trg,srcs) <- Map.toList acts
-                 , (src,Just act) <- Map.toList srcs ]
+  blk <- findBlk [ (blk,act)
+                 | (blk,Just act) <- Map.toList acts ]
   instrs <- mapM (\(instr,val) -> do
                      isNamed <- liftIO $ hasName instr
                      instrName <- if isNamed
@@ -1392,21 +1385,15 @@ renderState (acts,mp) = do
                  ) [ (instr,val) | (instr,Just val) <- Map.toList mp ]
   return $ blk++"["++concat (intersperse "," instrs)++"]"
   where
-    findBlk xs = case [ (trg,src) | (trg,src,True) <- xs ] of
-      [(trg,src)] -> do
-        srcIsNamed <- if src==nullPtr
-                      then return False
-                      else liftIO $ hasName src
-        srcName <- if srcIsNamed
-                   then liftIO $ getNameString src
-                   else return ""
-        trgIsNamed <- if trg==nullPtr
-                      then return False
-                      else liftIO $ hasName trg
-        trgName <- if trgIsNamed
-                   then liftIO $ getNameString trg
-                   else return "<unnamed>"
-        return (srcName++"."++trgName)
+    findBlk xs = case [ blk | (blk,True) <- xs ] of
+      [blk] -> do
+        isNamed <- if blk==nullPtr
+                   then return False
+                   else liftIO $ hasName blk
+        name <- if isNamed
+                then liftIO $ getNameString blk
+                else return "<unnamed>"
+        return name
       [] -> return "<any>"
 
 renderAbstractState :: AbstractState (LatchActs,ValueMap)
