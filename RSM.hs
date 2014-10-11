@@ -1,7 +1,7 @@
 {-# LANGUAGE PackageImports,FlexibleContexts #-}
 module RSM where
 
-import Realization2
+import Realization
 import State
 
 import Data.Map (Map)

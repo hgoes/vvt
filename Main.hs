@@ -1,6 +1,6 @@
 module Main where
 
-import Realization2
+import Realization
 import Options
 import CTIGAR
 

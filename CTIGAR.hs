@@ -3,7 +3,7 @@
              ViewPatterns #-}
 module CTIGAR where
 
-import Realization2
+import Realization
 import Domain
 import State
 import SMTPool
