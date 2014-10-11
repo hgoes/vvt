@@ -580,8 +580,9 @@ getModel' opts init ana real = do
                          (\gates blk _
                            -> if blk==nullPtr && useErrorState opts
                               then (let (act,gates') = addGate gates
-                                                       (Gate { gateTransfer = \inp -> app or' [ not' (c inp)
-                                                                                              | c <- allAsserts ]
+                                                       (Gate { gateTransfer = \inp -> app or' ([ not' (c inp)
+                                                                                               | c <- allAsserts ]++
+                                                                                               [((blockActivations real) Map.! nullPtr) inp])
                                                              , gateAnnotation = ()
                                                              , gateName = Just "err" })
                                     in (gates',const act))
@@ -596,13 +597,6 @@ getModel' opts init ana real = do
                                                                            , gateName = Just name })
                                                  in (gates',const act')
                          ) (gateMp real) (latchBlocks ana)
-    {-latchBlks' = if useErrorState opts
-                 then Map.insert nullPtr
-                      (\inp -> case allAsserts of
-                                [c] -> not' $ c inp
-                                cs -> app or' [ not' $ c inp | c <- cs ])
-                      latchBlks
-                 else latchBlks-}
     real1 = real { gateMp = gates1 }
     latchInstrs = Map.intersection (instructions real1) (implicitLatches ana)
     mkITE i [] (_,_,instrs) = castUntypedExprValue (instrs Map.! i)

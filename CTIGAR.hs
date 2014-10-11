@@ -1462,6 +1462,7 @@ checkFixpoint level = do
       assert $ app and' assumps
       (acts',real2) <- declareOutputActs mdl real1 (acts,inp,instrs)
       (instrs',real3) <- declareOutputInstrs mdl real2 (acts,inp,instrs)
+      assert $ blockConstraint acts'
       assert $ not' $ fp (acts',instrs')
       checkSat
     when incorrectFix (error "Fixpoint is doesn't hold in one transition")
