@@ -355,8 +355,7 @@ extractState succ doLift = do
                     (part,partInp) <- liftIO $ withSMTPool (ic3Lifting env) $
                                       \vars' -> liftState ((liftBlks vars',liftInstrs vars'),
                                                            liftInputs vars',
-                                                           liftNxtInputs vars',
-                                                           (liftNxtBlks vars',liftNxtInstrs vars'))
+                                                           liftNxtInputs vars')
                                                 (vars,inp,inp',nxt vars')
                     ic3DebugAct 3 (do
                                       str_part <- renderState part
@@ -387,10 +386,10 @@ extractState succ doLift = do
                                , stateDomainHash = 0 }
   liftIO $ newIORef state
 
-liftState :: (PartialArgs st,PartialArgs inp) => (st,inp,inp,st)
+liftState :: (PartialArgs st,PartialArgs inp) => (st,inp,inp)
              -> (Unpacked st,Unpacked inp,Unpacked inp,SMTExpr Bool)
              -> SMT (PartialValue st,PartialValue inp)
-liftState (cur::st,inp::inp,inp',nxt) vals@(vcur,vinp,vinp',vnxt) = stack $ do
+liftState (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
   let ann_cur = extractArgAnnotation cur
       ann_inp = extractArgAnnotation inp
   ((cmp1,len_st),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
