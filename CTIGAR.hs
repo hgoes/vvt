@@ -47,6 +47,7 @@ import Data.Maybe (catMaybes)
 import Data.List (intersperse)
 import Control.Exception (finally)
 import Data.Either (partitionEithers)
+import Data.Ord (comparing,Down(..))
 
 import Debug.Trace
 
@@ -921,16 +922,18 @@ check st opts = do
       rst <- readIORef st
       rest <- getWitnessTr (stateSuccessor rst)
       return $ (stateLifted rst):rest
-    constructTrace _ _ _ [] errs = do
+    constructTrace real acts latch [] errs = do
+      inps <- createInputVars "" real
+      (ass,_) <- declareAssertions real Map.empty (acts,inps,latch)
       comment "Assertions"
-      assert $ app or' (fmap not' errs)
+      assert $ app or' (fmap not' (ass++errs))
       return []
     constructTrace real acts latch ((cacts,clatch):xs) asserts = do
       comment "Assignments"
       assert $ app and' $ assignPartial acts cacts
       assert $ app and' $ assignPartial latch clatch
       comment "Inputs"
-      inps <- argVarsAnn (realizedInputs real)
+      inps <- createInputVars "" real
       (assumps,real0) <- declareAssumptions real Map.empty (acts,inps,latch)
       (nacts,real1) <- declareOutputActs real real0 (acts,inps,latch)
       (nlatch,real2) <- declareOutputInstrs real real1 (acts,inps,latch)
@@ -938,7 +941,7 @@ check st opts = do
       comment "Assumptions"
       assert $ app and' assumps
       rest <- constructTrace real nacts nlatch xs (ass++asserts)
-      return ((acts,latch,inps):rest)
+      return ((acts,inps,latch):rest)
     getWitness _ [] = return []
     getWitness real (x:xs) = do
       concr <- getConcreteValues real x
@@ -1385,16 +1388,20 @@ renderState (acts,mp) = do
                  ) [ (instr,val) | (instr,Just val) <- Map.toList mp ]
   return $ blk++"["++concat (intersperse "," instrs)++"]"
   where
-    findBlk xs = case [ blk | (blk,True) <- xs ] of
-      [blk] -> do
-        isNamed <- if blk==nullPtr
-                   then return False
-                   else liftIO $ hasName blk
-        name <- if isNamed
-                then liftIO $ getNameString blk
-                else return "<unnamed>"
-        return name
-      [] -> return "<any>"
+    findBlk xs = do
+      lst <- mapM (\(blk,act) -> do
+                      name <- if blk==nullPtr
+                              then return "err"
+                              else (do
+                                       isNamed <- liftIO $ hasName blk
+                                       if isNamed
+                                         then liftIO $ getNameString blk
+                                         else return "<unnamed>")
+                      if act
+                        then return name
+                        else return $ "!"++name
+                  ) (sortBy (comparing (Down . snd)) xs)
+      return $ concat $ intersperse "," lst
 
 renderAbstractState :: AbstractState (LatchActs,ValueMap)
                        -> IC3 String
