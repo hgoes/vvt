@@ -164,7 +164,7 @@ consecutionNew backend mdl = do
     instrs <- createInstrVars "" mdl
     let st1 = (blks,inp,instrs)
     (nxtBlks,real1) <- declareOutputActs mdl Map.empty st1
-    assert (blockConstraint nxtBlks)
+    --assert (blockConstraint nxtBlks)
     (nxtInstrs,real2) <- declareOutputInstrs mdl real1 st1
     (asserts1,real3) <- declareAssertions mdl real2 st1
     (assumps1,real4) <- declareAssumptions mdl real3 st1
