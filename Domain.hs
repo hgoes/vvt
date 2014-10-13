@@ -27,26 +27,51 @@ import "mtl" Control.Monad.Trans (liftIO)
 
 -- | Stores a lattice of abstractions
 --   An edge from A to B signifies that A includes B
-data Domain a = Domain { domainGraph :: Gr (a -> SMTExpr Bool,SMTExpr Bool) ()
-                       , domainNodes :: Map (SMTExpr Bool) Node
+data Domain a = Domain { domainGraph :: Gr (a -> SMTExpr Bool) ()
                        , domainNextNode :: Node
-                       , domainPool :: SMTPool a
+                       , domainPool :: SMTPool (DomainInstance a) a
+                       , domainVerbosity :: Int
                        }
+
+data DomainInstance a = DomainInstance { domainNodes :: Map Node (SMTExpr Bool)
+                                       , domainNodesRev :: Map (SMTExpr Bool) Node
+                                       , domainInstNext :: Node
+                                       }
 
 --type AbstractState a = Map Node Bool
 type AbstractState a = Vector (Node,Bool)
 
-initialDomain :: SMTPool a -> Domain a
-initialDomain pool
-  = Domain { domainGraph = mkGraph
-                           [(domainTop,(const $ constant True,constant True))
-                           ,(domainBot,(const $ constant False,constant False))]
-                           [(domainTop,domainBot,())]
-           , domainNodes = Map.fromList [(constant True,domainTop)
-                                        ,(constant False,domainBot)]
-           , domainNextNode = 2
-           , domainPool = pool
-           }
+initialDomain :: SMTBackend b IO => Int -> IO b -> SMT a -> IO (Domain a)
+initialDomain verb backend alloc = do
+  let initInst = DomainInstance { domainNodes = Map.fromList
+                                                [(domainTop,constant True)
+                                                ,(domainBot,constant False)]
+                                , domainNodesRev = Map.fromList
+                                                   [(constant True,domainTop)
+                                                   ,(constant False,domainBot)]
+                                , domainInstNext = 2 }
+  pool <- createSMTPool' backend initInst $ do
+    setOption (ProduceModels True)
+    alloc
+  return $ Domain { domainGraph = mkGraph
+                                  [(domainTop,(const $ constant True))
+                                  ,(domainBot,(const $ constant False))]
+                                  [(domainTop,domainBot,())]
+                  , domainNextNode = 2
+                  , domainPool = pool
+                  , domainVerbosity = verb
+                  }
+
+updateInstance :: Domain a -> DomainInstance a -> a -> SMT (DomainInstance a)
+updateInstance dom inst vars
+  = foldlM (\cinst nd -> do
+               let Just prop = lab (domainGraph dom) nd
+               cprop <- defConstNamed ("pred"++show nd) (prop vars)
+               return (cinst { domainNodes = Map.insert nd cprop (domainNodes cinst)
+                             , domainNodesRev = Map.insert cprop nd (domainNodesRev cinst)
+                             })
+           ) (inst { domainInstNext = domainNextNode dom })
+    [(domainInstNext inst)..(domainNextNode dom)-1]
 
 domainTop,domainBot :: Node
 domainTop = 0
@@ -97,57 +122,26 @@ checkImplication e1 e2 = stack $ do
   return $ not r
 
 domainAdd :: (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
-domainAdd abs dom = withSMTPool (domainPool dom) $
-                    \vars -> {-liftIO (putStrLn ("Adding term "++show (abs vars))) >> -} domainAdd' vars abs
-  where
-    domainFindParents vars cur term = do
-      let curCtx = context (domainGraph dom) cur
-          (curTermF,curTerm) = lab' curCtx
-      impl <- case quickImplication (term vars) (curTermF vars) of
-               Just r -> return r
-               Nothing -> checkImplication (term vars) curTerm
-      if not impl
-        then return Nothing
-        else (do
-                 parents <- mapM (\s -> domainFindParents vars s term
-                                 ) (suc' curCtx)
-                 case catMaybes parents of
-                   [] -> return $ Just (Set.singleton cur)
-                   xs -> return $ Just (Set.unions xs))
-
-    domainFindChildren vars cur term = do
-      let curCtx = context (domainGraph dom) cur
-          (curTermF,curTerm) = lab' curCtx
-      impl <- case quickImplication (curTermF vars) (term vars) of
-               Just r -> return r
-               Nothing -> checkImplication curTerm (term vars)
-      if not impl
-        then return Nothing
-        else (do
-                 childs <- mapM (\s -> domainFindChildren vars s term
-                                ) (pre' curCtx)
-                 case catMaybes childs of
-                   [] -> return $ Just (Set.singleton cur)
-                   xs -> return $ Just (Set.unions xs))
-
-    domainAdd' vars term = {-liftIO (print $ domainNodes dom) >>-} case Map.lookup (term vars) (domainNodes dom) of
-      Just nd -> {- liftIO (putStrLn "Already in.") >> -} return (nd,dom)
-      Nothing -> do
-        termStr <- renderExpr (term vars)
-        --liftIO $ putStrLn ("Adding term "++termStr)
-        -- Because we have top and bottom nodes, these must succeed
-        --liftIO $ putStrLn "Finding parents..."
-        Just parents <- domainFindParents vars domainTop term
-        --liftIO $ putStrLn "Finding children..."
-        Just childs <- domainFindChildren vars domainBot term
-        --liftIO $ putStrLn "done."
-        let intersection = Set.intersection parents childs
-        case Set.toList intersection of -- Is the term redundant?
-          [equiv] -> return (equiv,dom) -- Do we have to account for the variables in the term?
+domainAdd pred dom
+  = withSMTPool' (domainPool dom) $
+    \inst vars -> do
+      ninst <- updateInstance dom inst vars
+      case Map.lookup (pred vars) (domainNodesRev ninst) of
+       Just nd -> return ((nd,dom),ninst)
+       Nothing -> do
+         Just parents <- domainFindParents ninst vars domainTop pred
+         Just childs <- domainFindChildren ninst vars domainBot pred
+         let intersection = Set.intersection parents childs
+         case Set.toList intersection of -- Is the term redundant?
+          [equiv] -> return ((equiv,dom),ninst) -- Do we have to account for the variables in the term?
           [] -> do
-            entr <- defConst (term vars)
+            if domainVerbosity dom >= 2
+              then (do
+                       termStr <- renderExpr (pred vars)
+                       liftIO $ putStrLn $ "Adding predicate "++termStr)
+              else return ()
             let newNd = domainNextNode dom
-                gr0 = insNode (newNd,(term,entr)) (domainGraph dom)
+                gr0 = insNode (newNd,pred) (domainGraph dom)
                 gr1 = foldl (\cgr parent
                              -> let (Just (pred,_,pterm,succs),cgr') = match parent cgr
                                     succs' = foldl (\csucc x -> delete ((),x) csucc) succs childs
@@ -160,24 +154,59 @@ domainAdd abs dom = withSMTPool (domainPool dom) $
                                     pred'' = ((),newNd):pred'
                                 in (pred'',child,cterm,succs) & cgr'
                             ) gr1 childs
-            return (newNd,dom { domainGraph = gr2
-                              , domainNodes = Map.insert (term vars) newNd (domainNodes dom)
-                              , domainNextNode = succ newNd
-                              })
+            return ((newNd,dom { domainGraph = gr2
+                               , domainNextNode = succ newNd }),ninst)
+  where
+    domainFindParents inst vars cur term = do
+      let Just curTerm = Map.lookup cur (domainNodes inst)
+          curCtx = context (domainGraph dom) cur
+          curTermF = lab' curCtx
+      impl <- case quickImplication (term vars) (curTermF vars) of
+               Just r -> return r
+               Nothing -> checkImplication (term vars) curTerm
+      if not impl
+        then return Nothing
+        else (do
+                 parents <- mapM (\s -> domainFindParents inst vars s term
+                                 ) (suc' curCtx)
+                 case catMaybes parents of
+                   [] -> return $ Just (Set.singleton cur)
+                   xs -> return $ Just (Set.unions xs))
+
+    domainFindChildren inst vars cur term = do
+      let Just curTerm = Map.lookup cur (domainNodes inst)
+          curCtx = context (domainGraph dom) cur
+          curTermF = lab' curCtx
+      impl <- case quickImplication (curTermF vars) (term vars) of
+               Just r -> return r
+               Nothing -> checkImplication curTerm (term vars)
+      if not impl
+        then return Nothing
+        else (do
+                 childs <- mapM (\s -> domainFindChildren inst vars s term
+                                ) (pre' curCtx)
+                 case catMaybes childs of
+                   [] -> return $ Just (Set.singleton cur)
+                   xs -> return $ Just (Set.unions xs))
 
 domainAbstract :: (a -> SMTExpr Bool)  -- ^ An expression which describes the concrete state
                   -> Domain a
                   -> IO (AbstractState a)
 domainAbstract expr dom = do
-  res <- withSMTPool (domainPool dom) $ \vars -> stack $ do
-    assert (expr vars)
-    let reprs = filter (\(nd,_) -> nd/=0 && nd/=1) $ labNodes $ domainGraph dom
-    sol <- checkSat
-    when (not sol) $ error $ "Concrete state "++show (expr vars)++" doesn't have a valid abstraction"
-    mapM (\(nd,(_,repr)) -> do
-             val <- getValue repr
-             return (nd,val)
-         ) reprs
+  res <- withSMTPool' (domainPool dom) $ \inst vars -> do
+    ninst <- updateInstance dom inst vars
+    lst <- stack $ do
+      assert (expr vars)
+      let reprs = filter (\(nd,_) -> nd/=domainTop && nd/=domainBot) $
+                  Map.toList $ domainNodes ninst
+      sol <- checkSat
+      when (not sol) (error $ "Concrete state "++show (expr vars)++
+                      " doesn't have a valid abstraction")
+      mapM (\(nd,repr) -> do
+               val <- getValue repr
+               return (nd,val)
+           ) reprs
+    return (lst,ninst)
   return (Vec.fromList res)
 
 toDomainTerm :: AbstractState a -> Domain a -> a -> SMTExpr Bool
@@ -186,11 +215,11 @@ toDomainTerm state dom vars
                then term vars
                else not' (term vars)
              | (nd,act) <- Vec.toList state,
-               let Just (term,_) = lab (domainGraph dom) nd]
+               let Just term = lab (domainGraph dom) nd]
 
 toDomainTerms :: AbstractState a -> Domain a -> a -> Vector (Node,SMTExpr Bool,Bool)
 toDomainTerms state dom vars
-  = fmap (\(nd,act) -> let Just (term,_) = lab (domainGraph dom) nd
+  = fmap (\(nd,act) -> let Just term = lab (domainGraph dom) nd
                        in (nd,term vars,act)
          ) state
 
@@ -226,6 +255,6 @@ renderDomainTerm st dom
                     then term vars
                     else not' $ term vars
                   | (nd,act) <- Vec.toList st,
-                    let Just (term,_) = lab (domainGraph dom) nd]
+                    let Just term = lab (domainGraph dom) nd]
       strs <- mapM renderExpr exprs
       return $ "{"++intercalate ", " strs++"}"

@@ -73,9 +73,9 @@ data IC3Env
   = IC3Env { ic3Domain :: Domain (LatchActs,ValueMap) -- The domain talks about the outputs
            , ic3InitialProperty :: Node
            , ic3Consecution :: Consecution ValueMap (LatchActs,ValueMap)
-           , ic3Lifting :: SMTPool LiftingState
-           , ic3Initiation :: SMTPool (LatchActs,ValueMap)
-           , ic3Interpolation :: SMTPool InterpolationState
+           , ic3Lifting :: SMTPool () LiftingState
+           , ic3Initiation :: SMTPool () (LatchActs,ValueMap)
+           , ic3Interpolation :: SMTPool () InterpolationState
            , ic3LitOrder :: LitOrder
            , ic3Frames :: Vector (Frame (LatchActs,ValueMap))
            , ic3CexState :: Maybe (IORef (State ValueMap (LatchActs,ValueMap)))
@@ -283,7 +283,11 @@ runIC3 cfg act = do
     blks <- createBlockVars "" mdl
     instrs <- createInstrVars "" mdl
     return (blks,instrs)
-  let dom = initialDomain domainPool
+  dom <- initialDomain (ic3DebugLevel cfg) domainBackend
+         (do
+             blks <- createBlockVars "" mdl
+             instrs <- createInstrVars "" mdl
+             return (blks,instrs))
   (initNode,dom') <- domainAdd (\(blks,_)
                                 -> initialState mdl blks
                                ) dom
