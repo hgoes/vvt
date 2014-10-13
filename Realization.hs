@@ -544,6 +544,10 @@ getModel' opts init ana real = do
                         (\i (phis,_) -> do
                             creal <- get
                             trg <- lift $ instructionGetParent i
+                            let trg_act = case Map.lookup trg (blockActivations creal) of
+                                  Just a -> a
+                                trg_val = case Map.lookup i (instructions creal) of
+                                  Just v -> v
                             tp <- lift $ getType i >>= translateType
                             name <- lift $ getNameString i
                             phis' <- mapM (\(src,val) -> do
@@ -556,7 +560,8 @@ getModel' opts init ana real = do
                             withProxyArgValue tp $
                               \(_::a) ann -> do
                                 let (expr,ngates) = addGate (gateMp creal)
-                                                    (Gate { gateTransfer = mkITE i phis' :: LLVMInput -> SMTExpr a
+                                                    (Gate { gateTransfer = mkITE trg_act trg_val
+                                                                           i phis' :: LLVMInput -> SMTExpr a
                                                           , gateAnnotation = ann
                                                           , gateName = Just name })
                                 put $ creal { gateMp = ngates }
@@ -599,9 +604,13 @@ getModel' opts init ana real = do
                          ) (gateMp real) (latchBlocks ana)
     real1 = real { gateMp = gates1 }
     latchInstrs = Map.intersection (instructions real1) (implicitLatches ana)
-    mkITE i [] (_,_,instrs) = castUntypedExprValue (instrs Map.! i)
+    mkITE trg_act trg_val i [] inp@(_,_,instrs) = ite (trg_act inp)
+                                                  (castUntypedExprValue (trg_val inp))
+                                                  (castUntypedExprValue (instrs Map.! i))
     --mkITE [(_,val)] inp = castUntypedExprValue (val inp)
-    mkITE i ((cond,val):xs) inp = ite (cond inp) (castUntypedExprValue $ val inp) (mkITE i xs inp)
+    mkITE trg_act trg_val i ((cond,val):xs) inp = ite (cond inp)
+                                                  (castUntypedExprValue $ val inp)
+                                                  (mkITE trg_act trg_val i xs inp)
     rasserts = if useErrorState opts
                then (case Map.lookup nullPtr (blockActivations real1) of
                       Just act -> [\inp -> not' (act inp)])
