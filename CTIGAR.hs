@@ -47,7 +47,7 @@ import Data.Maybe (catMaybes)
 import Data.List (intersperse)
 import Control.Exception (finally)
 import Data.Either (partitionEithers)
-import Data.Ord (comparing,Down(..))
+import Data.Ord (comparing)
 
 import Debug.Trace
 
@@ -1399,7 +1399,7 @@ renderState (acts,mp) = do
                       if act
                         then return name
                         else return $ "!"++name
-                  ) (sortBy (comparing (Down . snd)) xs)
+                  ) (sortBy (comparing (not . snd)) xs)
       return $ concat $ intersperse "," lst
 
 renderAbstractState :: AbstractState (LatchActs,ValueMap)
