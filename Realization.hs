@@ -541,39 +541,48 @@ getModel' :: RealizationOptions -> Ptr BasicBlock -> Analyzation -> Realization
 getModel' opts init ana real = do
   (phiInstrs,real2) <- runStateT
                        (Map.traverseWithKey
-                        (\i (phis,_) -> do
-                            creal <- get
-                            trg <- lift $ instructionGetParent i
-                            let trg_act = case Map.lookup trg (blockActivations creal) of
-                                  Just a -> a
-                                trg_val = case Map.lookup i (instructions creal) of
-                                  Just v -> v
-                            tp <- lift $ getType i >>= translateType
-                            name <- lift $ getNameString i
-                            phis' <- mapM (\(src,val) -> do
-                                              let act = case Map.lookup trg (edgeActivations creal) of
-                                                    Just acts -> case Map.lookup src acts of
-                                                      Just a -> a
-                                              val' <- lift $ realizeValue ana creal val
-                                              return (act,val')
-                                          ) phis
-                            withProxyArgValue tp $
-                              \(_::a) ann -> do
-                                let (expr,ngates) = addGate (gateMp creal)
-                                                    (Gate { gateTransfer = mkITE trg_act trg_val
-                                                                           i phis' :: LLVMInput -> SMTExpr a
-                                                          , gateAnnotation = ann
-                                                          , gateName = Just name })
-                                put $ creal { gateMp = ngates }
-                                return (tp,const $ UntypedExprValue expr)
+                        (\i (phis,_)
+                         -> case phis of
+                             [] -> return Nothing
+                             _ -> do
+                               creal <- get
+                               trg <- lift $ instructionGetParent i
+                               let trg_act = case Map.lookup trg (blockActivations creal) of
+                                     Just a -> a
+                                   trg_val = case Map.lookup i (instructions creal) of
+                                     Just v -> v
+                                   is_implicit = case Map.lookup i (implicitLatches ana) of
+                                     Just _ -> True
+                                     Nothing -> False
+                               tp <- lift $ getType i >>= translateType
+                               name <- lift $ getNameString i
+                               phis' <- mapM (\(src,val) -> do
+                                                 let act = case Map.lookup trg (edgeActivations creal) of
+                                                       Just acts -> case Map.lookup src acts of
+                                                         Just a -> a
+                                                 val' <- lift $ realizeValue ana creal val
+                                                 return (act,val')
+                                             ) phis
+                               withProxyArgValue tp $
+                                 \(_::a) ann -> do
+                                   let (expr,ngates) = addGate (gateMp creal)
+                                                       (Gate { gateTransfer = mkITE (if is_implicit
+                                                                                     then Just (trg_act,trg_val)
+                                                                                     else Nothing)
+                                                                              i phis' :: LLVMInput -> SMTExpr a
+                                                             , gateAnnotation = ann
+                                                             , gateName = Just name })
+                                   put $ creal { gateMp = ngates }
+                                   return $ Just (tp,const $ UntypedExprValue expr)
                         ) (explicitLatches ana)
                        ) real1
+  let phiInstrs' = Map.mapMaybe id phiInstrs
   latchInstrs' <- Map.traverseWithKey (\i val -> do
                                           tp <- getType i >>= translateType
                                           return (tp,val)
                                       ) latchInstrs
   return $ RealizedBlocks { realizedLatchBlocks = latchBlks
-                          , realizedLatches = Map.union phiInstrs latchInstrs'
+                          , realizedLatches = Map.union phiInstrs' latchInstrs'
                           , realizedInputs = inputs real2
                           , realizedGates = gateMp real2
                           , realizedAssumes = assumes real2
@@ -604,13 +613,14 @@ getModel' opts init ana real = do
                          ) (gateMp real) (latchBlocks ana)
     real1 = real { gateMp = gates1 }
     latchInstrs = Map.intersection (instructions real1) (implicitLatches ana)
-    mkITE trg_act trg_val i [] inp@(_,_,instrs) = ite (trg_act inp)
-                                                  (castUntypedExprValue (trg_val inp))
-                                                  (castUntypedExprValue (instrs Map.! i))
-    --mkITE [(_,val)] inp = castUntypedExprValue (val inp)
-    mkITE trg_act trg_val i ((cond,val):xs) inp = ite (cond inp)
-                                                  (castUntypedExprValue $ val inp)
-                                                  (mkITE trg_act trg_val i xs inp)
+    mkITE (Just (trg_act,trg_val)) i [] inp@(_,_,instrs)
+      = ite (trg_act inp)
+        (castUntypedExprValue (trg_val inp))
+        (castUntypedExprValue (instrs Map.! i))
+    mkITE Nothing i [(_,val)] inp = castUntypedExprValue (val inp)
+    mkITE end i ((cond,val):xs) inp = ite (cond inp)
+                                      (castUntypedExprValue $ val inp)
+                                      (mkITE end i xs inp)
     rasserts = if useErrorState opts
                then (case Map.lookup nullPtr (blockActivations real1) of
                       Just act -> [\inp -> not' (act inp)])
