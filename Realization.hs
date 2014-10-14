@@ -834,6 +834,7 @@ passes entry
                createInternalizePass export_list)
     ,APass (createFunctionInliningPass 100)
     ,APass createCFGSimplificationPass
+    ,APass createAggressiveDCEPass
     ,APass createInstructionNamerPass]
 
 instance Show ConcreteValues where
