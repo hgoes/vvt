@@ -20,7 +20,8 @@ main = do
    Right (file,opts) -> do
      fun <- getProgram (optFunction opts) file
      --st <- realizeFunction (RealizationOptions True) fun
-     st <- getModel (RealizationOptions { useErrorState = True }) fun
+     st <- getModel (RealizationOptions { useErrorState = False
+                                        , exactPredecessors = False }) fun
      tr <- case optTimeout opts of
             Nothing -> check st opts
             Just to -> do

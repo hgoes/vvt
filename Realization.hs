@@ -83,6 +83,7 @@ data ConcreteValues = ConcreteValues { block :: Ptr BasicBlock
 type ErrorTrace = [ConcreteValues]
 
 data RealizationOptions = RealizationOptions { useErrorState :: Bool
+                                             , exactPredecessors :: Bool
                                              }
 
 blockGraph :: Ptr Function -> IO BlockGraph
@@ -189,7 +190,13 @@ realizeFunction opts ana fun = do
       real = Realization { edgeActivations = Map.empty
                          , blockActivations = if useErrorState opts
                                               then Map.singleton nullPtr
-                                                   (\(acts,_,_) -> acts Map.! nullPtr)
+                                                   (if exactPredecessors opts
+                                                    then (\(acts,_,_) -> app and' $ [acts Map.! nullPtr]++
+                                                                         [ not' act
+                                                                         | (blk,act) <- Map.toList acts
+                                                                         , blk/=nullPtr ]
+                                                         )
+                                                    else (\(acts,_,_) -> acts Map.! nullPtr))
                                               else Map.empty
                          , instructions = initInstrs
                          , inputs = Map.empty
@@ -221,7 +228,12 @@ realizeBlock :: RealizationOptions -> Analyzation -> Realization -> Ptr BasicBlo
 realizeBlock opts ana real blk = do
   name <- getNameString blk
   let latchCond = case Map.lookup blk (latchBlocks ana) of
-        Just _ -> [\(acts,_,_) -> acts Map.! blk]
+        Just _ -> if exactPredecessors opts
+                  then [\(acts,_,_) -> app and' $ [acts Map.! blk]++
+                                       [ not' act |(blk',act) <- Map.toList acts
+                                                  , blk'/=blk ]
+                       ]
+                  else [\(acts,_,_) -> acts Map.! blk]
         Nothing -> []
       normalCond = case Map.lookup blk (forwardEdges real) of
           Just incs -> incs
