@@ -314,6 +314,12 @@ realizeDefInstruction ana real i@(castDown -> Just opInst) f = do
                               [castUntypedExprValue (flhs inp)
                               ,castUntypedExprValue (frhs inp)]
           else error "Xor operator can't handle non-bool inputs."
+   Shl -> case castDown rhs of
+     Just cint -> do
+       v <- constantIntGetValue cint
+       rv <- apIntGetSExtValue v
+       f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer)*
+                      (2^(fromIntegral rv))
    _ -> error $ "Unknown operator: "++show op
 realizeDefInstruction ana real i@(castDown -> Just call) f = do
   fname <- getFunctionName call
