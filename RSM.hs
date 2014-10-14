@@ -84,24 +84,18 @@ extractLine coeffs = do
                                      then Nothing
                                      else Just c
                               ) rcoeffs
+      lhs vals = case Map.elems (Map.intersectionWith
+                                 (\co v -> case co of
+                                            1 -> castUntypedExprValue v
+                                            -1 -> -(castUntypedExprValue v)
+                                            _ -> (constant co)*(castUntypedExprValue v))
+                                 rcoeffs' vals) of
+                  [x] -> x
+                  xs -> app plus xs
   rconst <- getValue (coeffsConst coeffs)
-  return [\(_,vals) -> (case Map.elems (Map.intersectionWith
-                                        (\co v -> case co of
-                                                   1 -> castUntypedExprValue v
-                                                   -1 -> -(castUntypedExprValue v)
-                                                   _ -> (constant co)*(castUntypedExprValue v))
-                                        rcoeffs' vals) of
-                         [x] -> x
-                         xs -> app plus xs)
+  return [\(_,vals) -> (lhs vals)
                        .<=. (constant rconst)
-         ,\(_,vals) -> (case Map.elems (Map.intersectionWith
-                                        (\co v -> case co of
-                                                   1 -> castUntypedExprValue v
-                                                   -1 -> -(castUntypedExprValue v)
-                                                   _ -> (constant co)*(castUntypedExprValue v))
-                                        rcoeffs' vals) of
-                         [x] -> x
-                         xs -> app plus xs)
+         ,\(_,vals) -> (lhs vals)
                        .<. (constant rconst)]
 
 mineStates :: SMTBackend b IO => IO b -> RSMState
