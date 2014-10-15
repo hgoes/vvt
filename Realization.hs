@@ -829,9 +829,15 @@ data APass = forall p. PassC p => APass (IO (Ptr p))
 
 passes :: String -> [APass]
 passes entry
-  = [APass createPromoteMemoryToRegisterPass
-    ,APass createConstantPropagationPass
-    ,APass createLoopSimplifyPass
+  = [APass createTypeBasedAliasAnalysisPass
+    --,APass createScopedNoAliasAAPass
+    ,APass createBasicAliasAnalysisPass
+    ,APass createIPSCCPPass
+    ,APass createGlobalOptimizerPass
+    ,APass createDeadArgEliminationPass
+    ,APass createInstructionCombiningPass
+    ,APass createCFGSimplificationPass
+    ,APass createPruneEHPass
     ,APass (do
                m <- newCString entry
                arr <- newArray [m]
@@ -839,8 +845,41 @@ passes entry
                --export_list <- newArrayRefEmpty
                createInternalizePass export_list)
     ,APass (createFunctionInliningPass 100)
+    --,APass (createArgumentPromotionPass 0)
+    ,APass (createScalarReplAggregatesPass (-1) False (-1) (-1) (-1))
+    ,APass createEarlyCSEPass
+    ,APass createJumpThreadingPass
+    ,APass createCorrelatedValuePropagationPass
     ,APass createCFGSimplificationPass
+    ,APass createInstructionCombiningPass
+    ,APass createTailCallEliminationPass
+    ,APass createCFGSimplificationPass
+    ,APass createReassociatePass
+    --,APass createLoopRotatePass
+    ,APass createLICMPass
+    ,APass (createLoopUnswitchPass False)
+    ,APass createInstructionCombiningPass
+    ,APass createIndVarSimplifyPass
+    ,APass createLoopIdiomPass
+    ,APass createLoopDeletionPass
+    --,APass createSimpleLoopUnrollPass
+    ,APass (createGVNPass False)
+    ,APass createMemCpyOptPass
+    ,APass createSCCPPass
+    ,APass createInstructionCombiningPass
+    ,APass createJumpThreadingPass
+    ,APass createCorrelatedValuePropagationPass
+    ,APass createDeadStoreEliminationPass
     ,APass createAggressiveDCEPass
+    ,APass createCFGSimplificationPass
+    ,APass createInstructionCombiningPass
+    ,APass createBarrierNoopPass
+    ,APass createCFGSimplificationPass
+    ,APass createInstructionCombiningPass
+    --,APass (createLoopUnrollPass (-1) (-1) (-1) (-1))
+    --,APass createAlignmentFromAssumptionsPass
+    ,APass createGlobalDCEPass
+    ,APass createConstantMergePass
     ,APass createInstructionNamerPass]
 
 instance Show ConcreteValues where
