@@ -401,9 +401,14 @@ realizeDefInstruction ana real i@(castDown -> Just icmp) = do
    I_SGT -> NormalValue () $
             \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>.
                     (asSMTValue rhs inp)
-   I_UGT -> NormalValue () $
-            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>.
-                    (asSMTValue rhs inp)
+   I_UGT -> case rhs of
+     IntConst n -> NormalValue () $
+                   \inp -> app or' [(asSMTValue lhs inp) .>.
+                                    (constant n)
+                                   ,(asSMTValue lhs inp :: SMTExpr Integer) .<. 0]
+     _ -> NormalValue () $
+          \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>.
+                  (asSMTValue rhs inp)
    I_SLE -> NormalValue () $
             \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<=.
                     (asSMTValue rhs inp)
