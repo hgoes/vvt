@@ -340,11 +340,19 @@ realizeDefInstruction ana real i@(castDown -> Just icmp) f = do
                           (lhs inp)
    I_SGE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>=.
                            (castUntypedExprValue (rhs inp))
+   I_UGE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>=.
+                           (castUntypedExprValue (rhs inp))
    I_SGT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>.
+                           (castUntypedExprValue (rhs inp))
+   I_UGT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>.
                            (castUntypedExprValue (rhs inp))
    I_SLE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<=.
                            (castUntypedExprValue (rhs inp))
+   I_ULE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<=.
+                           (castUntypedExprValue (rhs inp))
    I_SLT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<.
+                           (castUntypedExprValue (rhs inp))
+   I_ULT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<.
                            (castUntypedExprValue (rhs inp))
 realizeDefInstruction ana real i@(castDown -> Just (zext::Ptr ZExtInst)) f = do
   op <- getOperand zext 0
