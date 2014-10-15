@@ -303,7 +303,9 @@ defineInstr ana real instr (NormalValue tp f) = do
                                  (instructions real)
                 }
 defineInstr ana real instr val
-  | Map.member instr (implicitLatches ana) = error "Special value is latched."
+  | Map.member instr (implicitLatches ana)
+    = withSMTValue val $
+      \ann val' -> defineInstr ana real instr (NormalValue ann val')
   | otherwise = return $ real { instructions = Map.insert instr val
                                                (instructions real)
                               }
