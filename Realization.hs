@@ -23,6 +23,7 @@ import Data.Traversable (mapAccumL,sequence,traverse,mapM)
 import Prelude hiding (sequence,mapM,concat)
 import Data.List (intersperse)
 import Data.Either (partitionEithers)
+import Data.Typeable (cast)
 
 type ValueMap = Map (Ptr Instruction) (SMTExpr UntypedValue)
 
@@ -33,9 +34,11 @@ data LatchState = Defined (Ptr BasicBlock)
                 | DefinedWhen (Ptr BasicBlock)
 
 data Analyzation = Analyzation { instructionState :: Map (Ptr Instruction) LatchState
-                               , implicitLatches :: Map (Ptr Instruction) (Ptr BasicBlock)
+                               , implicitLatches :: Map (Ptr Instruction) (ProxyArgValue,
+                                                                           Ptr BasicBlock)
                                , explicitLatches :: Map (Ptr Instruction)
-                                                    ([(Ptr BasicBlock,Ptr Value)],
+                                                    (ProxyArgValue,
+                                                     [(Ptr BasicBlock,Ptr Value)],
                                                      [(Ptr BasicBlock,Ptr Value)])
                                , latchBlocks :: Map (Ptr BasicBlock) ()
                                , analyzedBlocks :: Set (Ptr BasicBlock)
@@ -51,13 +54,17 @@ data Realization = Realization { edgeActivations :: Map (Ptr BasicBlock)
                                , blockActivations :: Map (Ptr BasicBlock)
                                                      (LLVMInput -> SMTExpr Bool)
                                , instructions :: Map (Ptr Instruction)
-                                                 (LLVMInput -> SMTExpr UntypedValue)
+                                                 RealizedValue
                                , inputs :: Map (Ptr Instruction) ProxyArgValue
                                , forwardEdges :: Map (Ptr BasicBlock) [LLVMInput -> SMTExpr Bool]
                                , asserts :: Map (Ptr BasicBlock) [LLVMInput -> SMTExpr Bool]
                                , assumes :: [LLVMInput -> SMTExpr Bool]
                                , gateMp :: GateMap LLVMInput
                                }
+
+data RealizedValue = forall a. SMTValue a => NormalValue (SMTAnnotation a) (LLVMInput -> SMTExpr a)
+                   | IntConst Integer
+                   | OrList [LLVMInput -> SMTExpr Integer]
 
 data BlockGraph = BlockGraph { nodeMap :: Map (Ptr BasicBlock) Gr.Node
                              , dependencies :: Gr.Gr (Ptr BasicBlock) ()
@@ -141,10 +148,11 @@ analyzeValue :: Analyzation -> Ptr Value -> IO Analyzation
 analyzeValue ana (castDown -> Just instr)
   = case Map.lookup instr (instructionState ana) of
   Just (Defined _) -> return ana
-  Just (DefinedWhen blk)
-    -> return $ ana { implicitLatches = Map.insert instr blk
-                                        (implicitLatches ana)
-                    }
+  Just (DefinedWhen blk) -> do
+    tp <- getType instr >>= translateType
+    return $ ana { implicitLatches = Map.insert instr (tp,blk)
+                                     (implicitLatches ana)
+                 }
   Nothing -> return ana
   {-Nothing -> return $ ana { instructionState = Map.insert instr Latched
                                                (instructionState ana)
@@ -163,12 +171,13 @@ analyzeInstruction backedges ana i@(castDown -> Just phi) = do
                    return (blk,val)
                ) [0..numPhi-1]
   ana1 <- foldlM analyzeValue ana (fmap snd phis)
-  let splitPhis = partitionEithers $
-                  fmap (\(blk,val) -> if Set.member blk backedges
-                                      then Left (blk,val)
-                                      else Right (blk,val)
-                       ) phis
-  return $ ana1 { explicitLatches = Map.insert i splitPhis
+  let (phis1,phis2) = partitionEithers $
+                      fmap (\(blk,val) -> if Set.member blk backedges
+                                          then Left (blk,val)
+                                          else Right (blk,val)
+                           ) phis
+  tp <- getType phi >>= translateType
+  return $ ana1 { explicitLatches = Map.insert i (tp,phis1,phis2)
                                     (explicitLatches ana1)
                 , instructionState = Map.insert i (Defined blk)
                                      (instructionState ana1)
@@ -184,8 +193,18 @@ realizeFunction :: RealizationOptions -> Analyzation -> Ptr Function
                    -> IO Realization
 realizeFunction opts ana fun = do
   blks <- getBasicBlockList fun >>= ipListToList
-  let initInstrs1 = Map.mapWithKey (\i _ (_,_,instrs) -> instrs Map.! i) (implicitLatches ana)
-      initInstrs2 = Map.mapWithKey (\i _ (_,_,instrs) -> instrs Map.! i) (explicitLatches ana)
+  let initInstrs1 = Map.mapWithKey
+                    (\i (ProxyArgValue (_::a) ann,_)
+                     -> NormalValue ann (\(_,_,instrs)
+                                         -> castUntypedExprValue (instrs Map.! i) :: SMTExpr a
+                                        )
+                    ) (implicitLatches ana)
+      initInstrs2 = Map.mapWithKey
+                    (\i (ProxyArgValue (_::a) ann,_,_)
+                     -> NormalValue ann (\(_,_,instrs)
+                                         -> castUntypedExprValue (instrs Map.! i) :: SMTExpr a
+                                        )
+                    ) (explicitLatches ana)
       initInstrs = Map.union initInstrs1 initInstrs2
       real = Realization { edgeActivations = Map.empty
                          , blockActivations = if useErrorState opts
@@ -209,7 +228,7 @@ realizeFunction opts ana fun = do
              
 
 realizeValue :: Analyzation -> Realization -> Ptr Value
-                -> IO (LLVMInput -> SMTExpr UntypedValue)
+                -> IO RealizedValue
 realizeValue ana real (castDown -> Just instr)
   = case Map.lookup instr (instructions real) of
      Just res -> return res
@@ -218,10 +237,9 @@ realizeValue ana real (castDown -> Just i) = do
   bw <- getBitWidth tp
   v <- constantIntGetValue i
   rv <- apIntGetSExtValue v
-  let val = if bw==1
-            then UntypedExprValue (constant (rv/=0))
-            else UntypedExprValue (constant $ fromIntegral rv :: SMTExpr Integer)
-  return (const val)
+  if bw==1
+    then return $ NormalValue () (const $ constant $ rv/=0)
+    else return $ IntConst (fromIntegral rv)
 
 realizeBlock :: RealizationOptions -> Analyzation -> Realization -> Ptr BasicBlock
                 -> IO Realization
@@ -259,16 +277,17 @@ defineInstr' :: Analyzation -> Realization -> Ptr Instruction -> ProxyArgValue
 defineInstr' ana real instr tp f
   = withProxyArgValue tp $
     \(_::a) ann
-    -> defineInstr ana real instr ann
-       (\inp -> castUntypedExprValue (f inp) :: SMTExpr a)
+    -> defineInstr ana real instr
+       (NormalValue ann
+        (\inp -> (castUntypedExprValue (f inp) :: SMTExpr a)))
 
-defineInstr :: SMTValue a => Analyzation -> Realization -> Ptr Instruction -> SMTAnnotation a
-               -> (LLVMInput -> SMTExpr a)
+defineInstr :: Analyzation -> Realization -> Ptr Instruction
+               -> RealizedValue
                -> IO Realization
-defineInstr ana real instr tp (f::LLVMInput -> SMTExpr a) = do
+defineInstr ana real instr (NormalValue tp f) = do
   name <- getNameString instr
   let trans = case Map.lookup instr (implicitLatches ana) of
-        Just blk -> case Map.lookup blk (blockActivations real) of
+        Just (_,blk) -> case Map.lookup blk (blockActivations real) of
           Just act -> \inp@(_,_,instrs)
                       -> ite (act inp)
                          (f inp)
@@ -279,15 +298,18 @@ defineInstr ana real instr tp (f::LLVMInput -> SMTExpr a) = do
                             , gateAnnotation = tp
                             , gateName = Just name })
   return $ real { gateMp = ngates
-                , instructions = Map.insert instr (const $ UntypedExprValue expr)
+                , instructions = Map.insert instr (NormalValue tp (const expr))
                                  (instructions real)
                 }
+defineInstr ana real instr val
+  | Map.member instr (implicitLatches ana) = error "Special value is latched."
+  | otherwise = return $ real { instructions = Map.insert instr val
+                                               (instructions real)
+                              }
 
 realizeDefInstruction :: Analyzation -> Realization -> Ptr Instruction
-                      -> (forall a. SMTValue a => SMTAnnotation a -> (LLVMInput -> SMTExpr a)
-                          -> IO b)
-                      -> IO b
-realizeDefInstruction ana real i@(castDown -> Just opInst) f = do
+                      -> IO RealizedValue
+realizeDefInstruction ana real i@(castDown -> Just opInst) = do
   lhs <- getOperand opInst 0
   rhs <- getOperand opInst 1
   op <- binOpGetOpCode opInst
@@ -295,76 +317,108 @@ realizeDefInstruction ana real i@(castDown -> Just opInst) f = do
   flhs <- realizeValue ana real lhs
   frhs <- realizeValue ana real rhs
   case op of
-   Add -> f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer) +
-                         (castUntypedExprValue (frhs inp))
-   Sub -> f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer) -
-                         (castUntypedExprValue (frhs inp))
-   Mul -> f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer) *
-                         (castUntypedExprValue (frhs inp))
+   Add -> return $ NormalValue () $
+          \inp -> (asSMTValue flhs inp :: SMTExpr Integer) +
+                  (asSMTValue frhs inp)
+   Sub -> return $ NormalValue () $
+          \inp -> (asSMTValue flhs inp :: SMTExpr Integer) -
+                  (asSMTValue frhs inp)
+   Mul -> return $ NormalValue () $
+          \inp -> (asSMTValue flhs inp :: SMTExpr Integer) *
+                  (asSMTValue frhs inp)
    And -> if tp==(ProxyArgValue (undefined::Bool) ())
-          then f () $ \inp -> (castUntypedExprValue (flhs inp)) .&&.
-                              (castUntypedExprValue (frhs inp))
+          then return $ NormalValue () $
+               \inp -> (asSMTValue flhs inp) .&&.
+                       (asSMTValue frhs inp)
           else error "And operator can't handle non-bool inputs."
    Or -> if tp==(ProxyArgValue (undefined::Bool) ())
-         then f () $ \inp -> (castUntypedExprValue (flhs inp)) .||.
-                             (castUntypedExprValue (frhs inp))
-         else error "Or operator can't handle non-bool inputs."
+         then return $ NormalValue () $
+              \inp -> (asSMTValue flhs inp) .||.
+                      (asSMTValue frhs inp)
+         else (if tp==(ProxyArgValue (undefined::Integer) ())
+               then return (case flhs of
+                             OrList xs -> case frhs of
+                               OrList ys -> OrList $ xs++ys
+                               _ -> OrList $ xs++[asSMTValue frhs]
+                             _ -> case frhs of
+                               OrList ys -> OrList $ [asSMTValue flhs]++ys
+                               _ -> OrList [asSMTValue flhs,
+                                            asSMTValue frhs])
+               else error "Or operator can only handle bool and int inputs.")
    Xor -> if tp==(ProxyArgValue (undefined::Bool) ())
-          then f () $ \inp -> app xor
-                              [castUntypedExprValue (flhs inp)
-                              ,castUntypedExprValue (frhs inp)]
+          then return $ NormalValue () $
+               \inp -> app xor
+                       [asSMTValue flhs inp
+                       ,asSMTValue frhs inp]
           else error "Xor operator can't handle non-bool inputs."
-   Shl -> case castDown rhs of
-     Just cint -> do
-       v <- constantIntGetValue cint
-       rv <- apIntGetSExtValue v
-       f () $ \inp -> (castUntypedExprValue (flhs inp) :: SMTExpr Integer)*
-                      (2^(fromIntegral rv))
+   Shl -> case frhs of
+     IntConst rv
+       -> return $ NormalValue () $
+          \inp -> (asSMTValue flhs inp :: SMTExpr Integer)*
+                  (constant $ 2^rv)
    _ -> error $ "Unknown operator: "++show op
-realizeDefInstruction ana real i@(castDown -> Just call) f = do
+realizeDefInstruction ana real i@(castDown -> Just call) = do
   fname <- getFunctionName call
   case fname of
    '_':'_':'u':'n':'d':'e':'f':_ -> do
      tp <- getType i >>= translateType
      withProxyArgValue tp $
-       \(_::a) ann -> f ann (\(_,inp,_) -> castUntypedExprValue (inp Map.! i) :: SMTExpr a)
-realizeDefInstruction ana real i@(castDown -> Just icmp) f = do
+       \(_::a) ann -> return $ NormalValue ann $
+                      \(_,inp,_) -> castUntypedExprValue (inp Map.! i) :: SMTExpr a
+realizeDefInstruction ana real i@(castDown -> Just icmp) = do
   op <- getICmpOp icmp
   lhs <- getOperand icmp 0 >>= realizeValue ana real
   rhs <- getOperand icmp 1 >>= realizeValue ana real
-  case op of
-   I_EQ -> f () $ \inp -> entypeValue (.==. (castUntypedExprValue (rhs inp)))
-                          (lhs inp)
-   I_NE -> f () $ \inp -> entypeValue (\lhs' -> not' $
-                                                lhs' .==. (castUntypedExprValue (rhs inp)))
-                          (lhs inp)
-   I_SGE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>=.
-                           (castUntypedExprValue (rhs inp))
-   I_UGE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>=.
-                           (castUntypedExprValue (rhs inp))
-   I_SGT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>.
-                           (castUntypedExprValue (rhs inp))
-   I_UGT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .>.
-                           (castUntypedExprValue (rhs inp))
-   I_SLE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<=.
-                           (castUntypedExprValue (rhs inp))
-   I_ULE -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<=.
-                           (castUntypedExprValue (rhs inp))
-   I_SLT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<.
-                           (castUntypedExprValue (rhs inp))
-   I_ULT -> f () $ \inp -> (castUntypedExprValue (lhs inp) :: SMTExpr Integer) .<.
-                           (castUntypedExprValue (rhs inp))
-realizeDefInstruction ana real i@(castDown -> Just (zext::Ptr ZExtInst)) f = do
+  return $ case op of
+   I_EQ -> case (lhs,rhs) of
+     (OrList xs,IntConst 0) -> NormalValue () (\inp -> app and' [ (x inp) .==. 0 | x <- xs ])
+     (IntConst 0,OrList xs) -> NormalValue () (\inp -> app and' [ (x inp) .==. 0 | x <- xs ])
+     _ -> withSMTValue lhs $
+          \_ lhs' -> NormalValue () (\inp -> (lhs' inp) .==. (asSMTValue rhs inp))
+   I_NE -> case (lhs,rhs) of
+     (OrList xs,IntConst 0) -> NormalValue () (\inp -> app or' [ not' $ (x inp) .==. 0
+                                                               | x <- xs ])
+     (IntConst 0,OrList xs) -> NormalValue () (\inp -> app or' [ not' $ (x inp) .==. 0
+                                                               | x <- xs ])
+     _ -> withSMTValue lhs $
+          \_ lhs' -> NormalValue () (\inp -> not' $ (lhs' inp) .==. (asSMTValue rhs inp))
+   I_SGE -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>=.
+                    (asSMTValue rhs inp)
+   I_UGE -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>=.
+                    (asSMTValue rhs inp)
+   I_SGT -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>.
+                    (asSMTValue rhs inp)
+   I_UGT -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>.
+                    (asSMTValue rhs inp)
+   I_SLE -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<=.
+                    (asSMTValue rhs inp)
+   I_ULE -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<=.
+                    (asSMTValue rhs inp)
+   I_SLT -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<.
+                    (asSMTValue rhs inp)
+   I_ULT -> NormalValue () $
+            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<.
+                    (asSMTValue rhs inp)
+realizeDefInstruction ana real i@(castDown -> Just (zext::Ptr ZExtInst)) = do
   op <- getOperand zext 0
   tp <- valueGetType op >>= translateType
   fop <- realizeValue ana real op
   if tp==(ProxyArgValue (undefined::Bool) ())
-    then f () $ \inp -> ite (castUntypedExprValue (fop inp))
-                        (constant (1::Integer))
-                        (constant 0)
+    then return $ NormalValue () $
+         \inp -> ite (asSMTValue fop inp)
+                 (constant (1::Integer))
+                 (constant 0)
     else (withProxyArgValue tp $
-          \(_::a) ann -> f ann (\inp -> castUntypedExprValue (fop inp) :: SMTExpr a))
-realizeDefInstruction ana real i@(castDown -> Just select) f = do
+          \(_::a) ann -> return $ NormalValue ann $
+                         \inp -> asSMTValue fop inp :: SMTExpr a)
+realizeDefInstruction ana real i@(castDown -> Just select) = do
   cond <- selectInstGetCondition select >>= realizeValue ana real
   tVal <- selectInstGetTrueValue select
   tp <- valueGetType tVal >>= translateType
@@ -372,17 +426,17 @@ realizeDefInstruction ana real i@(castDown -> Just select) f = do
   fVal' <- selectInstGetFalseValue select >>= realizeValue ana real
   withProxyArgValue tp $
     \(_::a) ann
-    -> f ann $ \inp -> ite (castUntypedExprValue $ cond inp)
-                       (castUntypedExprValue $ tVal' inp :: SMTExpr a)
-                       (castUntypedExprValue $ fVal' inp)
-realizeDefInstruction ana real i@(castDown -> Just phi) f
+    -> return $ NormalValue ann $
+       \inp -> ite (asSMTValue cond inp)
+               (asSMTValue tVal' inp :: SMTExpr a)
+               (asSMTValue fVal' inp)
+realizeDefInstruction ana real i@(castDown -> Just phi)
   = case Map.lookup i (explicitLatches ana) of
-     Just (recPhis,phis) -> do
+     Just (tp,recPhis,phis) -> do
        trg <- instructionGetParent i
        let edges = case Map.lookup trg (edgeActivations real) of
              Just ed -> ed
        num <- phiNodeGetNumIncomingValues phi
-       tp <- valueGetType i >>= translateType
        phis' <- mapM (\(blk,val) -> do
                          val' <- realizeValue ana real val
                          let edge = case Map.lookup blk edges of
@@ -392,14 +446,15 @@ realizeDefInstruction ana real i@(castDown -> Just phi) f
        withProxyArgValue tp $
          \(_::a) ann
           -> let mkITE [(_,val)] inp
-                   | null recPhis = castUntypedExprValue (val inp)
+                   | null recPhis = asSMTValue val inp
                  mkITE [] (_,_,instrs) = castUntypedExprValue (instrs Map.! i)
                  mkITE ((cond,val):xs) inp
                    = ite (cond inp)
-                     (castUntypedExprValue (val inp))
+                     (asSMTValue val inp)
                      (mkITE xs inp)
-             in f ann (\inp -> mkITE phis' inp :: SMTExpr a)
-realizeDefInstruction ana real i f = do
+             in return $ NormalValue ann $
+                \inp -> mkITE phis' inp :: SMTExpr a
+realizeDefInstruction ana real i = do
   valueDump i
   error "Unknown instruction"
 
@@ -421,10 +476,10 @@ realizeInstruction opts ana real i@(castDown -> Just brInst) = do
              ifTrueName <- getNameString ifTrue
              ifFalse <- terminatorInstGetSuccessor brInst 1
              ifFalseName <- getNameString ifFalse
-             cond <- branchInstGetCondition brInst >>= realizeValue ana real
-             let rcond inp = castUntypedExprValue (cond inp)
-                 tCond inp = app and' $ [act inp,rcond inp]++(restr inp)
-                 fCond inp = app and' $ [act inp,not' $ rcond inp]++(restr inp)
+             NormalValue _ (cast -> Just cond) <- branchInstGetCondition brInst
+                                                  >>= realizeValue ana real
+             let tCond inp = app and' $ [act inp,cond inp]++(restr inp)
+                 fCond inp = app and' $ [act inp,not' $ cond inp]++(restr inp)
                  (tGate,gates1) = addGate (gateMp real)
                                   (Gate { gateTransfer = tCond
                                         , gateAnnotation = ()
@@ -469,13 +524,15 @@ realizeInstruction opts ana real i@(castDown -> Just call) = do
      defineInstr' ana (real { inputs = Map.insert i tp (inputs real)
                             }) i tp (\(_,inp,_) -> inp Map.! i)
    "assert" -> do
-     cond <- callInstGetArgOperand call 0 >>= realizeValue ana real
+     NormalValue _ (cast -> Just cond) <- callInstGetArgOperand call 0
+                                          >>= realizeValue ana real
      return $ real { asserts = Map.insertWith (++)
-                               blk [\inp -> castUntypedExprValue (cond inp)]
+                               blk [cond]
                                (asserts real) }
    "assume" -> do
-     cond <- callInstGetArgOperand call 0 >>= realizeValue ana real
-     return $ real { assumes = (\inp -> (act inp) .=>. (castUntypedExprValue (cond inp))):
+     NormalValue _ (cast -> Just cond) <- callInstGetArgOperand call 0
+                                          >>= realizeValue ana real
+     return $ real { assumes = (\inp -> (act inp) .=>. (cond inp)):
                                (assumes real) }
    _ -> error $ "Unknown function "++fname
 realizeInstruction opts ana real i@(castDown -> Just ret) = do
@@ -484,7 +541,8 @@ realizeInstruction opts ana real i@(castDown -> Just ret) = do
 realizeInstruction opts ana real (castDown -> Just sw) = do
   src <- instructionGetParent sw
   srcName <- getNameString src
-  cond <- switchInstGetCondition sw >>= realizeValue ana real
+  NormalValue _ (cast -> Just cond) <- switchInstGetCondition sw
+                                       >>= realizeValue ana real
   def <- switchInstGetDefaultDest sw
   defName <- getNameString def
   cases <- switchInstGetCases sw >>=
@@ -496,7 +554,7 @@ realizeInstruction opts ana real (castDown -> Just sw) = do
       (defEdge,ngates) = addGate (gateMp real)
                          (Gate { gateTransfer = \inp -> app and' ((act inp):
                                                                   [ not' $
-                                                                    (castUntypedExprValue (cond inp))
+                                                                    (cond inp)
                                                                     .==.
                                                                     (constant val)
                                                                   | (val,_) <- cases ])
@@ -507,7 +565,7 @@ realizeInstruction opts ana real (castDown -> Just sw) = do
              trgName <- getNameString trg
              let (edge,ngates) = addGate (gateMp real)
                                  (Gate { gateTransfer = \inp -> (act inp) .&&.
-                                                                ((castUntypedExprValue (cond inp))
+                                                                ((cond inp)
                                                                  .==.
                                                                  (constant val))
                                        , gateAnnotation = ()
@@ -529,9 +587,9 @@ realizeInstruction opts ana real (castDown -> Just sw) = do
                  , forwardEdges = Map.insertWith (++)
                                   def [const defEdge]
                                   (forwardEdges real) }) cases
-realizeInstruction opts ana real i
-  = realizeDefInstruction ana real i $
-    defineInstr ana real i
+realizeInstruction opts ana real i = do
+  res <- realizeDefInstruction ana real i
+  defineInstr ana real i res
 
 getFunctionName :: Ptr CallInst -> IO String
 getFunctionName ci = do
@@ -567,7 +625,7 @@ getModel' :: RealizationOptions -> Ptr BasicBlock -> Analyzation -> Realization
 getModel' opts init ana real = do
   (phiInstrs,real2) <- runStateT
                        (Map.traverseWithKey
-                        (\i (phis,_)
+                        (\i (tp,phis,_)
                          -> case phis of
                              [] -> return Nothing
                              _ -> do
@@ -575,23 +633,22 @@ getModel' opts init ana real = do
                                trg <- lift $ instructionGetParent i
                                let trg_act = case Map.lookup trg (blockActivations creal) of
                                      Just a -> a
-                                   trg_val = case Map.lookup i (instructions creal) of
-                                     Just v -> v
                                    is_implicit = case Map.lookup i (implicitLatches ana) of
                                      Just _ -> True
                                      Nothing -> False
-                               tp <- lift $ getType i >>= translateType
                                name <- lift $ getNameString i
-                               phis' <- mapM (\(src,val) -> do
-                                                 let act = case Map.lookup trg (edgeActivations creal) of
-                                                       Just acts -> case Map.lookup src acts of
-                                                         Just a -> a
-                                                 val' <- lift $ realizeValue ana creal val
-                                                 return (act,val')
-                                             ) phis
                                withProxyArgValue tp $
                                  \(_::a) ann -> do
-                                   let (expr,ngates) = addGate (gateMp creal)
+                                   phis' <- mapM (\(src,val) -> do
+                                                     let act = case Map.lookup trg (edgeActivations creal) of
+                                                           Just acts -> case Map.lookup src acts of
+                                                             Just a -> a
+                                                     val' <- lift $ realizeValue ana creal val
+                                                     return (act,asSMTValue val')
+                                                 ) phis
+                                   let trg_val = case Map.lookup i (instructions creal) of
+                                         Just (NormalValue _ (cast -> Just v)) -> v :: LLVMInput -> SMTExpr a
+                                       (expr,ngates) = addGate (gateMp creal)
                                                        (Gate { gateTransfer = mkITE (if is_implicit
                                                                                      then Just (trg_act,trg_val)
                                                                                      else Nothing)
@@ -638,14 +695,16 @@ getModel' opts init ana real = do
                                                  in (gates',const act')
                          ) (gateMp real) (latchBlocks ana)
     real1 = real { gateMp = gates1 }
-    latchInstrs = Map.intersection (instructions real1) (implicitLatches ana)
+    latchInstrs = fmap (\val -> case val of
+                         NormalValue _ v -> \inp -> UntypedExprValue (v inp)
+                       ) $ Map.intersection (instructions real1) (implicitLatches ana)
     mkITE (Just (trg_act,trg_val)) i [] inp@(_,_,instrs)
       = ite (trg_act inp)
-        (castUntypedExprValue (trg_val inp))
+        (trg_val inp)
         (castUntypedExprValue (instrs Map.! i))
-    mkITE Nothing i [(_,val)] inp = castUntypedExprValue (val inp)
+    mkITE Nothing i [(_,val)] inp = val inp
     mkITE end i ((cond,val):xs) inp = ite (cond inp)
-                                      (castUntypedExprValue $ val inp)
+                                      (val inp)
                                       (mkITE end i xs inp)
     rasserts = if useErrorState opts
                then (case Map.lookup nullPtr (blockActivations real1) of
@@ -919,3 +978,17 @@ instance Show ConcreteValues where
     where
       renderVal (IntValue n) = show n
       renderVal (BoolValue n) = show n
+
+asSMTValue :: SMTValue a => RealizedValue -> LLVMInput -> SMTExpr a
+asSMTValue (NormalValue _ f) = case cast f of
+  Just f' -> f'
+asSMTValue (IntConst x) = case cast (constant x) of
+  Just c -> const c
+asSMTValue (OrList _) = error "Or operator can only be applied to boolean values."
+
+withSMTValue :: RealizedValue
+             -> (forall a. SMTValue a => SMTAnnotation a -> (LLVMInput -> SMTExpr a) -> b)
+             -> b
+withSMTValue (NormalValue ann f) app = app ann f
+withSMTValue (IntConst x) app = app () (const $ constant x)
+withSMTValue (OrList _) _ = error "Or operator can only be applied to boolean values."
