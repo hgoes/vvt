@@ -65,6 +65,7 @@ data Realization = Realization { edgeActivations :: Map (Ptr BasicBlock)
 data RealizedValue = forall a. SMTValue a => NormalValue (SMTAnnotation a) (LLVMInput -> SMTExpr a)
                    | IntConst Integer
                    | OrList [LLVMInput -> SMTExpr Integer]
+                   | ExtBool (LLVMInput -> SMTExpr Bool)
 
 data BlockGraph = BlockGraph { nodeMap :: Map (Ptr BasicBlock) Gr.Node
                              , dependencies :: Gr.Gr (Ptr BasicBlock) ()
@@ -345,7 +346,12 @@ realizeDefInstruction ana real i@(castDown -> Just opInst) = do
                                _ -> OrList [asSMTValue flhs,
                                             asSMTValue frhs])
                else error "Or operator can only handle bool and int inputs.")
-   Xor -> if tp==(ProxyArgValue (undefined::Bool) ())
+   Xor -> case (flhs,frhs) of
+     (ExtBool l,ExtBool r) -> return $ ExtBool (\inp -> app xor
+                                                        [l inp
+                                                        ,r inp])
+     (ExtBool l,IntConst 1) -> return $ ExtBool (\inp -> not' $ l inp)
+     _ -> if tp==(ProxyArgValue (undefined::Bool) ())
           then return $ NormalValue () $
                \inp -> app xor
                        [asSMTValue flhs inp
@@ -356,6 +362,10 @@ realizeDefInstruction ana real i@(castDown -> Just opInst) = do
        -> return $ NormalValue () $
           \inp -> (asSMTValue flhs inp :: SMTExpr Integer)*
                   (constant $ 2^rv)
+   LShr -> case frhs of
+     IntConst rv
+       -> return $ NormalValue () $
+          \inp -> (asSMTValue flhs inp) `div'` (constant $ 2^rv)
    _ -> error $ "Unknown operator: "++show op
 realizeDefInstruction ana real i@(castDown -> Just call) = do
   fname <- getFunctionName call
@@ -400,9 +410,12 @@ realizeDefInstruction ana real i@(castDown -> Just icmp) = do
    I_ULE -> NormalValue () $
             \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<=.
                     (asSMTValue rhs inp)
-   I_SLT -> NormalValue () $
-            \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<.
-                    (asSMTValue rhs inp)
+   I_SLT -> case (lhs,rhs) of
+     (OrList xs,IntConst 0) -> NormalValue () (\inp -> app and' [ (x inp) .<. 0
+                                                                | x <- xs ])
+     _ -> NormalValue () $
+          \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<.
+                  (asSMTValue rhs inp)
    I_ULT -> NormalValue () $
             \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<.
                     (asSMTValue rhs inp)
@@ -411,13 +424,18 @@ realizeDefInstruction ana real i@(castDown -> Just (zext::Ptr ZExtInst)) = do
   tp <- valueGetType op >>= translateType
   fop <- realizeValue ana real op
   if tp==(ProxyArgValue (undefined::Bool) ())
-    then return $ NormalValue () $
-         \inp -> ite (asSMTValue fop inp)
-                 (constant (1::Integer))
-                 (constant 0)
+    then return $ ExtBool (asSMTValue fop)
     else (withProxyArgValue tp $
           \(_::a) ann -> return $ NormalValue ann $
                          \inp -> asSMTValue fop inp :: SMTExpr a)
+realizeDefInstruction ana real i@(castDown -> Just (trunc::Ptr TruncInst)) = do
+  op <- getOperand trunc 0
+  tp <- valueGetType i >>= translateType
+  fop <- realizeValue ana real op
+  if tp==(ProxyArgValue (undefined::Bool) ())
+    then return $ NormalValue () $
+         \inp -> (asSMTValue fop inp) .==. (constant (1::Integer))
+    else return fop
 realizeDefInstruction ana real i@(castDown -> Just select) = do
   cond <- selectInstGetCondition select >>= realizeValue ana real
   tVal <- selectInstGetTrueValue select
@@ -924,9 +942,9 @@ passes entry
     ,APass createReassociatePass
     --,APass createLoopRotatePass
     ,APass createLICMPass
-    ,APass (createLoopUnswitchPass False)
+    --,APass (createLoopUnswitchPass False)
     ,APass createInstructionCombiningPass
-    ,APass createIndVarSimplifyPass
+    --,APass createIndVarSimplifyPass
     ,APass createLoopIdiomPass
     ,APass createLoopDeletionPass
     --,APass createSimpleLoopUnrollPass
@@ -980,11 +998,8 @@ instance Show ConcreteValues where
       renderVal (BoolValue n) = show n
 
 asSMTValue :: SMTValue a => RealizedValue -> LLVMInput -> SMTExpr a
-asSMTValue (NormalValue _ f) = case cast f of
-  Just f' -> f'
-asSMTValue (IntConst x) = case cast (constant x) of
-  Just c -> const c
-asSMTValue (OrList _) = error "Or operator can only be applied to boolean values."
+asSMTValue val = withSMTValue val (\_ f -> case cast f of
+                                    Just f' -> f')
 
 withSMTValue :: RealizedValue
              -> (forall a. SMTValue a => SMTAnnotation a -> (LLVMInput -> SMTExpr a) -> b)
@@ -992,3 +1007,6 @@ withSMTValue :: RealizedValue
 withSMTValue (NormalValue ann f) app = app ann f
 withSMTValue (IntConst x) app = app () (const $ constant x)
 withSMTValue (OrList _) _ = error "Or operator can only be applied to boolean values."
+withSMTValue (ExtBool f) app = app () (\inp -> ite (f inp)
+                                               (constant (1::Integer))
+                                               (constant 0))
