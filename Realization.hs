@@ -974,11 +974,13 @@ passes entry
 
 instance Show ConcreteValues where
   show cv = unsafePerformIO $ do
-    blk <- do
-      isNamed <- hasName (block cv)
-      if isNamed
-        then getNameString (block cv)
-        else return $ show (block cv)
+    blk <- if (block cv)==nullPtr
+           then return "err"
+           else do
+             isNamed <- hasName (block cv)
+             if isNamed
+               then getNameString (block cv)
+               else return $ show (block cv)
     vals <- mapM (\(instr,val) -> do
                      instrName <- do
                        instrHasName <- hasName instr
