@@ -949,7 +949,7 @@ passes entry
     ,APass createLICMPass
     --,APass (createLoopUnswitchPass False)
     ,APass createInstructionCombiningPass
-    --,APass createIndVarSimplifyPass
+    ,APass createIndVarSimplifyPass
     ,APass createLoopIdiomPass
     ,APass createLoopDeletionPass
     --,APass createSimpleLoopUnrollPass
