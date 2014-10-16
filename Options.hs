@@ -9,6 +9,7 @@ data Options = Options { optBackendCons :: String
                        , optBackendBase :: String
                        , optBackendInit :: String
                        , optBackendInterp :: String
+                       , optOptimizeTR :: Bool
                        , optFunction :: String
                        , optShowHelp :: Bool
                        , optTimeout :: Maybe Int
@@ -21,6 +22,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optBackendBase = z3
                          , optBackendInit = z3
                          , optBackendInterp = mathsat
+                         , optOptimizeTR = False
                          , optFunction = "main"
                          , optShowHelp = False
                          , optTimeout = Nothing
@@ -60,6 +62,8 @@ allOpts
                Nothing -> opt { optVerbosity = 1 }
                Just vs -> opt { optVerbosity = read vs }) "level")
      "How much debugging output to show"
+    ,Option ['O'] ["optimize"] (NoArg $ \opt -> opt { optOptimizeTR = True })
+     "Optimize the transition relation"
     ]
 
 parseTime :: String -> Int

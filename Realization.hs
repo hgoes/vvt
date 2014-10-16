@@ -92,6 +92,7 @@ type ErrorTrace = [ConcreteValues]
 
 data RealizationOptions = RealizationOptions { useErrorState :: Bool
                                              , exactPredecessors :: Bool
+                                             , optimize :: Bool
                                              }
 
 blockGraph :: Ptr Function -> IO BlockGraph
@@ -233,6 +234,9 @@ realizeValue :: Analyzation -> Realization -> Ptr Value
 realizeValue ana real (castDown -> Just instr)
   = case Map.lookup instr (instructions real) of
      Just res -> return res
+     Nothing -> do
+       iname <- getNameString instr
+       error $ "Cannot find value of instruction "++iname
 realizeValue ana real (castDown -> Just i) = do
   tp <- getType i
   bw <- getBitWidth tp
@@ -898,81 +902,87 @@ extractBlock mp = case blks of
     blks = [ blk | (blk,act) <- Map.toList mp
                  , act ]
 
-getProgram :: String -> String -> IO (Ptr Function)
-getProgram entry file = do
+getProgram :: RealizationOptions -> String -> String -> IO (Ptr Function)
+getProgram opts entry file = do
   Just buf <- getFileMemoryBufferSimple file
   diag <- newSMDiagnostic
   ctx <- newLLVMContext
   mod <- parseIR buf diag ctx
-  applyOptimizations mod entry
-  --moduleDump mod
+  applyOptimizations opts mod entry
+  moduleDump mod
   moduleGetFunctionString mod entry
 
-applyOptimizations :: Ptr Module -> String -> IO ()
-applyOptimizations mod entry = do
+applyOptimizations :: RealizationOptions -> Ptr Module -> String -> IO ()
+applyOptimizations opts mod entry = do
   pm <- newPassManager
   mapM (\(APass c) -> do
            pass <- c
-           passManagerAdd pm pass) (passes entry)
+           passManagerAdd pm pass) (passes opts entry)
   passManagerRun pm mod
   deletePassManager pm
 
 data APass = forall p. PassC p => APass (IO (Ptr p))
 
-passes :: String -> [APass]
-passes entry
-  = [APass createTypeBasedAliasAnalysisPass
-    --,APass createScopedNoAliasAAPass
-    ,APass createBasicAliasAnalysisPass
-    ,APass createIPSCCPPass
-    ,APass createGlobalOptimizerPass
-    ,APass createDeadArgEliminationPass
-    ,APass createInstructionCombiningPass
-    ,APass createCFGSimplificationPass
-    ,APass createPruneEHPass
-    ,APass (do
-               m <- newCString entry
-               arr <- newArray [m]
-               export_list <- newArrayRef arr 1
-               --export_list <- newArrayRefEmpty
-               createInternalizePass export_list)
-    ,APass (createFunctionInliningPass 100)
-    --,APass (createArgumentPromotionPass 0)
-    ,APass (createScalarReplAggregatesPass (-1) False (-1) (-1) (-1))
-    ,APass createEarlyCSEPass
-    ,APass createJumpThreadingPass
-    ,APass createCorrelatedValuePropagationPass
-    ,APass createCFGSimplificationPass
-    ,APass createInstructionCombiningPass
-    ,APass createTailCallEliminationPass
-    ,APass createCFGSimplificationPass
-    ,APass createReassociatePass
-    --,APass createLoopRotatePass
-    ,APass createLICMPass
-    --,APass (createLoopUnswitchPass False)
-    ,APass createInstructionCombiningPass
-    ,APass createIndVarSimplifyPass
-    ,APass createLoopIdiomPass
-    ,APass createLoopDeletionPass
-    --,APass createSimpleLoopUnrollPass
-    ,APass (createGVNPass False)
-    ,APass createMemCpyOptPass
-    ,APass createSCCPPass
-    ,APass createInstructionCombiningPass
-    ,APass createJumpThreadingPass
-    ,APass createCorrelatedValuePropagationPass
-    ,APass createDeadStoreEliminationPass
-    ,APass createAggressiveDCEPass
-    ,APass createCFGSimplificationPass
-    ,APass createInstructionCombiningPass
-    ,APass createBarrierNoopPass
-    ,APass createCFGSimplificationPass
-    ,APass createInstructionCombiningPass
-    --,APass (createLoopUnrollPass (-1) (-1) (-1) (-1))
-    --,APass createAlignmentFromAssumptionsPass
-    ,APass createGlobalDCEPass
-    ,APass createConstantMergePass
-    ,APass createInstructionNamerPass]
+passes :: RealizationOptions -> String -> [APass]
+passes opts entry
+  = if optimize opts
+    then [APass createTypeBasedAliasAnalysisPass
+          --,APass createScopedNoAliasAAPass
+         ,APass createBasicAliasAnalysisPass
+         ,APass createIPSCCPPass
+         ,APass createGlobalOptimizerPass
+         ,APass createDeadArgEliminationPass
+         ,APass createInstructionCombiningPass
+         ,APass createCFGSimplificationPass
+         ,APass createPruneEHPass
+         ,internalizer
+         ,APass (createFunctionInliningPass 100)
+          --,APass (createArgumentPromotionPass 0)
+         ,APass (createScalarReplAggregatesPass (-1) False (-1) (-1) (-1))
+         ,APass createEarlyCSEPass
+         ,APass createJumpThreadingPass
+         ,APass createCorrelatedValuePropagationPass
+         ,APass createCFGSimplificationPass
+         ,APass createInstructionCombiningPass
+         ,APass createTailCallEliminationPass
+         ,APass createCFGSimplificationPass
+         ,APass createReassociatePass
+          --,APass createLoopRotatePass
+         ,APass createLICMPass
+          --,APass (createLoopUnswitchPass False)
+         ,APass createInstructionCombiningPass
+         ,APass createIndVarSimplifyPass
+         ,APass createLoopIdiomPass
+         ,APass createLoopDeletionPass
+          --,APass createSimpleLoopUnrollPass
+         ,APass (createGVNPass False)
+         ,APass createMemCpyOptPass
+         ,APass createSCCPPass
+         ,APass createInstructionCombiningPass
+         ,APass createJumpThreadingPass
+         ,APass createCorrelatedValuePropagationPass
+         ,APass createDeadStoreEliminationPass
+         ,APass createAggressiveDCEPass
+         ,APass createCFGSimplificationPass
+         ,APass createInstructionCombiningPass
+         ,APass createBarrierNoopPass
+         ,APass createCFGSimplificationPass
+         ,APass createInstructionCombiningPass
+          --,APass (createLoopUnrollPass (-1) (-1) (-1) (-1))
+          --,APass createAlignmentFromAssumptionsPass
+         ,APass createGlobalDCEPass
+         ,APass createConstantMergePass
+         ,APass createInstructionNamerPass]
+    else [APass createPromoteMemoryToRegisterPass
+         ,internalizer
+         ,APass createInstructionNamerPass]
+  where
+    internalizer = APass (do
+                             m <- newCString entry
+                             arr <- newArray [m]
+                             export_list <- newArrayRef arr 1
+                             --export_list <- newArrayRefEmpty
+                             createInternalizePass export_list)
 
 instance Show ConcreteValues where
   show cv = unsafePerformIO $ do

@@ -18,10 +18,11 @@ main = do
      mapM_ (hPutStrLn stderr) errs
      exitWith (ExitFailure (-1))
    Right (file,opts) -> do
-     fun <- getProgram (optFunction opts) file
-     --st <- realizeFunction (RealizationOptions True) fun
-     st <- getModel (RealizationOptions { useErrorState = True
-                                        , exactPredecessors = False }) fun
+     let ropts = RealizationOptions { useErrorState = True
+                                    , exactPredecessors = False
+                                    , optimize = optOptimizeTR opts }
+     fun <- getProgram ropts (optFunction opts) file
+     st <- getModel ropts fun
      tr <- case optTimeout opts of
             Nothing -> check st opts
             Just to -> do
