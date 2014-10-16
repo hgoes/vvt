@@ -284,6 +284,7 @@ runIC3 cfg act = do
     instrs <- createInstrVars "" mdl
     return (blks,instrs)
   dom <- initialDomain (ic3DebugLevel cfg) domainBackend
+         (blockAnnotation mdl,latchAnnotation mdl)
          (do
              blks <- createBlockVars "" mdl
              instrs <- createInstrVars "" mdl

@@ -36,21 +36,27 @@ createSMTPool' createBackend info act
     1 5 10
 
 withSMTPool :: SMTPool info a -> (a -> SMT b) -> IO b
-withSMTPool pool act
-  = withSMTPool' pool (\info vars -> do
-                          res <- act vars
-                          return (res,info))
+withSMTPool pool act = do
+  Right res <- withSMTPool' pool (\info vars -> do
+                                     res <- act vars
+                                     return (Right (res,info)))
+  return res
 
-withSMTPool' :: SMTPool info a -> (info -> a -> SMT (b,info)) -> IO b
+withSMTPool' :: SMTPool info a -> (info -> a -> SMT (Either c (b,info))) -> IO (Either c b)
 withSMTPool' pool act = do
   (inst@SMTInstance { instanceConn = conn
                     , instanceVars = vars
                     , instanceInfo = info },local) <- takeResource pool
   (do
-      (res,info') <- performSMTExitCleanly conn
-                     (act info vars)
-      putResource local (SMTInstance { instanceConn = conn
-                                     , instanceVars = vars
-                                     , instanceInfo = info' })
-      return res)
+      res <- performSMTExitCleanly conn
+             (act info vars)
+      case res of
+       Left x -> do
+         destroyResource pool local inst
+         return (Left x)
+       Right (res,info') -> do
+         putResource local (SMTInstance { instanceConn = conn
+                                        , instanceVars = vars
+                                        , instanceInfo = info' })
+         return (Right res))
     `onException` (destroyResource pool local inst)
