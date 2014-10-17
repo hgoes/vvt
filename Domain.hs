@@ -35,6 +35,7 @@ data Domain a = Domain { domainAnnotation :: ArgAnnotation a
                        , domainNextNode :: Node
                        , domainPool :: SMTPool (DomainInstance a) a
                        , domainVerbosity :: Int
+                       , domainTimeout :: Maybe Integer
                        }
 
 data DomainInstance a = DomainInstance { domainNodes :: Map Node (SMTExpr Bool)
@@ -52,6 +53,11 @@ initialDomain verb backend ann alloc = do
                                                 ,(domainBot,constant False)]
                                 , domainInstNext = 2
                                 , domainIsFresh = True }
+  supportsTimeouts <- do
+    back <- backend
+    withSMTBackendExitCleanly back $ do
+      name <- getInfo SMTSolverName
+      return $ name=="Z3"
   pool <- createSMTPool' backend initInst $ do
     setOption (ProduceModels True)
     alloc
@@ -66,6 +72,9 @@ initialDomain verb backend ann alloc = do
                   , domainPool = pool
                   , domainVerbosity = verb
                   , domainAnnotation = ann
+                  , domainTimeout = if supportsTimeouts
+                                    then Just 2000
+                                    else Nothing
                   }
 
 updateInstance :: Domain a -> DomainInstance a -> a -> SMT (DomainInstance a)
@@ -166,8 +175,7 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                          })
   where
     (_,_,qpred) = quantify [(0::Integer)..] (domainAnnotation dom) pred
-    poseQuery :: (DomainInstance a -> a -> [SMTExpr Bool]) -> Domain a -> IO Bool
-    poseQuery query dom = do
+    poseQuery query = do
       res <- withSMTPool' (domainPool dom) $
              \inst vars -> do
                ninst <- updateInstance dom inst vars
@@ -175,7 +183,7 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                    query' = query ninst' vars
                res <- stack $ do
                  mapM_ assert query'
-                 checkSat' Nothing (noLimits { limitTime = Just 2000 })
+                 checkSat' Nothing (noLimits { limitTime = domainTimeout dom })
                case res of
                 Sat -> return (Right (True,ninst'))
                 Unsat -> return (Right (False,ninst'))
@@ -188,14 +196,14 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
       case res of
        Left (Just exprs) -> error $ "Solver got stuck while trying to check "++
                             show exprs
-       Left Nothing -> poseQuery query dom
+       Left Nothing -> poseQuery query
        Right res -> return res
     findParents cur = do
       let curCtx = context (domainGraph dom) cur
           (curTermF,curTermQ) = lab' curCtx
       impl <- case quickImplication qpred curTermQ of
                Just r -> return r
-               Nothing -> fmap not $ poseQuery (\inst vars -> [pred vars,not' $ curTermF vars]) dom
+               Nothing -> fmap not $ poseQuery (\inst vars -> [pred vars,not' $ curTermF vars])
       if not impl
         then return Nothing
         else (do
@@ -208,7 +216,7 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
           (curTermF,curTermQ) = lab' curCtx
       impl <- case quickImplication curTermQ qpred of
                Just r -> return r
-               Nothing -> fmap not $ poseQuery (\inst vars -> [curTermF vars,not' $ pred vars]) dom
+               Nothing -> fmap not $ poseQuery (\inst vars -> [curTermF vars,not' $ pred vars])
       if not impl
         then return Nothing
         else (do
