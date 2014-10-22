@@ -5,6 +5,7 @@ import System.Environment
 import System.Exit
 
 data Options = Options { optBackendCons :: String
+                       , optBackendLifting :: String
                        , optBackendDomain :: String
                        , optBackendBase :: String
                        , optBackendInit :: String
@@ -18,6 +19,7 @@ data Options = Options { optBackendCons :: String
 
 defaultOptions :: Options
 defaultOptions = Options { optBackendCons = z3
+                         , optBackendLifting = z3
                          , optBackendDomain = z3
                          , optBackendBase = z3
                          , optBackendInit = z3
@@ -42,6 +44,9 @@ allOpts
     ,Option [] ["backend-cons"]
      (ReqArg (\b opt -> opt { optBackendCons = b }) "cmd")
      "The SMT solver used for consecution calls [default: z3]"
+    ,Option [] ["backend-lifting"]
+     (ReqArg (\b opt -> opt { optBackendLifting = b }) "cmd")
+     "The SMT solver used for lifting calls [default: z3]"
     ,Option [] ["backend-domain"]
      (ReqArg (\b opt -> opt { optBackendDomain = b }) "cmd")
      "The SMT solver used for abstraction calls [default: z3]"

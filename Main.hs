@@ -1,6 +1,6 @@
 module Main where
 
-import Realization
+import Realization.Monolithic
 import Options
 import CTIGAR
 

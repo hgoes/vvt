@@ -1,7 +1,5 @@
 {-# LANGUAGE TypeFamilies,ScopedTypeVariables #-}
-module State where
-
-import Domain
+module PartialArgs where
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals
@@ -84,24 +82,3 @@ instance (Typeable a,Ord a,Show a,PartialArgs b) => PartialArgs (Map a b) where
       in (rmp,rmask)
   unmaskValue (_::Map a b) mp = fmap (unmaskValue (undefined::b)) mp
   assignPartial mp mpPart = concat $ Map.elems $ Map.intersectionWith assignPartial mp mpPart
-
-data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
-                          , stateLiftedAst :: Maybe (AbstractState st)
-                          , stateFullAst :: Maybe (AbstractState st)
-                          , stateFull :: Unpacked st
-                          , stateInputs :: Unpacked inp
-                          , stateNxtInputs :: Unpacked inp
-                          , stateLifted :: PartialValue st
-                          , stateLiftedInputs :: PartialValue inp
-                          , stateSpuriousLevel :: Int
-                          , stateNSpurious :: Int
-                          , stateSpuriousSucc :: Bool
-                          , stateDomainHash :: Int
-                          }
-
-bestAbstraction :: State inp st -> AbstractState st
-bestAbstraction st = case stateLiftedAst st of
-  Just abs -> abs
-  Nothing -> case stateFullAst st of
-    Just abs -> abs
-    Nothing -> error "State doesn't have an abstraction."

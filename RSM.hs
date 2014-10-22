@@ -1,8 +1,7 @@
 {-# LANGUAGE PackageImports,FlexibleContexts #-}
 module RSM where
 
-import Realization
-import State
+import Realization.Monolithic
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -155,10 +154,3 @@ mineStates backend st
                 Just (ncls,lines) -> return (Just (Set.insert coreLine1 $
                                                    Set.union coreLines2 ncls,lines))
                 Nothing -> return Nothing
-
-analyzeTrace :: SMTBackend b IO => IO b -> State ValueMap (LatchActs,ValueMap)
-                -> RSMState
-                -> IO (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
-analyzeTrace backend st rsm = do
-  let nrsm = addRSMState (fst $ stateFull st) (Map.mapMaybe id $ snd $ stateLifted st) rsm
-  mineStates backend nrsm
