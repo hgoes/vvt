@@ -8,7 +8,6 @@ import Domain
 import PartialArgs
 import SMTPool
 import LitOrder
-import RSM
 import Gates
 import Options
 
@@ -84,7 +83,7 @@ data IC3Env mdl
            , ic3Frames :: Vector (Frame (TR.State mdl))
            , ic3CexState :: Maybe (IORef (State (TR.Input mdl) (TR.State mdl)))
            , ic3Earliest :: Int
-           --, ic3RSM :: RSMState
+           , ic3PredicateExtractor :: TR.PredicateExtractor mdl
            , ic3ConsecutionCount :: Int
            }
 
@@ -273,6 +272,7 @@ runIC3 cfg act = do
          (TR.annotationState mdl)
          (TR.createStateVars "" mdl)
   (initNode,dom') <- domainAdd (TR.initialState mdl) dom
+  extractor <- TR.defaultPredicateExtractor mdl
   evalStateT (runReaderT act cfg) (IC3Env { ic3Domain = dom'
                                           , ic3InitialProperty = initNode
                                           , ic3Consecution = cons
@@ -283,7 +283,7 @@ runIC3 cfg act = do
                                           , ic3CexState = Nothing
                                           , ic3LitOrder = Map.empty
                                           , ic3Earliest = 0
-                                          --, ic3RSM = emptyRSM
+                                          , ic3PredicateExtractor = extractor
                                           , ic3ConsecutionCount = 0
                                           })
   
@@ -1013,18 +1013,22 @@ elimSpuriousTrans :: TR.TransitionRelation mdl
                      => IORef (State (TR.Input mdl) (TR.State mdl)) -> Int
                      -> IC3 mdl ()
 elimSpuriousTrans st level = do
+  mdl <- asks ic3Model
   rst <- liftIO $ readIORef st
   backend <- asks ic3BaseBackend
-  {-env <- get
-  (nrsm,props) <- liftIO $ analyzeTrace (backend {- >>= namedDebugBackend "rsm" -}) rst (ic3RSM env)
-  put $ env { ic3RSM = nrsm }-}
+  env <- get
+  (nextr,props) <- TR.extractPredicates mdl
+                   (ic3PredicateExtractor env)
+                   (stateFull rst)
+                   (stateLifted rst)
+  put $ env { ic3PredicateExtractor = nextr }
   interp <- interpolate level (stateLifted rst)
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm
                      -> do
                        (_,ndom) <- liftIO $ domainAdd trm cdomain
                        return ndom
-                    ) domain (interp{-++props-})
+                    ) domain (interp++props)
   --liftIO $ domainDump ndomain >>= putStrLn
   modify $ \env -> env { ic3Domain = ndomain }
 
@@ -1340,9 +1344,3 @@ checkFixpoint level = do
       checkSat
     when incorrectFix (error "Fixpoint is doesn't hold in one transition")
 
-{-analyzeTrace :: SMTBackend b IO => IO b -> State ValueMap (LatchActs,ValueMap)
-                -> RSMState
-                -> IO (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
-analyzeTrace backend st rsm = do
-  let nrsm = addRSMState (fst $ stateFull st) (Map.mapMaybe id $ snd $ stateLifted st) rsm
-  mineStates backend nrsm-}

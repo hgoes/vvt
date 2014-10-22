@@ -1,8 +1,6 @@
 {-# LANGUAGE PackageImports,FlexibleContexts #-}
 module RSM where
 
-import Realization.Monolithic
-
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -13,7 +11,7 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals
 import Data.Typeable (cast)
 import "mtl" Control.Monad.State (runStateT,modify)
-import "mtl" Control.Monad.Trans (lift)
+import "mtl" Control.Monad.Trans (lift,liftIO,MonadIO)
 import Prelude hiding (mapM,sequence)
 import Data.Traversable (mapM,sequence)
 
@@ -76,7 +74,7 @@ createLines coeffs points = do
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: Monad m => Coeffs -> SMT' m [(LatchActs,ValueMap) -> SMTExpr Bool]
+extractLine :: Monad m => Coeffs -> SMT' m [(Map (Ptr BasicBlock) (SMTExpr Bool),Map (Ptr Instruction) (SMTExpr UntypedValue)) -> SMTExpr Bool]
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
   let rcoeffs' = Map.mapMaybe (\c -> if c==0
@@ -97,8 +95,8 @@ extractLine coeffs = do
          ,\(_,vals) -> (lhs vals)
                        .<. (constant rconst)]
 
-mineStates :: SMTBackend b IO => IO b -> RSMState
-              -> IO (RSMState,[(LatchActs,ValueMap) -> SMTExpr Bool])
+mineStates :: (MonadIO m,SMTBackend b IO) => IO b -> RSMState
+              -> m (RSMState,[(Map (Ptr BasicBlock) (SMTExpr Bool),Map (Ptr Instruction) (SMTExpr UntypedValue)) -> SMTExpr Bool])
 mineStates backend st
   = runStateT
     (do
@@ -122,8 +120,8 @@ mineStates backend st
       | Set.size cls <= 2 = return Nothing
       | Set.size cls > 6 = return $ Just (Set.empty,[])
     mineClass vars cls = do
-      b <- backend
-      res <- withSMTBackendExitCleanly b $ do
+      b <- liftIO backend
+      res <- liftIO $ withSMTBackendExitCleanly b $ do
         setOption (ProduceUnsatCores True)
         setOption (ProduceModels True)
         coeffs <- createCoeffs vars
@@ -154,3 +152,12 @@ mineStates backend st
                 Just (ncls,lines) -> return (Just (Set.insert coreLine1 $
                                                    Set.union coreLines2 ncls,lines))
                 Nothing -> return Nothing
+
+extractBlock :: Map (Ptr BasicBlock) Bool -> Ptr BasicBlock
+extractBlock mp = case blks of
+  [x] -> x
+  [] -> error "No basic block is active in state."
+  _ -> error "More than one basic block is active in state."
+  where
+    blks = [ blk | (blk,act) <- Map.toList mp
+                 , act ]

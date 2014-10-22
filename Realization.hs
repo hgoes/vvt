@@ -14,6 +14,7 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
   type State t
   type Input t
   type RevState t
+  type PredicateExtractor t
   createStateVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (State t)
   createInputVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (Input t)
   initialState :: t -> State t -> SMTExpr Bool
@@ -31,3 +32,9 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
   renderPartialState :: MonadIO m => t -> PartialValue (State t) -> m String
   suggestedPredicates :: t -> [State t -> SMTExpr Bool]
   suggestedPredicates _ = []
+  defaultPredicateExtractor :: MonadIO m => t -> m (PredicateExtractor t)
+  extractPredicates :: MonadIO m => t -> PredicateExtractor t
+                       -> Unpacked (State t)
+                       -> PartialValue (State t)
+                       -> m (PredicateExtractor t,
+                             [State t -> SMTExpr Bool])

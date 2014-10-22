@@ -4,9 +4,11 @@ module Realization.Monolithic where
 
 import Realization
 import Gates
+import RSM
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals hiding (Value)
+import Language.SMTLib2.Pipe (createSMTPipe)
 import qualified Language.SMTLib2.Internals as SMT
 import Foreign.Ptr
 import LLVM.FFI
@@ -781,15 +783,6 @@ getConcreteValues st (acts,inps,instrs) = do
                   ) (Map.intersectionWith (,) mp tps)
       return $ Map.mapMaybe id res
 
-extractBlock :: Map (Ptr BasicBlock) Bool -> Ptr BasicBlock
-extractBlock mp = case blks of
-  [x] -> x
-  [] -> error "No basic block is active in state."
-  _ -> error "More than one basic block is active in state."
-  where
-    blks = [ blk | (blk,act) <- Map.toList mp
-                 , act ]
-
 getProgram :: RealizationOptions -> String -> String -> IO (Ptr Function)
 getProgram opts entry file = do
   Just buf <- getFileMemoryBufferSimple file
@@ -922,6 +915,7 @@ instance TransitionRelation RealizedBlocks where
   type State RealizedBlocks = (LatchActs,ValueMap)
   type Input RealizedBlocks = ValueMap
   type RevState RealizedBlocks = Map Integer (Either (Ptr BasicBlock) (Ptr Instruction))
+  type PredicateExtractor RealizedBlocks = RSMState
   createStateVars pre st = do
     blks <- sequence $ Map.mapWithKey
             (\blk _ -> do
@@ -1063,6 +1057,10 @@ instance TransitionRelation RealizedBlocks where
                     ) (sortBy (comparing (not . snd)) xs)
         return $ concat $ intersperse "," lst
   suggestedPredicates mdl = blkPredicates mdl++cmpPredicates mdl
+  defaultPredicateExtractor _ = return emptyRSM
+  extractPredicates mdl rsm full lifted = do
+    let nrsm = addRSMState (fst full) (Map.mapMaybe id $ snd lifted) rsm
+    mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
 
 cmpPredicates :: RealizedBlocks -> [(LatchActs,ValueMap) -> SMTExpr Bool]
 cmpPredicates mdl = mkCmps (Map.toList (snd $ annotationState mdl))
