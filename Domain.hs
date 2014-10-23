@@ -139,6 +139,19 @@ checkImplication e1 e2 = stack $ do
   r <- checkSat
   return $ not r
 
+domainAddUniqueUnsafe :: Args a => (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
+domainAddUniqueUnsafe pred dom = do
+  let (_,_,qpred) = quantify [(0::Integer)..] (domainAnnotation dom) pred
+      newNd = domainNextNode dom
+      gr0 = insNode (newNd,(pred,qpred)) (domainGraph dom)
+      gr1 = insEdge (domainTop,newNd,()) gr0
+      gr2 = insEdge (newNd,domainBot,()) gr1
+  return (newNd,dom { domainGraph = gr2
+                    , domainNextNode = succ newNd
+                    , domainNodesRev = Map.insert qpred newNd
+                                       (domainNodesRev dom)
+                    })
+
 domainAdd :: Args a => (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
 domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
   Just nd -> return (nd,dom)

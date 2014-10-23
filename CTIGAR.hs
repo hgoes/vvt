@@ -1268,7 +1268,7 @@ addSuggestedPredicates = do
   mdl <- asks ic3Model
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm -> do
-                        (_,ndom) <- liftIO $ domainAdd trm cdomain
+                        (_,ndom) <- liftIO $ domainAddUniqueUnsafe trm cdomain
                         return ndom
                     ) domain (TR.suggestedPredicates mdl)
   modify $ \env -> env { ic3Domain = ndomain }
