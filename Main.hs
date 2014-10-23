@@ -1,15 +1,20 @@
+{-# LANGUAGE RankNTypes #-}
 module Main where
 
+import Realization
+import Realization.Common
 import Realization.Monolithic
+import qualified Realization.BlockWise as BlockWise
 import Options
-import CTIGAR
+import CTIGAR (check)
+import PartialArgs
 
 import System.IO
 import System.Exit
 import System.Timeout
 import Control.Concurrent
 import Control.Exception
-import Prelude (Either(..),mapM_,Maybe(..),(>>),return,Bool(..))
+import Prelude (Either(..),mapM_,Maybe(..),(>>),(>>=),return,Bool(..),undefined,($),String)
 
 main = do
   opts <- readOptions
@@ -17,12 +22,10 @@ main = do
    Left errs -> do
      mapM_ (hPutStrLn stderr) errs
      exitWith (ExitFailure (-1))
-   Right (file,opts) -> do
+   Right (file,opts) -> getTransitionRelation file opts $ \st -> do
      let ropts = RealizationOptions { useErrorState = True
                                     , exactPredecessors = False
                                     , optimize = optOptimizeTR opts }
-     fun <- getProgram ropts (optFunction opts) file
-     st <- getModel ropts fun
      tr <- case optTimeout opts of
             Nothing -> check st opts
             Just to -> do
@@ -44,4 +47,24 @@ main = do
       Nothing -> putStrLn "No bug found."
       Just tr' -> do
         putStrLn "Bug found:"
-        mapM_ print tr'
+        mapM_ (\(step,_) -> renderPartialState st
+                            (unmaskValue (getUndefState st) step) >>= putStrLn
+              ) tr'
+
+getUndefState :: TransitionRelation tr => tr -> State tr
+getUndefState _ = undefined
+
+getTransitionRelation :: String -> Options
+                         -> (forall mdl. TransitionRelation mdl => mdl -> IO a) -> IO a
+getTransitionRelation file opts f = do
+  let ropts = RealizationOptions { useErrorState = True
+                                    , exactPredecessors = False
+                                    , optimize = optOptimizeTR opts }
+  fun <- getProgram (optOptimizeTR opts) (optFunction opts) file
+  case optEncoding opts of
+   Monolithic -> do
+     st <- getModel ropts fun
+     f st
+   BlockWise -> do
+     st <- BlockWise.realizeFunction fun
+     f st

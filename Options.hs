@@ -10,12 +10,16 @@ data Options = Options { optBackendCons :: String
                        , optBackendBase :: String
                        , optBackendInit :: String
                        , optBackendInterp :: String
+                       , optEncoding :: Encoding
                        , optOptimizeTR :: Bool
                        , optFunction :: String
                        , optShowHelp :: Bool
                        , optTimeout :: Maybe Int
                        , optVerbosity :: Int
                        }
+
+data Encoding = Monolithic
+              | BlockWise
 
 defaultOptions :: Options
 defaultOptions = Options { optBackendCons = z3
@@ -25,6 +29,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optBackendInit = z3
                          , optBackendInterp = mathsat
                          , optOptimizeTR = False
+                         , optEncoding = Monolithic
                          , optFunction = "main"
                          , optShowHelp = False
                          , optTimeout = Nothing
@@ -41,6 +46,12 @@ allOpts
     ,Option ['e'] ["entry"]
      (ReqArg (\e opt -> opt { optFunction = e }) "function")
      "The entry function of the program"
+    ,Option ['E'] ["encoding"]
+     (ReqArg (\e opt -> opt { optEncoding = case e of
+                               "monolithic" -> Monolithic
+                               "blockwise" -> BlockWise
+                            }) "name")
+     "Choose an encoding for the transition relation:\n  monolithic - Translate the whole program graph into one step (default)\n  blockwise - Each LLVM block is its own step"
     ,Option [] ["backend-cons"]
      (ReqArg (\b opt -> opt { optBackendCons = b }) "cmd")
      "The SMT solver used for consecution calls [default: z3]"

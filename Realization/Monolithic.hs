@@ -3,6 +3,7 @@
 module Realization.Monolithic where
 
 import Realization
+import Realization.Common
 import Gates
 import RSM
 
@@ -59,18 +60,13 @@ data Realization = Realization { edgeActivations :: Map (Ptr BasicBlock)
                                , blockActivations :: Map (Ptr BasicBlock)
                                                      (LLVMInput -> SMTExpr Bool)
                                , instructions :: Map (Ptr Instruction)
-                                                 RealizedValue
+                                                 (RealizedValue LLVMInput)
                                , inputs :: Map (Ptr Instruction) ProxyArgValue
                                , forwardEdges :: Map (Ptr BasicBlock) [LLVMInput -> SMTExpr Bool]
                                , asserts :: Map (Ptr BasicBlock) [LLVMInput -> SMTExpr Bool]
                                , assumes :: [LLVMInput -> SMTExpr Bool]
                                , gateMp :: GateMap LLVMInput
                                }
-
-data RealizedValue = forall a. SMTValue a => NormalValue (SMTAnnotation a) (LLVMInput -> SMTExpr a)
-                   | IntConst Integer
-                   | OrList [LLVMInput -> SMTExpr Integer]
-                   | ExtBool (LLVMInput -> SMTExpr Bool)
 
 data BlockGraph = BlockGraph { nodeMap :: Map (Ptr BasicBlock) Gr.Node
                              , dependencies :: Gr.Gr (Ptr BasicBlock) ()
@@ -235,7 +231,7 @@ realizeFunction opts ana fun = do
              
 
 realizeValue :: Analyzation -> Realization -> Ptr Value
-                -> IO RealizedValue
+                -> IO (RealizedValue LLVMInput)
 realizeValue ana real (castDown -> Just instr)
   = case Map.lookup instr (instructions real) of
      Just res -> return res
@@ -292,7 +288,7 @@ defineInstr' ana real instr tp f
         (\inp -> (castUntypedExprValue (f inp) :: SMTExpr a)))
 
 defineInstr :: Analyzation -> Realization -> Ptr Instruction
-               -> RealizedValue
+               -> RealizedValue LLVMInput
                -> IO Realization
 defineInstr ana real instr (NormalValue tp f) = do
   name <- getNameString instr
@@ -320,7 +316,7 @@ defineInstr ana real instr val
                               }
 
 realizeDefInstruction :: Analyzation -> Realization -> Ptr Instruction
-                      -> IO RealizedValue
+                      -> IO (RealizedValue LLVMInput)
 realizeDefInstruction ana real i@(castDown -> Just opInst) = do
   lhs <- getOperand opInst 0
   rhs <- getOperand opInst 1
@@ -625,20 +621,6 @@ realizeInstruction opts ana real i = do
   res <- realizeDefInstruction ana real i
   defineInstr ana real i res
 
-getFunctionName :: Ptr CallInst -> IO String
-getFunctionName ci = do
-  val <- callInstGetCalledValue ci
-  getFunctionName' val
-  where
-    getFunctionName' (castDown -> Just (f::Ptr Function))
-      = getNameString f
-    getFunctionName' (castDown -> Just c) = do
-      tp <- constantExprGetOpcode c
-      case tp of
-        CastOp BitCast -> do
-          val <- getOperand c 0
-          getFunctionName' val
-
 getModel :: RealizationOptions -> Ptr Function -> IO RealizedBlocks
 getModel opts fun = do
   gr <- blockGraph fun
@@ -783,88 +765,6 @@ getConcreteValues st (acts,inps,instrs) = do
                   ) (Map.intersectionWith (,) mp tps)
       return $ Map.mapMaybe id res
 
-getProgram :: RealizationOptions -> String -> String -> IO (Ptr Function)
-getProgram opts entry file = do
-  Just buf <- getFileMemoryBufferSimple file
-  diag <- newSMDiagnostic
-  ctx <- newLLVMContext
-  mod <- parseIR buf diag ctx
-  applyOptimizations opts mod entry
-  moduleDump mod
-  moduleGetFunctionString mod entry
-
-applyOptimizations :: RealizationOptions -> Ptr Module -> String -> IO ()
-applyOptimizations opts mod entry = do
-  pm <- newPassManager
-  mapM (\(APass c) -> do
-           pass <- c
-           passManagerAdd pm pass) (passes opts entry)
-  passManagerRun pm mod
-  deletePassManager pm
-
-data APass = forall p. PassC p => APass (IO (Ptr p))
-
-passes :: RealizationOptions -> String -> [APass]
-passes opts entry
-  = if optimize opts
-    then [APass createTypeBasedAliasAnalysisPass
-          --,APass createScopedNoAliasAAPass
-         ,APass createBasicAliasAnalysisPass
-         ,APass createIPSCCPPass
-         ,APass createGlobalOptimizerPass
-         ,APass createDeadArgEliminationPass
-         ,APass createInstructionCombiningPass
-         ,APass createCFGSimplificationPass
-         ,APass createPruneEHPass
-         ,internalizer
-         ,APass (createFunctionInliningPass 100)
-          --,APass (createArgumentPromotionPass 0)
-         ,APass (createScalarReplAggregatesPass (-1) False (-1) (-1) (-1))
-         ,APass createEarlyCSEPass
-         ,APass createJumpThreadingPass
-         ,APass createCorrelatedValuePropagationPass
-         ,APass createCFGSimplificationPass
-         ,APass createInstructionCombiningPass
-         ,APass createTailCallEliminationPass
-         ,APass createCFGSimplificationPass
-         ,APass createReassociatePass
-          --,APass createLoopRotatePass
-         ,APass createLICMPass
-          --,APass (createLoopUnswitchPass False)
-         ,APass createInstructionCombiningPass
-         ,APass createIndVarSimplifyPass
-         ,APass createLoopIdiomPass
-         ,APass createLoopDeletionPass
-          --,APass createSimpleLoopUnrollPass
-         ,APass (createGVNPass False)
-         ,APass createMemCpyOptPass
-         ,APass createSCCPPass
-         ,APass createInstructionCombiningPass
-         ,APass createJumpThreadingPass
-         ,APass createCorrelatedValuePropagationPass
-         ,APass createDeadStoreEliminationPass
-         ,APass createAggressiveDCEPass
-         ,APass createCFGSimplificationPass
-         ,APass createInstructionCombiningPass
-         ,APass createBarrierNoopPass
-         ,APass createCFGSimplificationPass
-         ,APass createInstructionCombiningPass
-          --,APass (createLoopUnrollPass (-1) (-1) (-1) (-1))
-          --,APass createAlignmentFromAssumptionsPass
-         ,APass createGlobalDCEPass
-         ,APass createConstantMergePass
-         ,APass createInstructionNamerPass]
-    else [APass createPromoteMemoryToRegisterPass
-         ,internalizer
-         ,APass createInstructionNamerPass]
-  where
-    internalizer = APass (do
-                             m <- newCString entry
-                             arr <- newArray [m]
-                             export_list <- newArrayRef arr 1
-                             --export_list <- newArrayRefEmpty
-                             createInternalizePass export_list)
-
 instance Show ConcreteValues where
   show cv = unsafePerformIO $ do
     blk <- if (block cv)==nullPtr
@@ -897,25 +797,11 @@ instance Show ConcreteValues where
       renderVal (IntValue n) = show n
       renderVal (BoolValue n) = show n
 
-asSMTValue :: SMTValue a => RealizedValue -> LLVMInput -> SMTExpr a
-asSMTValue val = withSMTValue val (\_ f -> case cast f of
-                                    Just f' -> f')
-
-withSMTValue :: RealizedValue
-             -> (forall a. SMTValue a => SMTAnnotation a -> (LLVMInput -> SMTExpr a) -> b)
-             -> b
-withSMTValue (NormalValue ann f) app = app ann f
-withSMTValue (IntConst x) app = app () (const $ constant x)
-withSMTValue (OrList _) _ = error "Or operator can only be applied to boolean values."
-withSMTValue (ExtBool f) app = app () (\inp -> ite (f inp)
-                                               (constant (1::Integer))
-                                               (constant 0))
-
 instance TransitionRelation RealizedBlocks where
   type State RealizedBlocks = (LatchActs,ValueMap)
   type Input RealizedBlocks = ValueMap
   type RevState RealizedBlocks = Map Integer (Either (Ptr BasicBlock) (Ptr Instruction))
-  type PredicateExtractor RealizedBlocks = RSMState
+  type PredicateExtractor RealizedBlocks = RSMState (Ptr BasicBlock) (Ptr Instruction)
   createStateVars pre st = do
     blks <- sequence $ Map.mapWithKey
             (\blk _ -> do
@@ -1056,53 +942,14 @@ instance TransitionRelation RealizedBlocks where
                           else return $ "!"++name
                     ) (sortBy (comparing (not . snd)) xs)
         return $ concat $ intersperse "," lst
-  suggestedPredicates mdl = blkPredicates mdl++cmpPredicates mdl
+  suggestedPredicates mdl = blkPredicates (fmap (const ()) (realizedLatchBlocks mdl))++
+                            cmpPredicates (fmap fst (realizedLatches mdl))
   defaultPredicateExtractor _ = return emptyRSM
   extractPredicates mdl rsm full lifted = do
-    let nrsm = addRSMState (fst full) (Map.mapMaybe id $ snd lifted) rsm
+    let blk = case [ blk | (blk,True) <- Map.toList (fst full) ] of
+               [b] -> b
+        nrsm = addRSMState blk (Map.mapMaybe id $ snd lifted) rsm
     mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
-
-cmpPredicates :: RealizedBlocks -> [(LatchActs,ValueMap) -> SMTExpr Bool]
-cmpPredicates mdl = mkCmps (Map.toList (snd $ annotationState mdl))
-  where
-    intP = ProxyArgValue (undefined::Integer) ()
-    
-    mkCmps [] = []
-    mkCmps [x] = []
-    mkCmps ((i,x):xs)
-      | x == intP = (mkCmps' i xs)++
-                    (mkCmps xs)
-      | otherwise = mkCmps xs
-
-    mkCmps' i [] = []
-    mkCmps' i ((j,y):xs)
-      | y == intP = (\(_,instrs)
-                     -> (castUntypedExprValue (instrs Map.! i) :: SMTExpr Integer)
-                        .<.
-                        (castUntypedExprValue (instrs Map.! j))
-                    ):
-                    (\(_,instrs)
-                     -> (castUntypedExprValue (instrs Map.! i) :: SMTExpr Integer)
-                        .>.
-                        (castUntypedExprValue (instrs Map.! j))
-                    ):
-                    (\(_,instrs)
-                     -> (castUntypedExprValue (instrs Map.! i) :: SMTExpr Integer)
-                        .<=.
-                        (castUntypedExprValue (instrs Map.! j))
-                    ):
-                    (mkCmps' i xs)
-      | otherwise = mkCmps' i xs
-
-blkPredicates :: RealizedBlocks -> [(LatchActs,ValueMap) -> SMTExpr Bool]
-blkPredicates mdl = mkActs (Map.keys (fst $ annotationState mdl)) []
-  where
-    mkActs [] _ = []
-    mkActs (blk:xs) ys = (\(acts,_) -> app and'
-                                       ((acts Map.! blk):
-                                        [ not' $ acts Map.! blk'
-                                        | blk' <- xs++ys ])
-                         ):(mkActs xs (blk:ys))
 
 assertPredicates :: RealizedBlocks -> [(LatchActs,ValueMap) -> SMTExpr Bool]
 assertPredicates mdl

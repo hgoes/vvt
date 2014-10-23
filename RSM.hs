@@ -15,35 +15,33 @@ import "mtl" Control.Monad.Trans (lift,liftIO,MonadIO)
 import Prelude hiding (mapM,sequence)
 import Data.Traversable (mapM,sequence)
 
-data RSMState = RSMState { rsmLocations :: Map (Ptr BasicBlock) RSMLoc
+data RSMState loc var = RSMState { rsmLocations :: Map loc (RSMLoc var)
+                                 }
+
+data RSMLoc var = RSMLoc { rsmClasses :: Map (Set var) (Set (Map var Integer))
                          }
 
-data RSMLoc = RSMLoc { rsmClasses :: Map (Set (Ptr Instruction)) (Set (Map (Ptr Instruction) Integer))
-                     }
+data Coeffs var = Coeffs { coeffsVar :: Map var (SMTExpr Integer)
+                         , coeffsConst :: SMTExpr Integer
+                         }
 
-data Coeffs = Coeffs { coeffsVar :: Map (Ptr Instruction) (SMTExpr Integer)
-                     , coeffsConst :: SMTExpr Integer
-                     }
-
-emptyRSM :: RSMState
+emptyRSM :: RSMState loc var
 emptyRSM = RSMState Map.empty
 
-addRSMState :: Map (Ptr BasicBlock) Bool
-               -> Map (Ptr Instruction) UntypedValue
-               -> RSMState -> RSMState
-addRSMState blks instrs st
-  = st { rsmLocations = Map.insertWith joinLoc curBlk (RSMLoc { rsmClasses = Map.singleton (Map.keysSet onlyInts) (Set.singleton onlyInts)
-                                                              })
+addRSMState :: (Ord loc,Ord var) => loc -> Map var UntypedValue
+               -> RSMState loc var -> RSMState loc var
+addRSMState loc instrs st
+  = st { rsmLocations = Map.insertWith joinLoc loc (RSMLoc { rsmClasses = Map.singleton (Map.keysSet onlyInts) (Set.singleton onlyInts)
+                                                           })
                         (rsmLocations st)
        }
   where
-    curBlk = extractBlock blks
     onlyInts = Map.mapMaybe (\(UntypedValue val) -> cast val) instrs
-    joinLoc :: RSMLoc -> RSMLoc -> RSMLoc
+    joinLoc :: Ord var => RSMLoc var -> RSMLoc var -> RSMLoc var
     joinLoc l1 l2 = RSMLoc { rsmClasses = Map.unionWith Set.union (rsmClasses l1) (rsmClasses l2)
                            }
 
-createCoeffs :: Monad m => Set (Ptr Instruction) -> SMT' m Coeffs
+createCoeffs :: (Monad m,Ord var) => Set var -> SMT' m (Coeffs var)
 createCoeffs instrs = do
   coeffs <- mapM (\instr -> do
                      c <- varNamed "coeff"
@@ -54,10 +52,10 @@ createCoeffs instrs = do
                   , coeffsConst = c
                   }
 
-notAllZero :: Coeffs -> SMTExpr Bool
+notAllZero :: Coeffs var -> SMTExpr Bool
 notAllZero coeffs = app or' [ not' (c .==. 0) | c <- Map.elems (coeffsVar coeffs) ]
 
-createLine :: Coeffs -> Map (Ptr Instruction) Integer -> SMTExpr Bool
+createLine :: Ord var => Coeffs var -> Map var Integer -> SMTExpr Bool
 createLine coeffs vars
   = (case Map.elems $ Map.intersectionWith (\c i -> c * (constant i)) (coeffsVar coeffs) vars of
       [x] -> x
@@ -65,8 +63,8 @@ createLine coeffs vars
     .==.
     (coeffsConst coeffs)
 
-createLines :: Monad m => Coeffs -> Set (Map (Ptr Instruction) Integer)
-               -> SMT' m (Map ClauseId (Map (Ptr Instruction) Integer))
+createLines :: (Monad m,Ord var) => Coeffs var -> Set (Map var Integer)
+               -> SMT' m (Map ClauseId (Map var Integer))
 createLines coeffs points = do
   res <- mapM (\point -> do
                   cid <- assertId (createLine coeffs point)
@@ -74,7 +72,7 @@ createLines coeffs points = do
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: Monad m => Coeffs -> SMT' m [(Map (Ptr BasicBlock) (SMTExpr Bool),Map (Ptr Instruction) (SMTExpr UntypedValue)) -> SMTExpr Bool]
+extractLine :: (Monad m,Ord var) => Coeffs var -> SMT' m [(a,Map var (SMTExpr UntypedValue)) -> SMTExpr Bool]
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
   let rcoeffs' = Map.mapMaybe (\c -> if c==0
@@ -95,8 +93,8 @@ extractLine coeffs = do
          ,\(_,vals) -> (lhs vals)
                        .<. (constant rconst)]
 
-mineStates :: (MonadIO m,SMTBackend b IO) => IO b -> RSMState
-              -> m (RSMState,[(Map (Ptr BasicBlock) (SMTExpr Bool),Map (Ptr Instruction) (SMTExpr UntypedValue)) -> SMTExpr Bool])
+mineStates :: (MonadIO m,SMTBackend b IO,Ord var) => IO b -> RSMState loc var
+              -> m (RSMState loc var,[(a,Map var (SMTExpr UntypedValue)) -> SMTExpr Bool])
 mineStates backend st
   = runStateT
     (do
@@ -152,7 +150,7 @@ mineStates backend st
                 Just (ncls,lines) -> return (Just (Set.insert coreLine1 $
                                                    Set.union coreLines2 ncls,lines))
                 Nothing -> return Nothing
-
+{-
 extractBlock :: Map (Ptr BasicBlock) Bool -> Ptr BasicBlock
 extractBlock mp = case blks of
   [x] -> x
@@ -161,3 +159,4 @@ extractBlock mp = case blks of
   where
     blks = [ blk | (blk,act) <- Map.toList mp
                  , act ]
+-}
