@@ -182,7 +182,7 @@ consecutionNew backend mdl = do
     cur <- TR.createStateVars "" mdl
     assert (TR.stateInvariant mdl cur)
     inp <- TR.createInputVars "" mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp Map.empty
+    (nxt,real1) <- TR.declareNextState mdl cur inp Nothing Map.empty
     --assert (blockConstraint nxtBlks)
     (asserts1,real2) <- TR.declareAssertions mdl cur inp real1
     (assumps1,real3) <- TR.declareAssumptions mdl cur inp real2
@@ -232,7 +232,7 @@ runIC3 cfg act = do
     cur <- TR.createStateVars "" mdl
     assert $ TR.stateInvariant mdl cur
     inp <- TR.createInputVars "inp." mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp Map.empty
+    (nxt,real1) <- TR.declareNextState mdl cur inp Nothing Map.empty
     (assumps,real2) <- TR.declareAssumptions mdl cur inp real1
     mapM_ assert assumps
     inp' <- TR.createInputVars "inp.nxt." mdl
@@ -245,14 +245,14 @@ runIC3 cfg act = do
   interpolation <- createSMTPool interpBackend' $ do
     setLogic "QF_LIA"
     setOption (ProduceInterpolants True)
+    ante <- interpolationGroup
+    post <- interpolationGroup
     cur <- TR.createStateVars "" mdl
     inp <- TR.createInputVars "" mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp Map.empty
+    (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) Map.empty
     (asserts,real2) <- TR.declareAssertions mdl cur inp real1
     (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
     (nxt',rev) <- TR.createRevState "" mdl
-    ante <- interpolationGroup
-    post <- interpolationGroup
     assertInterp (TR.stateInvariant mdl cur) ante
     mapM_ (\asump -> assertInterp asump ante) assumps
     mapM_ (\assert -> assertInterp assert ante) asserts
@@ -778,7 +778,7 @@ baseCases st = do
   comment "Declare assertions:"
   (asserts0,real1) <- TR.declareAssertions st cur0 inp0 real0
   comment "Declare next state:"
-  (cur1,real2) <- TR.declareNextState st cur0 inp0 real1
+  (cur1,real2) <- TR.declareNextState st cur0 inp0 Nothing real1
   comment "Inputs 2:"
   inp1 <- TR.createInputVars "nxt" st
   comment "Assumptions 2:"
@@ -928,7 +928,7 @@ check st opts = do
       comment "Inputs"
       inps <- TR.createInputVars "" real
       (assumps,real0) <- TR.declareAssumptions real st inps Map.empty
-      (nxt_st,real1) <- TR.declareNextState real st inps real0
+      (nxt_st,real1) <- TR.declareNextState real st inps Nothing real0
       (ass,real2) <- TR.declareAssertions real st inps real1
       comment "Assumptions"
       assert $ app and' assumps
@@ -1321,7 +1321,7 @@ checkFixpoint level = do
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
       assert $ app and' assumps
-      (nxt,real2) <- TR.declareNextState mdl cur inp real1
+      (nxt,real2) <- TR.declareNextState mdl cur inp Nothing real1
       inp' <- TR.createInputVars "nxt" mdl
       (asserts',real0') <- TR.declareAssertions mdl nxt inp' Map.empty
       assert $ not' $ app and' asserts'
@@ -1338,7 +1338,7 @@ checkFixpoint level = do
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
       assert $ app and' assumps
-      (nxt,real2) <- TR.declareNextState mdl cur inp real1
+      (nxt,real2) <- TR.declareNextState mdl cur inp Nothing real1
       assert $ TR.stateInvariant mdl nxt
       assert $ not' $ fp nxt
       checkSat

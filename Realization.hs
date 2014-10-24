@@ -19,7 +19,8 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
   createInputVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (Input t)
   initialState :: t -> State t -> SMTExpr Bool
   stateInvariant :: t -> State t -> SMTExpr Bool
-  declareNextState :: (Functor m,MonadIO m) => t -> State t -> Input t -> RealizedGates
+  declareNextState :: (Functor m,MonadIO m) => t -> State t -> Input t -> Maybe InterpolationGroup
+                      -> RealizedGates
                       -> SMT' m (State t,RealizedGates)
   declareAssertions :: (Functor m,MonadIO m) => t -> State t -> Input t -> RealizedGates
                        -> SMT' m ([SMTExpr Bool],RealizedGates)

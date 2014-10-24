@@ -554,7 +554,7 @@ instance TransitionRelation Realization where
       exactlyOne prev (x:xs)
         = (prev++(x:(fmap not' xs))):
           (exactlyOne (prev++[not' x]) xs)
-  declareNextState real (blks,latch) inp gts = do
+  declareNextState real (blks,latch) inp _ gts = do
     (nblks,gts1) <- runStateT
                     (Map.traverseWithKey
                      (\trg [act] -> do
@@ -599,7 +599,8 @@ instance TransitionRelation Realization where
     let blk = case [ blk | (blk,True) <- Map.toList (fst full) ] of
           [b] -> b
         nrsm = addRSMState blk (Map.mapMaybe id $ snd lifted) rsm
-    mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
+    (nrsm',props) <- mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
+    return (nrsm',fmap (\prop (_,vals) -> prop vals) props)
   createRevState pre st = do
     (blks,instrs) <- createStateVars pre st
     let rmp1 = Map.foldlWithKey
@@ -655,4 +656,4 @@ instance TransitionRelation Realization where
                     ) (sortBy (comparing (not . snd)) xs)
         return $ concat $ intersperse "," lst
   suggestedPredicates mdl = blkPredicates (blocks mdl)++
-                            cmpPredicates (latches mdl)
+                            splitPredicates (cmpPredicates (latches mdl))

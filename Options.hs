@@ -20,6 +20,7 @@ data Options = Options { optBackendCons :: String
 
 data Encoding = Monolithic
               | BlockWise
+              | TRGen
 
 defaultOptions :: Options
 defaultOptions = Options { optBackendCons = z3
@@ -50,8 +51,9 @@ allOpts
      (ReqArg (\e opt -> opt { optEncoding = case e of
                                "monolithic" -> Monolithic
                                "blockwise" -> BlockWise
+                               "trgen" -> TRGen
                             }) "name")
-     "Choose an encoding for the transition relation:\n  monolithic - Translate the whole program graph into one step (default)\n  blockwise - Each LLVM block is its own step"
+     "Choose an encoding for the transition relation:\n  monolithic - Translate the whole program graph into one step (default)\n  blockwise - Each LLVM block is its own step\n  trgen - Use the original CTIGAR encoding"
     ,Option [] ["backend-cons"]
      (ReqArg (\b opt -> opt { optBackendCons = b }) "cmd")
      "The SMT solver used for consecution calls [default: z3]"

@@ -72,7 +72,7 @@ createLines coeffs points = do
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: (Monad m,Ord var) => Coeffs var -> SMT' m [(a,Map var (SMTExpr UntypedValue)) -> SMTExpr Bool]
+extractLine :: (Monad m,Ord var) => Coeffs var -> SMT' m [Map var (SMTExpr UntypedValue) -> SMTExpr Bool]
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
   let rcoeffs' = Map.mapMaybe (\c -> if c==0
@@ -88,13 +88,13 @@ extractLine coeffs = do
                   [x] -> x
                   xs -> app plus xs
   rconst <- getValue (coeffsConst coeffs)
-  return [\(_,vals) -> (lhs vals)
-                       .<=. (constant rconst)
-         ,\(_,vals) -> (lhs vals)
-                       .<. (constant rconst)]
+  return [\vals -> (lhs vals)
+                   .<=. (constant rconst)
+         ,\vals -> (lhs vals)
+                   .<. (constant rconst)]
 
 mineStates :: (MonadIO m,SMTBackend b IO,Ord var) => IO b -> RSMState loc var
-              -> m (RSMState loc var,[(a,Map var (SMTExpr UntypedValue)) -> SMTExpr Bool])
+              -> m (RSMState loc var,[Map var (SMTExpr UntypedValue) -> SMTExpr Bool])
 mineStates backend st
   = runStateT
     (do

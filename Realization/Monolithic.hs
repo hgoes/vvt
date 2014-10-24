@@ -869,7 +869,7 @@ instance TransitionRelation RealizedBlocks where
       exactlyOne prev (x:xs)
         = (prev++(x:(fmap not' xs))):
           (exactlyOne (prev++[not' x]) xs)
-  declareNextState st (blks,instrs) inp real = do
+  declareNextState st (blks,instrs) inp _ real = do
     let inp' = (blks,inp,instrs)
     (nblks,real1) <- runStateT
                      (Map.traverseWithKey
@@ -943,13 +943,14 @@ instance TransitionRelation RealizedBlocks where
                     ) (sortBy (comparing (not . snd)) xs)
         return $ concat $ intersperse "," lst
   suggestedPredicates mdl = blkPredicates (fmap (const ()) (realizedLatchBlocks mdl))++
-                            cmpPredicates (fmap fst (realizedLatches mdl))
+                            splitPredicates (cmpPredicates (fmap fst (realizedLatches mdl)))
   defaultPredicateExtractor _ = return emptyRSM
   extractPredicates mdl rsm full lifted = do
     let blk = case [ blk | (blk,True) <- Map.toList (fst full) ] of
                [b] -> b
         nrsm = addRSMState blk (Map.mapMaybe id $ snd lifted) rsm
-    mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
+    (nrsm',props) <- mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
+    return (nrsm',fmap (\prop (_,vals) -> prop vals) props)
 
 assertPredicates :: RealizedBlocks -> [(LatchActs,ValueMap) -> SMTExpr Bool]
 assertPredicates mdl

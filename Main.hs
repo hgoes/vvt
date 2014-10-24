@@ -5,6 +5,7 @@ import Realization
 import Realization.Common
 import Realization.Monolithic
 import qualified Realization.BlockWise as BlockWise
+import qualified Realization.TRGen as TRGen
 import Options
 import CTIGAR (check)
 import PartialArgs
@@ -57,14 +58,18 @@ getUndefState _ = undefined
 getTransitionRelation :: String -> Options
                          -> (forall mdl. TransitionRelation mdl => mdl -> IO a) -> IO a
 getTransitionRelation file opts f = do
-  let ropts = RealizationOptions { useErrorState = True
-                                    , exactPredecessors = False
-                                    , optimize = optOptimizeTR opts }
-  fun <- getProgram (optOptimizeTR opts) (optFunction opts) file
   case optEncoding opts of
    Monolithic -> do
+     let ropts = RealizationOptions { useErrorState = True
+                                    , exactPredecessors = False
+                                    , optimize = optOptimizeTR opts }
+     fun <- getProgram (optOptimizeTR opts) (optFunction opts) file
      st <- getModel ropts fun
      f st
    BlockWise -> do
+     fun <- getProgram (optOptimizeTR opts) (optFunction opts) file
      st <- BlockWise.realizeFunction fun
      f st
+   TRGen -> do
+     trgen <- TRGen.readTRGen file
+     f trgen
