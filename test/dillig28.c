@@ -2,8 +2,8 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 /*
  * From CAV'12 by Sharma et al.
@@ -14,7 +14,7 @@ int main() {
   int y;
   int n;
   x = y = n = 0;
-  while(__undef_bool()) {
+  while(__nondet_bool()) {
       x++;
       y++;
   }

@@ -1,12 +1,12 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main()
 {
-  int tagbuf_len = __undef_int();
+  int tagbuf_len = __nondet_int();
   int t;
 
   if(tagbuf_len >= 1); else return 0;
@@ -20,7 +20,7 @@ int main()
       assert(t <= tagbuf_len);
       return 0;
     }
-    if (__undef_bool()) {
+    if (__nondet_bool()) {
       break;
     }
      assert(0 <= t);
@@ -38,8 +38,8 @@ int main()
       return 0;
     }
 
-    if (__undef_bool()) {
-      if (__undef_bool()) {
+    if (__nondet_bool()) {
+      if (__nondet_bool()) {
 	assert(0 <= t);
 	assert(t <= tagbuf_len);
         t++;
@@ -50,7 +50,7 @@ int main()
         }
       }
     }
-    else if (__undef_bool()) {
+    else if (__nondet_bool()) {
       break;
     }
 

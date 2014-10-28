@@ -2,8 +2,8 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 //This example is adapted from StInG 
 int main()
@@ -14,10 +14,10 @@ int main()
 	int x3;
 	int x4;
 	int x5;
-	int x6 = __undef_int();
-	int x7 = __undef_int();
-	int p = __undef_int();
-	int q = __undef_int();
+	int x6 = __nondet_int();
+	int x7 = __nondet_int();
+	int p = __nondet_int();
+	int q = __nondet_int();
 
 	x1=0;
 	x2=0;
@@ -29,9 +29,9 @@ int main()
 	if (! (p >=1)) return 0;
 	if (! (q >=1)) return 0;
 
-	while (__undef_bool())
+	while (__nondet_bool())
 	{
-	  if (__undef_bool())
+	  if (__nondet_bool())
 	    {
 	      if (! (x6 >=1)) return 0;
 	      x1 = x1 + 1;
@@ -39,7 +39,7 @@ int main()
 	    }
 	  else
 	    {
-	      if (__undef_bool())
+	      if (__nondet_bool())
 		{
 		  if (! (x1 >=1)) return 0;
 		  if (! (x7 >=1)) return 0;
@@ -49,7 +49,7 @@ int main()
 		}
 	      else
 		{
-		  if (__undef_bool())
+		  if (__nondet_bool())
 		    {
 		      if (! (x2 >=1)) return 0;
 		      
@@ -59,7 +59,7 @@ int main()
 		    }
 		  else
 		    {
-		      if (__undef_bool())
+		      if (__nondet_bool())
 			{
 			  if (! (x3>=1)) return 0;
 			  if (! (x6>=1)) return 0;
@@ -70,7 +70,7 @@ int main()
 			}
 		      else
 			{
-			  if (__undef_bool())
+			  if (__nondet_bool())
 			    {
 			      if (! (x4>=1)) return 0;
 			      x4 = x4-1;

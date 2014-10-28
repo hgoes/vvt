@@ -2,18 +2,18 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 //This example is adapted from StInG 
 int main()
 {
   int x1;
-  int v1 = __undef_int();
+  int v1 = __nondet_int();
   int x2;
-  int v2 = __undef_int();
+  int v2 = __nondet_int();
   int x3;
-  int v3 = __undef_int();
+  int v3 = __nondet_int();
   int t;
 
 	x1=100;
@@ -27,11 +27,11 @@ int main()
 
 	if (! (v2 +5 >=0)) return 0;
 	if (! (v2 <= 5)) return 0;
-	while (__undef_bool())
+	while (__nondet_bool())
 	{
 		if (! (v2 +5 >=0)) return 0;
 		if (! (v2 <= 5)) return 0;
-		if (__undef_bool())
+		if (__nondet_bool())
 		{
 			if (! (2* x2 - x1 - x3>=0)) return 0;
 			x1 = x1+v1;

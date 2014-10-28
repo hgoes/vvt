@@ -1,14 +1,14 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main ()
 {
-  int scheme = __undef_int();
-  int urilen = __undef_int();
-  int tokenlen = __undef_int();
+  int scheme = __nondet_int();
+  int urilen = __nondet_int();
+  int tokenlen = __nondet_int();
   int cp,c;
 
   if(urilen>0); else return 0;
@@ -24,11 +24,11 @@ int main ()
   assert(cp-1 < urilen);
   assert(0 <= cp-1);
 
-  if (__undef_bool()) {
+  if (__nondet_bool()) {
     assert(cp < urilen);
     assert(0 <= cp);
     while ( cp != urilen-1) {
-      if(__undef_bool()) break;
+      if(__nondet_bool()) break;
       assert(cp < urilen);
       assert(0 <= cp);
       ++cp;
@@ -43,7 +43,7 @@ int main ()
 
     scheme = cp;
 
-    if (__undef_bool()) {
+    if (__nondet_bool()) {
       c = 0;
       assert(cp < urilen);
       assert(0<=cp);
@@ -51,7 +51,7 @@ int main ()
              && c < tokenlen - 1) {
 	assert(cp < urilen);
 	assert(0<=cp);
-        if (__undef_bool()) {
+        if (__nondet_bool()) {
           ++c;
 	  assert(c < tokenlen);
 	  assert(0<=c);

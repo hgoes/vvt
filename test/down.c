@@ -2,11 +2,11 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main() {
-  int n = __undef_int();
+  int n = __nondet_int();
   int k;
   int i;
   int j;

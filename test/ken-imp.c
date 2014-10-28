@@ -1,12 +1,12 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main() {
-  int i = __undef_int();
-  int j = __undef_int();
+  int i = __nondet_int();
+  int j = __nondet_int();
   int x;
   int y;
   x = i;

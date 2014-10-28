@@ -2,19 +2,19 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main()
 {
-  int flag = __undef_int();
+  int flag = __nondet_int();
   int t;
   int s;
   int a;
   int b;
   int x,y;
   t = s = a = b = 0;
-  while(__undef_bool()){
+  while(__nondet_bool()){
     a++;
     b++;
     s=s+a;
@@ -30,7 +30,7 @@ int main()
   }
   y = 0;
   while(y<=x){
-    if(__undef_bool()) 
+    if(__nondet_bool()) 
        y++;
     else 
        y=y+2;

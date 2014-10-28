@@ -1,19 +1,19 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main() {
-  int m = __undef_int();
-  int n = __undef_int();
+  int m = __nondet_int();
+  int n = __nondet_int();
   int i,j,k;
   if(m+1 >= n ) return 0;
   i = 0;
   while (i<n) {
     j = i;
     while (j<m) {
-      if (__undef_bool()){
+      if (__nondet_bool()){
 	assert( j >= 0 );
 	j++;
 	k = 0;

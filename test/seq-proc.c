@@ -2,12 +2,12 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main() {
-  int n0 = __undef_int();
-  int n1 = __undef_int();
+  int n0 = __nondet_int();
+  int n1 = __nondet_int();
 
   int i0, i1, j1, j0;
   int k;

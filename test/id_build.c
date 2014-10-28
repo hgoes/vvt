@@ -2,8 +2,8 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 // from FreePastry source, file Id.java
   /**
@@ -26,7 +26,7 @@ bool __undef_bool() __attribute__((pure));
 
 int main() {
   int offset, length;
-  int nlen = __undef_int();
+  int nlen = __nondet_int();
   int i, j;
 
   i = 0;

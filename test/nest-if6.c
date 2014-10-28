@@ -2,13 +2,13 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main()
 {
-  int lda = __undef_int();
-  int n = __undef_int();
+  int lda = __nondet_int();
+  int n = __nondet_int();
   int k,kp1,l,nm1;
   int i, itemp;
   int dx, incx, ix;
@@ -29,7 +29,7 @@ int main()
 	ix = ix + incx;
 	i = 1;
 	while (i < n-k) {
-	  if(__undef_bool()) {
+	  if(__nondet_bool()) {
 	    itemp = i;
 	  }
 	  ix = ix + incx;
@@ -40,7 +40,7 @@ int main()
 	itemp = 0;
 	i = 1;
 	while (i < n-k) {
-	  if(__undef_bool()) {
+	  if(__nondet_bool()) {
 	    itemp = i;
 	  }
 	  i++;

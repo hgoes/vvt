@@ -1,8 +1,8 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main () {
 
@@ -13,12 +13,12 @@ int main () {
   
   xa = ya = 0;
   
-  while (__undef_bool()) {
+  while (__nondet_bool()) {
     x = xa + 2*ya;
     y = -2*xa + ya;
 
     x++;
-    if (__undef_bool()) y = y+x;
+    if (__nondet_bool()) y = y+x;
     else y = y-x;
     
     xa = x - 2*y;

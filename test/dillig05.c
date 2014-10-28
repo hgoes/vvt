@@ -2,12 +2,12 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main()
 {
-  int flag = __undef_bool();
+  int flag = __nondet_bool();
   int x;
   int y;
   int j;
@@ -15,7 +15,7 @@ int main()
   
   x = y = j = i = 0;
   
-  while(__undef_bool())
+  while(__nondet_bool())
     {
       x++;
       y++;

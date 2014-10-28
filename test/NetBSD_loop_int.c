@@ -2,12 +2,12 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main ()
 {
-  int maxpathlen = __undef_int();
+  int maxpathlen = __nondet_int();
 
   int buf_off;
   int pattern_off;
@@ -37,7 +37,7 @@ int main ()
     else {
       glob3_dc++;
       assert(0 <= glob3_dc);assert (glob3_dc < maxpathlen + 1);
-      if (__undef_bool()) return 0;
+      if (__nondet_bool()) return 0;
     }
 
  return 0;

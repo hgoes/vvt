@@ -2,8 +2,8 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main()
 {
@@ -13,9 +13,9 @@ int main()
   int j;
   x = y = i = j = 0;
 
-  while(__undef_bool())
+  while(__nondet_bool())
   {
-    while(__undef_bool())
+    while(__nondet_bool())
     {
        if(x==y)
           i++;

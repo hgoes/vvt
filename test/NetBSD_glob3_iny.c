@@ -2,14 +2,14 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main ()
 {
   int buf_off, pattern_off, bound_off;
 
-  int maxpathlen = __undef_int();
+  int maxpathlen = __nondet_int();
   int error;
   int pathbuf_off;
   int pathend_off;
@@ -29,23 +29,23 @@ int main ()
 
   error = 0;
 
-  while (__undef_bool()) {
+  while (__nondet_bool()) {
     assert(0 <= pattern_off ); assert( pattern_off <= maxpathlen);
-    if (__undef_bool()) continue;
+    if (__nondet_bool()) continue;
     i = 0;
     while (1) 
       if (i > maxpathlen) return 0;
       else {
 	assert(0 <= i);	assert( i <= maxpathlen);
         i++;
-        if (__undef_bool()) return 0;
+        if (__nondet_bool()) return 0;
       }
 
     assert(0 <= pathlim_off ); assert( pathlim_off <= maxpathlen);
 
     if (i > maxpathlen){
-      if (__undef_bool()) {
-	if (__undef_bool()) {
+      if (__nondet_bool()) {
+	if (__nondet_bool()) {
 	  error = 5;
 	  return 0;
 	}
@@ -55,7 +55,7 @@ int main ()
 	}
       }
     }
-    if (__undef_bool()) {
+    if (__nondet_bool()) {
       assert (i <= maxpathlen + 1);
       continue;
     }

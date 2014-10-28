@@ -1,8 +1,8 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 // Henning: Made variables local instead of global
 
@@ -12,7 +12,7 @@ int main()
   int l,r,u,j;
   int x,y,z;
 
-  n = __undef_int();
+  n = __nondet_int();
   x=1;
   while (x<n) {
     z=1;
@@ -22,7 +22,7 @@ int main()
       l = z; r = z+x; u = y;
       i=l; j=r; k=l;
       while (i<r && j<u) { 
-	if(__undef_bool()) {
+	if(__nondet_bool()) {
 	  i++;
 	} 
 	else {

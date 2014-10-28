@@ -1,13 +1,13 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 //This example is adapted from StinG 
 int main()
 {
-  int i = __undef_int();
+  int i = __nondet_int();
   int sa;
   int ea;
   int ma;
@@ -23,9 +23,9 @@ int main()
   eb=0;
   mb=0;
 
-  while(__undef_bool())
+  while(__nondet_bool())
     {
-      if (__undef_bool())
+      if (__nondet_bool())
 	{
 	  if (! (sb >= 1)) return 0;
 	  sb = sb-1;
@@ -35,7 +35,7 @@ int main()
 	}
       else
 	{
-	  if (__undef_bool())
+	  if (__nondet_bool())
 	    {
 	      if (! (i >= 1)) return 0;
 	      i = i -1;
@@ -45,7 +45,7 @@ int main()
 	    }
 	  else
 	    {
-	      if (__undef_bool())
+	      if (__nondet_bool())
 		{
 		  if (! (i>=1)) return 0;
 		  i=i-1;
@@ -55,7 +55,7 @@ int main()
 		}
 	      else
 		{
-		  if (__undef_bool())
+		  if (__nondet_bool())
 		    {
 		      if (! (sa>=1)) return 0;
 		      sa=sa-1;
@@ -65,7 +65,7 @@ int main()
 		    }
 		  else
 		    {
-		      if (__undef_bool())
+		      if (__nondet_bool())
 			{
 			  if (! (sa>=1)) return 0;
 			  i=i+sa+ea+ma;
@@ -75,7 +75,7 @@ int main()
 			}
 		      else
 			{
-			  if (__undef_bool())
+			  if (__nondet_bool())
 			    {
 			      if (! (sb>=1)) return 0;
 			      sb=sb-1;
@@ -86,7 +86,7 @@ int main()
 			    }
 			  else
 			    {
-			      if (__undef_bool())
+			      if (__nondet_bool())
 				{
 				  if (! (sb>=1)) return 0;
 				  i=i+sb+eb+mb;
@@ -96,7 +96,7 @@ int main()
 				}
 			      else
 				{
-				  if (__undef_bool())
+				  if (__nondet_bool())
 				    {
 				      if (! (sa>=1)) return 0;
 				      sa=sa-1;
@@ -107,7 +107,7 @@ int main()
 				    }
 				  else
 				    {
-				      if (__undef_bool())
+				      if (__nondet_bool())
 					{
 					  if (! (ea >=1)) return 0;
 					  ea = ea -1;

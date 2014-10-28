@@ -1,8 +1,8 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 //This example is adapted from StInG 
 int main()
@@ -25,9 +25,9 @@ int main()
 	p4=0;
 	p5=0;
 
-	while(__undef_bool())
+	while(__nondet_bool())
 	{
-	  if (__undef_bool())
+	  if (__nondet_bool())
 		{
 			if (!(p1 >= 0)) return 0;
 			if (!(p1 <= 0)) return 0;
@@ -38,7 +38,7 @@ int main()
 		}
 		else
 		{
-		  if (__undef_bool())
+		  if (__nondet_bool())
 			{
 				if (!(p2 >= 0)) return 0;
 				if (!(p2 <= 0)) return 0;
@@ -49,7 +49,7 @@ int main()
 			}
 			else
 			{
-			  if (__undef_bool())
+			  if (__nondet_bool())
 				{
 					if (!(p2 >= 1)) return 0;
 					if (!(p2 <= 1)) return 0;
@@ -59,7 +59,7 @@ int main()
 				}
 				else
 				{
-				  if (__undef_bool())
+				  if (__nondet_bool())
 					{
 						if (!(p3>=0)) return 0;
 						if (!(p3<=0)) return 0;
@@ -70,7 +70,7 @@ int main()
 					}
 					else
 					{
-					  if (__undef_bool())
+					  if (__nondet_bool())
 						{
 							if (!(p3>=1)) return 0;
 							if (!(p3<=1)) return 0;
@@ -80,7 +80,7 @@ int main()
 						}
 						else
 						{
-						  if (__undef_bool())
+						  if (__nondet_bool())
 							{
 								if (!(p4 >=0)) return 0;
 								if (!(p4 <=0)) return 0;
@@ -91,7 +91,7 @@ int main()
 							}
 							else
 							{
-							  if (__undef_bool())
+							  if (__nondet_bool())
 								{
 									if (! (p4 >=1)) return 0;
 									if (! (p4 <=1)) return 0;
@@ -101,7 +101,7 @@ int main()
 								}
 								else
 								{
-								  if (__undef_bool())
+								  if (__nondet_bool())
 									{
 										if (! (p5>=0)) return 0;
 										if (! (p5<=0)) return 0;
@@ -110,7 +110,7 @@ int main()
 									}
 									else
 									{
-									  if (__undef_bool())
+									  if (__nondet_bool())
 										{
 											if (! (p5>=1)) return 0;
 											if (! (p5<=1)) return 0;
@@ -120,7 +120,7 @@ int main()
 										}
 										else
 										{
-										  if (__undef_bool())
+										  if (__nondet_bool())
 											{
 												if (! (p5>=2)) return 0;
 												if (! (p5<=2)) return 0;
@@ -129,7 +129,7 @@ int main()
 											}
 											else
 											{
-											  if (__undef_bool())
+											  if (__nondet_bool())
 												{
 													if (! (p5 >= 3)) return 0;
 													if (! (p5 <= 3)) return 0;

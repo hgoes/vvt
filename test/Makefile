@@ -5,7 +5,7 @@ BENCHMARKS=$(addsuffix .bc,$(shell cat benchmarks))
 ALL: $(BENCHMARKS)
 
 $(BENCHMARKS): %.bc: %.c
-	$(CLANG) -O0 -Wall -c -emit-llvm $< -o $@
+	$(CLANG) -O0 -Wall -c -emit-llvm -DHCTIGAR $< -o $@
 
 clean:
 	rm -f $(BENCHMARKS)

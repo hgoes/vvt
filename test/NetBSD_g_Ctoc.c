@@ -2,12 +2,12 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main ()
 {
-  int base_sz = __undef_int();
+  int base_sz = __nondet_int();
   int i;
   int j;
   int len;
@@ -28,7 +28,7 @@ int main ()
     } else {
       assert(0<= j); assert(j < base_sz);
       assert(0<= i); assert(i < base_sz );
-      if (__undef_bool()) {
+      if (__nondet_bool()) {
         i++;
         j++;
         return 0;

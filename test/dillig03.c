@@ -2,8 +2,8 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main()
 {
@@ -11,8 +11,8 @@ int main()
   int w;
   int z;
   k = w = 1;
-  while(__undef_bool()) {
-    z = __undef_int();
+  while(__nondet_bool()) {
+    z = __nondet_int();
     if(z>5) w++;
     k=k+w;
   }

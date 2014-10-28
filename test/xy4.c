@@ -2,8 +2,8 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main (){
 
@@ -12,7 +12,7 @@ int main (){
   
   x = y = 0;
   
-  while (__undef_bool()){
+  while (__nondet_bool()){
     x = x + 4;
     y = y + 1;
   }

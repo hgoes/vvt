@@ -2,12 +2,12 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main ()
 {
-  int maxpathlen = __undef_int();
+  int maxpathlen = __nondet_int();
   int pathbuf_off;
   int bound_off;
   int glob2_p_off;

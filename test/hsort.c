@@ -2,17 +2,17 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 //This example is adapted from StInG 
 int main()
 {
-  int n = __undef_int();
-  int l = __undef_int();
-  int r = __undef_int();
-  int i = __undef_int();
-  int j = __undef_int();
+  int n = __nondet_int();
+  int l = __nondet_int();
+  int r = __nondet_int();
+  int i = __nondet_int();
+  int j = __nondet_int();
   
   if (! (n >= 2)) return 0;
   if (! (r - n == 0)) return 0;
@@ -21,9 +21,9 @@ int main()
   if (! (2*l - n >= 0)) return 0;
   if (! (2*l - n - 1 <= 0)) return 0;
 
-  while (__undef_bool())
+  while (__nondet_bool())
     {
-      if (__undef_bool())
+      if (__nondet_bool())
 	{
 	  if (! (r -j  -1 >= 0)) return 0;
 	  i = j + 1;
@@ -31,7 +31,7 @@ int main()
 	}
       else
 	{
-	  if (__undef_bool())
+	  if (__nondet_bool())
 	    {
 	      if (! (j -r <=0)) return 0;
 	      i = j;
@@ -39,7 +39,7 @@ int main()
 	    }
 	  else
 	    {
-	      if (__undef_bool())
+	      if (__nondet_bool())
 		{
 		  if (! (l >=2)) return 0;
 		  if (! (r  >=2)) return 0;

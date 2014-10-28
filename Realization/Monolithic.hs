@@ -377,7 +377,7 @@ realizeDefInstruction ana real i@(castDown -> Just opInst) = do
 realizeDefInstruction ana real i@(castDown -> Just call) = do
   fname <- getFunctionName call
   case fname of
-   '_':'_':'u':'n':'d':'e':'f':_ -> do
+   '_':'_':'n':'o':'n':'d':'e':'t':_ -> do
      tp <- getType i >>= translateType
      withProxyArgValue tp $
        \(_::a) ann -> return $ NormalValue ann $
@@ -549,7 +549,7 @@ realizeInstruction opts ana real i@(castDown -> Just call) = do
         Just a -> a
   fname <- getFunctionName call
   case fname of
-   '_':'_':'u':'n':'d':'e':'f':_ -> do
+   '_':'_':'n':'o':'n':'d':'e':'t':_ -> do
      tp <- getType i >>= translateType
      defineInstr' ana (real { inputs = Map.insert i tp (inputs real)
                             }) i tp (\(_,inp,_) -> inp Map.! i)

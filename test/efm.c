@@ -2,18 +2,18 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 //This example is adapted from StInG 
 int main()
 {
-  int x1 = __undef_int();
-  int x2 = __undef_int();
-  int x3 = __undef_int();
-  int x4 = __undef_int();
-  int x5 = __undef_int();
-  int x6 = __undef_int();
+  int x1 = __nondet_int();
+  int x2 = __nondet_int();
+  int x3 = __nondet_int();
+  int x4 = __nondet_int();
+  int x5 = __nondet_int();
+  int x6 = __nondet_int();
 
   if (! (x1>=1)) return 0;
   if (! (x2==0)) return 0;
@@ -22,9 +22,9 @@ int main()
   if (! (x5==0)) return 0;
   if (! (x6==0)) return 0;
   
-  while(__undef_bool())
+  while(__nondet_bool())
     {
-      if (__undef_bool())
+      if (__nondet_bool())
 	{
 	  if (! (x1 >= 1)) return 0;
 	  if (! (x4 >= 1)) return 0;
@@ -35,7 +35,7 @@ int main()
 	}
       else
 	{
-	  if (__undef_bool())
+	  if (__nondet_bool())
 	    {
 	      if (! (x2 >= 1)) return 0;
 	      if (! (x6 >= 1)) return 0;
@@ -44,7 +44,7 @@ int main()
 	    }
 	  else
 	    {
-	      if (__undef_bool())
+	      if (__nondet_bool())
 		{
 		  if (! (x4 >= 1)) return 0;
 		  if (! (x3 >= 1)) return 0;
@@ -53,7 +53,7 @@ int main()
 		}
 	      else
 		{
-		  if (__undef_bool())
+		  if (__nondet_bool())
 		    {
 		      if (! (x3>=1)) return 0;
 		      x3=x3-1;

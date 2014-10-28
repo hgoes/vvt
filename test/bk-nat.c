@@ -2,25 +2,25 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 //This example is adapted from StIng 
 int main()
 {
-  int invalid = __undef_int();
-  int unowned = __undef_int();
-  int nonexclusive = __undef_int();
-  int exclusive = __undef_int();
+  int invalid = __nondet_int();
+  int unowned = __nondet_int();
+  int nonexclusive = __nondet_int();
+  int exclusive = __nondet_int();
 
 	if (! (exclusive==0)) return 0;
 	if (! (nonexclusive==0)) return 0;
 	if (! (unowned==0)) return 0;
 	if (! (invalid>= 1)) return 0;
 
-	while (__undef_bool())
+	while (__nondet_bool())
 	{
-	  if (__undef_bool())
+	  if (__nondet_bool())
 		{
 			if (! (invalid >= 1)) return 0;
 			nonexclusive=nonexclusive+exclusive;
@@ -30,7 +30,7 @@ int main()
 		}
 		else
 		{
-		  if (__undef_bool())
+		  if (__nondet_bool())
 			{
 				if (! (nonexclusive + unowned >=1)) return 0;
 				invalid=invalid + unowned + nonexclusive-1;

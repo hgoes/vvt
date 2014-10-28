@@ -2,8 +2,8 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 /*
  * Taken from "Counterexample Driven Refinement for Abstract Interpretation" (TACAS'06) by Gulavani
@@ -12,10 +12,10 @@ bool __undef_bool();
 int main() {
   int x;
   int m;
-  int n = __undef_int();
+  int n = __nondet_int();
   x = m = 0;
   while(x<=n-1) {
-    if(__undef_bool()) {
+    if(__nondet_bool()) {
       m = x;
     }
     x= x+1;

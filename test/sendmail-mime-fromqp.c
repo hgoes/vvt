@@ -2,26 +2,26 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main ()
 {
-  int outfilelen = __undef_int();
+  int outfilelen = __nondet_int();
   int nchar;
   int out; // index into outfile
   nchar = out = 0;
 
   if(outfilelen <= 0) return 0;
 
-  while(__undef_bool())
+  while(__nondet_bool())
   {
-    if(__undef_bool())
+    if(__nondet_bool())
     {
-      if(__undef_bool())
+      if(__nondet_bool())
 	break; 
 
-      if(__undef_bool())
+      if(__nondet_bool())
       {
 	out = 0;
 	nchar = 0;
@@ -29,7 +29,7 @@ int main ()
       }
       else
       {
-	if(__undef_bool())  break;
+	if(__nondet_bool())  break;
 
 	nchar++;
 	if (nchar >= outfilelen)
@@ -50,7 +50,7 @@ int main ()
       assert(out<outfilelen);//4
       out++;
 
-      if(__undef_bool()) break;
+      if(__nondet_bool()) break;
     }
   }
 

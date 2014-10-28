@@ -2,21 +2,21 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main ()
 {
-  int fbuflen = __undef_bool();
+  int fbuflen = __nondet_bool();
   int fb;
   if(fbuflen <= 0) return 0;
   fb = 0;
-  while (__undef_bool())
+  while (__nondet_bool())
   {
-    if (__undef_bool())
+    if (__nondet_bool())
       break;
 
-    if (__undef_bool())
+    if (__nondet_bool())
       break;
 
     assert(0<=fb);

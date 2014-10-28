@@ -2,12 +2,12 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main()
 {
-  int k = __undef_int();
+  int k = __nondet_int();
   int z;
   int x;
   int y;
@@ -15,10 +15,10 @@ int main()
   z = k;
   x = y = 0;
 
-  while(__undef_bool())
+  while(__nondet_bool())
   {
     c = 0;
-    while(__undef_bool())
+    while(__nondet_bool())
     {
       if(z==k+y-c)
       {
@@ -32,7 +32,7 @@ int main()
         c++;
       }
     }
-    while(__undef_bool())
+    while(__nondet_bool())
     {
       x--;
       y--;

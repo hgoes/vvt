@@ -2,17 +2,17 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 int main()
 {
-  int x = __undef_int();
-  int y = __undef_int();
-  int k = __undef_int();
+  int x = __nondet_int();
+  int y = __nondet_int();
+  int k = __nondet_int();
   int j;
-  int i = __undef_int();
-  int n = __undef_int();
+  int i = __nondet_int();
+  int n = __nondet_int();
   int m;
   m = 0;
   if((x+y) != k)
@@ -28,7 +28,7 @@ int main()
 	y++;
 	x--;
       }
-    if(__undef_bool())
+    if(__nondet_bool())
       m = j;
     j++;
   }

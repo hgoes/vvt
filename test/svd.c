@@ -2,13 +2,13 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main()
 {
-  int m = __undef_int();
-  int n = __undef_int();
+  int m = __nondet_int();
+  int n = __nondet_int();
   int flag,i,its,j,jj,k,l,nm;
   i=1;
   while (i<=n) {
@@ -21,7 +21,7 @@ int main()
 	assert(1<=i);assert(i<=n);
 	k++;
       }
-      if (__undef_int()) {
+      if (__nondet_int()) {
 	k=i; while (k<=m) {
 	  assert(1<=k);assert(k<=m);
 	  assert(1<=i);assert(i<=n);
@@ -59,7 +59,7 @@ int main()
 	assert(1<=k);assert(k<=n);
 	k++;
       }
-      if (__undef_bool()) {
+      if (__nondet_bool()) {
 	k=l; while (k<=n) {
 	 assert(1<=i);assert(i<=m);
 	 assert(1<=k);assert(k<=n);
@@ -103,7 +103,7 @@ int main()
   i=n; while (i>=1) { // Accumulation of right-hand transformations. 
     l = i+1;
     if (i < n) {
-      if (__undef_bool()) {
+      if (__nondet_bool()) {
 	j=l; while (j<=n) { // Double division to avoid possible underflow. 
 	  assert(1<=j);assert(j<=n);
 	  assert(1<=i);assert(i<=n);

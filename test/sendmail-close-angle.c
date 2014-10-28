@@ -2,14 +2,14 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main ()
 {
   int in;
-  int inlen = __undef_int();
-  int bufferlen = __undef_int();
+  int inlen = __nondet_int();
+  int bufferlen = __nondet_int();
   int buf;
   int buflim;
 
@@ -19,7 +19,7 @@ int main ()
   buf = 0;
   in = 0;
   buflim = bufferlen - 2;
-  while (__undef_bool())
+  while (__nondet_bool())
   {
     if (buf == buflim)
       break;

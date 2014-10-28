@@ -1,17 +1,17 @@
 #include <stdbool.h>
 
 void assert(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main()
 {
   int p;
   int i;
-  int leader_len = __undef_int();
-  int bufsize = __undef_int();
+  int leader_len = __nondet_int();
+  int bufsize = __nondet_int();
   int bufsize_0;
-  int ielen = __undef_int();
+  int ielen = __nondet_int();
 
   if(leader_len >0); else return 0;
   if(bufsize >0); else return 0;

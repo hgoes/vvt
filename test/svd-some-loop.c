@@ -2,18 +2,18 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int() __attribute__((pure));
-bool __undef_bool() __attribute__((pure));
+int __nondet_int() __attribute__((pure));
+bool __nondet_bool() __attribute__((pure));
 
 int main(){
-  int  n = __undef_int();
+  int  n = __nondet_int();
   int m,l,i,j,k;
 
   i = n;
   while (i>=1) { // Accumulation of right-hand transwhilemations. 
     l = i+1;
     if (i < n) {
-      if (__undef_bool()) {
+      if (__nondet_bool()) {
         j = l;
 	while (j<=n) { // Double division to avoid possible underflow. 
 	  assert(1<=j);assert(j<=n);

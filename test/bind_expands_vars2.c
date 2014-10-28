@@ -2,16 +2,16 @@
 
 void assert(bool);
 void assume(bool);
-int __undef_int();
-bool __undef_bool();
+int __nondet_int();
+bool __nondet_bool();
 
 
 int main() {
-  int cpoff = __undef_int();
-  int n1 = __undef_int();
-  int n2 = __undef_int();
+  int cpoff = __nondet_int();
+  int n1 = __nondet_int();
+  int n2 = __nondet_int();
   int mc_i;
-  int maxdata = __undef_int();
+  int maxdata = __nondet_int();
   assume (maxdata > 0 ); 
   assume (n1 <= maxdata * 2); 
   assume (cpoff <= n1); 
