@@ -9,7 +9,7 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals
 import Language.SMTLib2.Pipe
 import qualified Data.Text as Text
-import Data.AttoLisp (Lisp,lisp,atom)
+import Data.AttoLisp (Lisp(Symbol),lisp,atom)
 import Data.Attoparsec.ByteString (parse,choice,IResult(..))
 import qualified Data.ByteString.Char8 as BS
 import Data.Map (Map)
@@ -17,18 +17,27 @@ import qualified Data.Map as Map
 import Prelude hiding (sequence)
 import Data.Traversable (sequence)
 import Data.Typeable (cast)
-import Data.List (intersperse)
+import Data.List (intersperse,partition)
 
 data TRGen = TRGen { trVars :: Map String ProxyArgValue
                    , trNondets :: Map String ProxyArgValue
-                   , trTR :: Map Integer (Map String [(Maybe Lisp,Lisp,Lisp)])
+                   , trTR :: [Assignment]
                    , trInit :: [Lisp]
                    , trAsserts :: [Lisp]
                    , trSuggested :: [Lisp]
+                   , trUseDefines :: Bool
                    } deriving Show
 
-readTRGen :: String -> IO TRGen
-readTRGen cfile = do
+data Assignment = Assignment { assignState :: Integer
+                             , assignVar :: String
+                             , assignCond :: Maybe Lisp
+                             , assignAssertion :: Lisp
+                             , assignRHS :: Lisp
+                             } deriving Show
+                               
+
+readTRGen :: Bool -> String -> IO TRGen
+readTRGen useDefines cfile = do
   vars <- readVarFile (cfile++".vars")
   nondets <- readVarFile (cfile++".nondet")
   tr <- readTRFile (cfile++".tr")
@@ -40,7 +49,8 @@ readTRGen cfile = do
                  , trTR = tr
                  , trInit = init
                  , trAsserts = asserts
-                 , trSuggested = suggest }
+                 , trSuggested = suggest
+                 , trUseDefines = useDefines }
 
 readVarFile :: String -> IO (Map String ProxyArgValue)
 readVarFile file = do
@@ -52,17 +62,20 @@ readVarFile file = do
                                           "bool" -> ProxyArgValue (undefined::Bool) ())
                         | ln <- lines cont ]
 
-readTRFile :: String -> IO (Map Integer (Map String [(Maybe Lisp,Lisp,Lisp)]))
+readTRFile :: String -> IO [Assignment]
 readTRFile file = do
   cont <- readFile file
-  return $ Map.fromListWith (Map.unionWith (++))
-    [ case breakSemi ln of
-       [st,cond,var,ass,expr] -> (read st,Map.singleton var [(case cond of
-                                                               "" -> Nothing
-                                                               _ -> Just $ getLisp cond,
-                                                              getLisp ass,
-                                                              getLisp expr)])
-    | ln <- lines cont ]
+  return [ case breakSemi ln of
+            [st,cond,var,ass,expr]
+              -> Assignment { assignState = read st
+                            , assignCond = case cond of
+                                            "" -> Nothing
+                                            _ -> Just $ getLisp cond
+                            , assignVar = var
+                            , assignAssertion = getLisp ass
+                            , assignRHS = getLisp expr
+                            }
+         | ln <- lines cont ]
   where
     breakSemi xs = case break (==';') xs of
       (xs',[]) -> [xs']
@@ -80,9 +93,9 @@ readPredFile file = do
   cont <- readFile file
   return $ fmap getLisp (lines cont)
 
-translateLisp :: (SMTValue a,SMTAnnotation a ~ ())
-                 => Map String (SMTExpr UntypedValue) -> Lisp -> SMTExpr a
-translateLisp vars lisp
+translateLisp :: (SMTValue a)
+                 => SMTAnnotation a -> Map String (SMTExpr UntypedValue) -> Lisp -> SMTExpr a
+translateLisp ann vars lisp
   = withUndef $
     \u -> case lispToExpr commonFunctions
                (\name -> do
@@ -91,7 +104,7 @@ translateLisp vars lisp
                emptyDataTypeInfo
                (\expr -> case cast expr of
                  Just r -> r)
-               (Just $ getSort u ()) lisp of
+               (Just $ getSort u ann) lisp of
            Just r -> r
   where
     withUndef :: (a -> SMTExpr a) -> SMTExpr a
@@ -115,38 +128,38 @@ instance TransitionRelation TRGen where
       cond = case conds of
         [c] -> c
         _ -> app and' conds
-      conds = fmap (translateLisp st) (trInit trgen)
+      conds = fmap (translateLisp () st) (trInit trgen)
   declareAssumptions _ _ _ gts = return ([],gts)
   declareAssertions trgen st inp gts = return (conds,gts)
     where
-      conds = fmap (translateLisp st) (trAsserts trgen)
-  declareNextState trgen cur inp grp gts = do
-    nxt <- sequence $ Map.mapWithKey
-           (\name tp -> varNamedAnn (name++"_p") tp)
-           (trVars trgen)
-    let nxt' = Map.mapKeys (\k -> k++"_p") nxt
-        mp = Map.unions [cur,inp,nxt']
-    mapM_ (\(st,nvars)
-           -> mapM_ (\(var,asgns)
-                     -> mapM_ (\(cond,ass,_)
-                               -> let e = ((castUntypedExprValue (cur Map.! ".s"))
-                                           .==. (constant st)) .=>.
-                                          (case cond of
-                                            Nothing -> translateLisp mp ass
-                                            Just rcond -> (translateLisp mp rcond) .=>.
-                                                          (translateLisp mp ass))
-                                  in case grp of
-                                      Nothing -> assert e
-                                      Just grp -> assertInterp e grp
-                              ) asgns
-                    ) (Map.toList nvars)
-          ) (Map.toList $ trTR trgen)
-    return (nxt,gts)
-  stateInvariant trgen st = let (minSt,_) = Map.findMin (trTR trgen)
-                                (maxSt,_) = Map.findMax (trTR trgen)
+      conds = fmap (translateLisp () st) (trAsserts trgen)
+  declareNextState trgen cur inp grp gts
+    | trUseDefines trgen = do
+        let mp = Map.union cur inp
+        nxt <- buildDefines (trTR trgen) mp Map.empty
+        return (nxt,gts)
+    | otherwise = do
+        nxt <- sequence $ Map.mapWithKey
+               (\name tp -> varNamedAnn (name++"_p") tp)
+               (trVars trgen)
+        let nxt' = Map.mapKeys (\k -> k++"_p") nxt
+            mp = Map.unions [cur,inp,nxt']
+        mapM_ (\assign -> do
+                  let e = ((castUntypedExprValue (cur Map.! ".s"))
+                           .==. (constant $ assignState assign)) .=>.
+                          (case assignCond assign of
+                            Nothing -> translateLisp () mp (assignAssertion assign)
+                            Just rcond -> (translateLisp () mp rcond) .=>.
+                                          (translateLisp () mp (assignAssertion assign)))
+                  case grp of
+                   Nothing -> assert e
+                   Just grp -> assertInterp e grp
+              ) (trTR trgen)
+        return (nxt,gts)
+  stateInvariant trgen st = let (minSt,maxSt) = minMaxBy assignState (trTR trgen)
                                 s = castUntypedExprValue (st Map.! ".s")
-                            in (s .>=. (constant minSt)) .&&.
-                               (s .<=. (constant maxSt))
+                            in (s .>=. (constant $ assignState minSt)) .&&.
+                               (s .<=. (constant $ assignState maxSt))
   annotationState trgen = trVars trgen
   annotationInput trgen = trNondets trgen
   defaultPredicateExtractor _ = return emptyRSM
@@ -174,7 +187,7 @@ instance TransitionRelation TRGen where
                | (var,Just val) <- Map.toList st ]
   suggestedPredicates trgen
     = cmpPredicates (Map.delete ".s" (trVars trgen))++
-      [\st -> translateLisp (Map.union st defaultInps) l
+      [\st -> translateLisp () (Map.union st defaultInps) l
       | l <- trSuggested trgen ]
     where
       defaultInps = fmap (\tp -> case () of
@@ -184,3 +197,42 @@ instance TransitionRelation TRGen where
                              | tp==ProxyArgValue (undefined::Bool) ()
                                -> UntypedExprValue (constant False)
                          ) (trNondets trgen)
+
+minMaxBy :: Ord b => (a -> b) -> [a] -> (a,a)
+minMaxBy f (x:xs) = minMax' x x xs
+  where
+    minMax' cmin cmax [] = (cmin,cmax)
+    minMax' cmin cmax (x:xs)
+      | f x < f cmin = minMax' x cmax xs
+      | f x > f cmax = minMax' cmin x xs
+      | otherwise = minMax' cmin cmax xs
+
+buildDefines :: Monad m => [Assignment]
+                -> Map String (SMTExpr UntypedValue)
+                -> Map String (SMTExpr UntypedValue)
+                -> SMT' m (Map String (SMTExpr UntypedValue))
+buildDefines [] _ res = return res
+buildDefines (x:xs) cur res = case Map.lookup (assignVar x) cur of
+  Just v -> do
+    nval <- entypeValue
+            (\v' -> do
+                res <- defConstNamed ((assignVar x)++"_p") $
+                       stateITE (extractAnnotation v') v' modify
+                return $ UntypedExprValue res
+            ) v
+    buildDefines otherVar cur (Map.insert (assignVar x) nval res)
+  where
+    (sameVar,otherVar) = partition (\y -> assignVar y == assignVar x) xs
+    (keep,modify) = partition (\y -> assignRHS y == Symbol (Text.pack (assignVar x)))
+                    (x:sameVar)
+    stateITE :: (SMTValue a) => SMTAnnotation a -> SMTExpr a -> [Assignment] -> SMTExpr a
+    stateITE _ v [] = v
+    stateITE ann v (y:ys) = ite cond (translateLisp ann cur (assignRHS y))
+                            (stateITE ann v ys)
+      where
+        cond = case assignCond y of
+          Nothing -> stateCond
+          Just c -> stateCond .&&. (translateLisp () cur c)
+        stateCond = (castUntypedExprValue $ cur Map.! ".s")
+                    .==.
+                    (constant $ assignState y)

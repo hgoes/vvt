@@ -71,5 +71,5 @@ getTransitionRelation file opts f = do
      st <- BlockWise.realizeFunction fun
      f st
    TRGen -> do
-     trgen <- TRGen.readTRGen file
+     trgen <- TRGen.readTRGen True file
      f trgen
