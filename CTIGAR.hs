@@ -866,7 +866,7 @@ check :: TR.TransitionRelation mdl
          => mdl -> Options -> IO (Maybe [Unpacked (TR.State mdl,TR.Input mdl)])
 check st opts = do
   let prog:args = words (optBackendBase opts)
-  backend <- createSMTPipe prog args >>= namedDebugBackend "base"
+  backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
   case tr of
     Just tr' -> return (Just tr')

@@ -51,7 +51,7 @@ getProgram optimize entry file = do
   ctx <- newLLVMContext
   mod <- parseIR buf diag ctx
   applyOptimizations optimize mod entry
-  moduleDump mod
+  --moduleDump mod
   moduleGetFunctionString mod entry
 
 applyOptimizations :: Bool -> Ptr Module -> String -> IO ()
