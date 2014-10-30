@@ -8,12 +8,12 @@ main = do
   defaultMainWithBechmarks
        [Benchmark { target = "../ic3.cabal"
                   , cmdargs = ["-t",show (to+5)++"s"]
-                  , configs = And [Or [Set (Variant name) (RuntimeParam $ name++".bc")
-                                      | name <- lines benchmarks ]
-                                  ,Or [Set NoMeaning (RuntimeParam "-E monolithic")
-                                      ,Set NoMeaning (RuntimeParam "-E blockwise")]
-                                  ,Or [Set NoMeaning (RuntimeParam "-O")
-                                      ,Set NoMeaning (RuntimeParam "")]]
+                  , configs = Or [Set (Variant (name++","++senc++sopt)) (RuntimeParam $ name++".bc -E "++enc++opt)
+                                 | name <- lines benchmarks
+                                 , (enc,senc) <- [("monolithic","mono")
+                                                 ,("blockwise","blk")]
+                                 , (opt,sopt) <- [(" -O",",opt")
+                                                 ,("","")]]
                   , progname = Just "hctigar"
                   , benchTimeOut = Just (fromIntegral to)
                   }
