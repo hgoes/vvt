@@ -1,18 +1,13 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 int main()
 {
-  int x = __nondet_int();
-  int y = __nondet_int();
-  int k = __nondet_int();
+  NONDET_INT(x);
+  NONDET_INT(y);
+  NONDET_INT(k);
+  NONDET_INT(i);
+  NONDET_INT(n);
   int j;
-  int i = __nondet_int();
-  int n = __nondet_int();
   int m;
   m = 0;
   if((x+y) != k)

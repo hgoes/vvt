@@ -1,13 +1,8 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int() __attribute__((pure));
-bool __nondet_bool() __attribute__((pure));
+#include "benchmarks.h"
 
 int main ()
 {
-  int fbuflen = __nondet_bool();
+  NONDET_INT(fbuflen);
   int fb;
   if(fbuflen <= 0) return 0;
   fb = 0;

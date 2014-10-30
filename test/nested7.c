@@ -1,14 +1,10 @@
-#include <stdbool.h>
-
-void assert(bool);
-int __nondet_int() __attribute__((pure));
-bool __nondet_bool() __attribute__((pure));
+#include "benchmarks.h"
 
 int main() {
-  int j = __nondet_int();
-  int k = __nondet_int();
-  int n = __nondet_int();
-  int m = __nondet_int();
+  NONDET_INT(j);
+  NONDET_INT(k);
+  NONDET_INT(n);
+  NONDET_INT(m);
   int i,l;
 
   if(j>n+k) return 0;

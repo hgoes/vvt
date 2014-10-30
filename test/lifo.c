@@ -1,13 +1,9 @@
-#include <stdbool.h>
-
-void assert(bool);
-int __nondet_int() __attribute__((pure));
-bool __nondet_bool() __attribute__((pure));
+#include "benchmarks.h"
 
 //This example is adapted from StinG 
 int main()
 {
-  int i = __nondet_int();
+  NONDET_INT(i);
   int sa;
   int ea;
   int ma;

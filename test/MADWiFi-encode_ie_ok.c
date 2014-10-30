@@ -1,17 +1,13 @@
-#include <stdbool.h>
-
-void assert(bool);
-int __nondet_int() __attribute__((pure));
-bool __nondet_bool() __attribute__((pure));
+#include "benchmarks.h"
 
 int main()
 {
   int p;
   int i;
-  int leader_len = __nondet_int();
-  int bufsize = __nondet_int();
+  NONDET_INT(leader_len);
+  NONDET_INT(bufsize);
+  NONDET_INT(ielen);
   int bufsize_0;
-  int ielen = __nondet_int();
 
   if(leader_len >0); else return 0;
   if(bufsize >0); else return 0;

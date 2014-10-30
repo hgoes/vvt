@@ -1,17 +1,12 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 //This example is adapted from StIng 
 int main()
 {
-  int invalid = __nondet_int();
-  int unowned = __nondet_int();
-  int nonexclusive = __nondet_int();
-  int exclusive = __nondet_int();
+  NONDET_INT(invalid);
+  NONDET_INT(unowned);
+  NONDET_INT(nonexclusive);
+  NONDET_INT(exclusive);
 
 	if (! (exclusive==0)) return 0;
 	if (! (nonexclusive==0)) return 0;

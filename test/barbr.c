@@ -1,8 +1,4 @@
-#include <stdbool.h>
-
-void assert(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 //This example is adapted from StInG 
 int main()

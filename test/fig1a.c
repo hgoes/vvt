@@ -1,9 +1,4 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 /* Example from Figure 1 (a) */
 int main () {

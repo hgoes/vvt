@@ -1,14 +1,10 @@
-#include <stdbool.h>
-
-void assert(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 int main ()
 {
-  int scheme = __nondet_int();
-  int urilen = __nondet_int();
-  int tokenlen = __nondet_int();
+  NONDET_INT(scheme);
+  NONDET_INT(urilen);
+  NONDET_INT(tokenlen);
   int cp,c;
 
   if(urilen>0); else return 0;

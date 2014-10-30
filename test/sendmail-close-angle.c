@@ -1,15 +1,10 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int() __attribute__((pure));
-bool __nondet_bool() __attribute__((pure));
+#include "benchmarks.h"
 
 int main ()
 {
   int in;
-  int inlen = __nondet_int();
-  int bufferlen = __nondet_int();
+  NONDET_INT(inlen);
+  NONDET_INT(bufferlen);
   int buf;
   int buflim;
 

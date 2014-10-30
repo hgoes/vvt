@@ -1,9 +1,4 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 /*
  * Taken from "Counterexample Driven Refinement for Abstract Interpretation" (TACAS'06) by Gulavani
@@ -12,7 +7,7 @@ bool __nondet_bool();
 int main() {
   int x;
   int m;
-  int n = __nondet_int();
+  NONDET_INT(n);
   x = m = 0;
   while(x<=n-1) {
     if(__nondet_bool()) {

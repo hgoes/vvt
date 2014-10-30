@@ -1,15 +1,10 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int() __attribute__((pure));
-bool __nondet_bool() __attribute__((pure));
+#include "benchmarks.h"
 
 int main(){
 
   int x;
   int y;
-  int n = __nondet_int();
+  NONDET_INT(n);
   x = y = 0;
 
   if(n < 0)

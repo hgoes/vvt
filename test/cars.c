@@ -1,19 +1,14 @@
-//#include <assert.h>
-#include <stdbool.h>
-
-void assert(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 //This example is adapted from StInG 
 int main()
 {
   int x1;
-  int v1 = __nondet_int();
+  NONDET_INT(v1);
   int x2;
-  int v2 = __nondet_int();
+  NONDET_INT(v2);
   int x3;
-  int v3 = __nondet_int();
+  NONDET_INT(v3);
   int t;
 
 	x1=100;

@@ -1,14 +1,9 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 int main()
 {
-  int n = __nondet_int();
-  int m = __nondet_int();
+  NONDET_INT(n);
+  NONDET_INT(m);
   int x; 
   int y;
   x = 0;

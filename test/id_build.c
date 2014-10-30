@@ -1,9 +1,4 @@
-#include <stdbool.h>
-
-void assert(bool);
-void assume(bool);
-int __nondet_int() __attribute__((pure));
-bool __nondet_bool() __attribute__((pure));
+#include "benchmarks.h"
 
 // from FreePastry source, file Id.java
   /**
@@ -26,7 +21,7 @@ bool __nondet_bool() __attribute__((pure));
 
 int main() {
   int offset, length;
-  int nlen = __nondet_int();
+  NONDET_INT(nlen);
   int i, j;
 
   i = 0;

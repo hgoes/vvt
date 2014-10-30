@@ -1,12 +1,8 @@
-#include <stdbool.h>
-
-void assert(bool);
-int __nondet_int();
-bool __nondet_bool();
+#include "benchmarks.h"
 
 int main()
 {
-  int tagbuf_len = __nondet_int();
+  NONDET_INT(tagbuf_len);
   int t;
 
   if(tagbuf_len >= 1); else return 0;
