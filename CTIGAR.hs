@@ -265,9 +265,6 @@ runIC3 cfg act = do
                                 , interpPost = post
                                 , interpReverse = rev
                                 }
-  domainPool <- createSMTPool domainBackend $ do
-    setOption (ProduceModels True)
-    TR.createStateVars "" mdl
   dom <- initialDomain (ic3DebugLevel cfg) domainBackend
          (TR.annotationState mdl)
          (TR.createStateVars "" mdl)
@@ -1144,10 +1141,6 @@ addAbstractCube lvl st
                         cons'' = addCubeAtLevel st_id lvl cons'
                     in env { ic3Consecution = cons''
                            , ic3Earliest = min (ic3Earliest env) lvl })
-
-{-frameActivation' :: IC3Env mdl -> Int -> SMTExpr Bool
-frameActivation' env fi
-  = app and' $ Vec.toList $ fmap frameActivation $ Vec.drop fi (ic3Frames env)-}
 
 addSuggestedPredicates :: TR.TransitionRelation mdl => IC3 mdl ()
 addSuggestedPredicates = do
