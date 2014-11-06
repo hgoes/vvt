@@ -1,5 +1,16 @@
 {-# LANGUAGE ExistentialQuantification,FlexibleContexts,PackageImports,GADTs #-}
-module Domain where
+module Domain
+       (Domain()
+       ,AbstractState()
+       ,initialDomain
+       ,toDomainTerm
+       ,toDomainTerms
+       ,domainAdd
+       ,domainAbstract
+       ,domainAddUniqueUnsafe
+       ,domainHash
+       ,renderDomainTerm
+       ) where
 
 import Language.SMTLib2
 import SMTPool

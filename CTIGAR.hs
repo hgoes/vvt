@@ -5,6 +5,7 @@ module CTIGAR where
 
 import qualified Realization as TR
 import Domain
+import Consecution
 import PartialArgs
 import SMTPool
 import LitOrder
@@ -17,10 +18,13 @@ import Language.SMTLib2.Internals
 import Language.SMTLib2.Internals.Operators
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
+import Language.SMTLib2.Timing
 
 import Data.IORef
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Control.Monad (when,unless)
@@ -47,12 +51,9 @@ import Data.List (intersperse)
 import Control.Exception (finally)
 import Data.Either (partitionEithers)
 import Data.Ord (comparing)
+import Data.Time.Clock
 
 import Debug.Trace
-
-data Frame st = Frame { frameFrontier :: Set (AbstractState st)
-                      , frameActivation :: SMTExpr Bool
-                      }
 
 data IC3Config mdl
   = IC3Cfg { ic3Model :: mdl
@@ -68,33 +69,31 @@ data IC3Config mdl
            , ic3MaxDepth :: Int
            , ic3MaxJoins :: Int
            , ic3MaxCTGs :: Int
-           , ic3RebuildIntercept :: Int
-           , ic3RebuildVarSlope :: Int
+           , ic3CollectStats :: Bool
            }
 
 data IC3Env mdl
   = IC3Env { ic3Domain :: Domain (TR.State mdl) -- The domain talks about the outputs
            , ic3InitialProperty :: Node
            , ic3Consecution :: Consecution (TR.Input mdl) (TR.State mdl)
-           , ic3Lifting :: SMTPool () (LiftingState mdl)
+           , ic3Lifting :: Lifting mdl
            , ic3Initiation :: SMTPool () (TR.State mdl)
            , ic3Interpolation :: SMTPool () (InterpolationState mdl)
            , ic3LitOrder :: LitOrder
-           , ic3Frames :: Vector (Frame (TR.State mdl))
            , ic3CexState :: Maybe (IORef (State (TR.Input mdl) (TR.State mdl)))
            , ic3Earliest :: Int
            , ic3PredicateExtractor :: TR.PredicateExtractor mdl
-           , ic3ConsecutionCount :: Int
+           , ic3Stats :: Maybe IC3Stats
            }
 
-data Consecution inp st = forall b. SMTBackend b IO =>
-                          Consecution { consSolver :: SMTConnection b
-                                      , consVars :: st
-                                      , consInp :: inp
-                                      , consNxtInp :: inp
-                                      , consVarsPrimed :: st
-                                      , consAssertPrimed :: [SMTExpr Bool]
-                                      }
+type Lifting mdl = SMTPool () (LiftingState mdl)
+
+data IC3Stats = IC3Stats { consecutionTime :: IORef NominalDiffTime
+                         , domainTime :: IORef NominalDiffTime
+                         , interpolationTime :: IORef NominalDiffTime
+                         , liftingTime :: IORef NominalDiffTime
+                         , initiationTime :: IORef NominalDiffTime
+                         }
 
 data InterpolationState mdl = InterpolationState { interpCur :: TR.State mdl
                                                  , interpNxt :: TR.State mdl
@@ -149,8 +148,8 @@ bestAbstraction st = case stateLiftedAst st of
 
 k :: IC3 mdl Int
 k = do
-  frames <- gets ic3Frames
-  return $ Vec.length frames - 2
+  cons <- gets ic3Consecution
+  return $ frontier cons
 
 ic3Debug :: Int -> String -> IC3 mdl ()
 ic3Debug lvl txt = ic3DebugAct lvl (liftIO $ putStrLn txt)
@@ -167,36 +166,6 @@ splitLast [x] = ([],x)
 splitLast (x:xs) = let (rest,last) = splitLast xs
                    in (x:rest,last)
 
-consecutionPerform :: Consecution inp st -> SMT a -> IC3 mdl a
-consecutionPerform (Consecution { consSolver = conn }) act
-  = liftIO $ performSMTExitCleanly conn act
-
-consecutionNew :: (SMTBackend b IO,TR.TransitionRelation mdl)
-                  => IO b -> mdl -> IO (Consecution (TR.Input mdl) (TR.State mdl))
-consecutionNew backend mdl = do
-  consBackend <- backend -- >>= namedDebugBackend "cons"
-  consConn <- open consBackend
-  (consSt,consInp,consNxtInp,consSt',primedErrs) <- performSMTExitCleanly consConn $ do
-    setOption (ProduceModels True)
-    setOption (ProduceUnsatCores True)
-    cur <- TR.createStateVars "" mdl
-    assert (TR.stateInvariant mdl cur)
-    inp <- TR.createInputVars "" mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp Nothing Map.empty
-    --assert (blockConstraint nxtBlks)
-    (asserts1,real2) <- TR.declareAssertions mdl cur inp real1
-    (assumps1,real3) <- TR.declareAssumptions mdl cur inp real2
-    mapM_ assert assumps1
-    nxtInp <- TR.createInputVars "nxt." mdl
-    (asserts2,_) <- TR.declareAssertions mdl nxt nxtInp Map.empty
-    mapM assert asserts1
-    return (cur,inp,nxtInp,nxt,asserts2)
-  return $ Consecution consConn consSt consInp consNxtInp consSt' primedErrs
-
-consecutionClose :: Consecution a b -> IO ()
-consecutionClose (Consecution { consSolver = solv })
-  = close solv
-
 mkIC3Config :: mdl -> Options -> IC3Config mdl
 mkIC3Config mdl opts
   = IC3Cfg { ic3Model = mdl
@@ -212,8 +181,7 @@ mkIC3Config mdl opts
            , ic3MaxDepth = 1
            , ic3MaxJoins = 1 `shiftL` 20
            , ic3MaxCTGs = 3
-           , ic3RebuildIntercept = 1000
-           , ic3RebuildVarSlope = 200
+           , ic3CollectStats = optStats opts
            }
   where
     mkPipe cmd = let prog:args = words cmd
@@ -222,11 +190,43 @@ mkIC3Config mdl opts
 runIC3 :: TR.TransitionRelation mdl => IC3Config mdl -> IC3 mdl a -> IO a
 runIC3 cfg act = do
   let mdl = ic3Model cfg
-  cons <- consecutionNew (ic3ConsecutionBackend cfg) mdl
-  let liftingBackend = ic3LiftingBackend cfg -- >>= namedDebugBackend "lift"
-      initiationBackend = ic3InitBackend cfg -- >>= namedDebugBackend "init"
-      domainBackend = ic3DomainBackend cfg -- >>= namedDebugBackend "domain"
-      interpBackend' = ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
+  stats <- if ic3CollectStats cfg
+           then fmap Just newIC3Stats
+           else return Nothing
+  let consBackend = case stats of
+        Nothing -> ic3ConsecutionBackend cfg
+        Just stats -> addTiming (consecutionTime stats) (ic3ConsecutionBackend cfg)
+      liftingBackend = case stats of
+        Nothing -> ic3LiftingBackend cfg -- >>= namedDebugBackend "lift"
+        Just stats -> addTiming (liftingTime stats) (ic3LiftingBackend cfg)
+      initiationBackend = case stats of
+        Nothing -> ic3InitBackend cfg -- >>= namedDebugBackend "init"
+        Just stats -> addTiming (initiationTime stats) (ic3InitBackend cfg)
+      domainBackend = case stats of
+        Nothing -> ic3DomainBackend cfg -- >>= namedDebugBackend "domain"
+        Just stats -> addTiming (domainTime stats) (ic3DomainBackend cfg)
+      interpBackend' = case stats of
+        Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
+        Just stats -> addTiming (interpolationTime stats) (ic3InterpolationBackend cfg)
+  cons <- consecutionNew consBackend
+          (do
+              cur <- TR.createStateVars "" mdl
+              assert (TR.stateInvariant mdl cur)
+              inp <- TR.createInputVars "" mdl
+              (nxt,real1) <- TR.declareNextState mdl cur inp Nothing Map.empty
+              --assert (blockConstraint nxtBlks)
+              (asserts1,real2) <- TR.declareAssertions mdl cur inp real1
+              (assumps1,real3) <- TR.declareAssumptions mdl cur inp real2
+              mapM_ assert assumps1
+              nxtInp <- TR.createInputVars "nxt." mdl
+              (asserts2,_) <- TR.declareAssertions mdl nxt nxtInp Map.empty
+              mapM assert asserts1
+              return $ ConsecutionVars { consecutionInput = inp
+                                       , consecutionNxtInput = nxtInp
+                                       , consecutionState = cur
+                                       , consecutionNxtState = nxt
+                                       , consecutionNxtAsserts = asserts2 })
+          (TR.initialState mdl)
   lifting <- createSMTPool liftingBackend $ do
     setOption (ProduceUnsatCores True)
     cur <- TR.createStateVars "" mdl
@@ -279,106 +279,58 @@ runIC3 cfg act = do
                                           , ic3Lifting = lifting
                                           , ic3Initiation = initiation
                                           , ic3Interpolation = interpolation
-                                          , ic3Frames = Vec.empty
                                           , ic3CexState = Nothing
                                           , ic3LitOrder = Map.empty
                                           , ic3Earliest = 0
                                           , ic3PredicateExtractor = extractor
-                                          , ic3ConsecutionCount = 0
+                                          , ic3Stats = stats
                                           })
-  
-newFrame :: TR.TransitionRelation mdl => Bool -> IC3 mdl (Frame (TR.State mdl))
-newFrame init = do
-  mdl <- asks ic3Model
-  cons <- gets ic3Consecution
-  consecutionPerform cons $ do
-    act <- varNamed "frameAct"
-    if init
-      then assert $ act .=>. (TR.initialState mdl (consVars cons))
-      else return ()
-    return (Frame { frameFrontier = Set.empty
-                  , frameActivation = act })
 
-extractSpuriousState :: TR.TransitionRelation mdl
-                        => IC3Env mdl -> Maybe (IORef (State (TR.Input mdl) (TR.State mdl)))
-                        -> SMT (State (TR.Input mdl) (TR.State mdl))
-extractSpuriousState (env::IC3Env mdl) succ = do
-  let cons = ic3Consecution env
-  inps <- getValues (consInp cons)
-  nxtInps <- getValues (consNxtInp cons)
-  full <- getValues (consVars cons)
+extractState :: (PartialArgs inp,PartialArgs st)
+                => Maybe (IORef (State inp st))
+                -> ConsecutionVars inp st
+                -> SMT (State inp st)
+extractState (succ::Maybe (IORef (State inp st))) vars = do
+  inps <- getValues (consecutionInput vars)
+  nxtInps <- getValues (consecutionNxtInput vars)
+  full <- getValues (consecutionState vars)
   return $ State { stateSuccessor = succ
                  , stateLiftedAst = Nothing
                  , stateFullAst = Nothing
                  , stateFull = full
                  , stateInputs = inps
                  , stateNxtInputs = nxtInps
-                 , stateLifted = unmaskValue (undefined::TR.State mdl) full
-                 , stateLiftedInputs = unmaskValue (undefined::TR.Input mdl) inps
+                 , stateLifted = unmaskValue (undefined::st) full
+                 , stateLiftedInputs = unmaskValue (undefined::inp) inps
                  , stateSpuriousLevel = 0
                  , stateNSpurious = 0
                  , stateSpuriousSucc = False
                  , stateDomainHash = 0 }
 
-extractState :: TR.TransitionRelation mdl
-                => Maybe (IORef (State (TR.Input mdl) (TR.State mdl)))
-                -> Bool
-                -> IC3 mdl (IORef (State (TR.Input mdl) (TR.State mdl)))
-extractState succ doLift = do
-  env <- get
-  mdl <- asks ic3Model
-  let cons = ic3Consecution env
-  vars <- consecutionPerform cons $ getValues (consVars cons)
-  inp <- consecutionPerform cons $ getValues (consInp cons)
-  inp' <- consecutionPerform cons $ getValues (consNxtInp cons)
-  state <- if doLift
-           then (do
-                    nxt <- case succ of
-                      Nothing -> return (\st -> app and' $ liftNxtAsserts st)
-                      Just succ' -> do
-                        succ'' <- liftIO $ readIORef succ'
-                        return (\st -> (not' $ app and' $
-                                        assignPartial (liftNxt st) (stateLifted succ'')) .&&.
-                                       (app and' $ assignPartial (liftNxtInputs st) (stateLiftedInputs succ''))
-                               )
-                    (part,partInp) <- liftIO $ withSMTPool (ic3Lifting env) $
-                                      \vars' -> liftState ((liftCur vars'),
-                                                           liftInputs vars',
-                                                           liftNxtInputs vars')
-                                                (vars,inp,inp',nxt vars')
-                    ic3DebugAct 3 (do
-                                      str_part <- renderState part
-                                      liftIO $ putStrLn ("Lifted state: "++str_part))
-                    return $ State { stateSuccessor = succ
-                                   , stateLiftedAst = Nothing
-                                   , stateFullAst = Nothing
-                                   , stateFull = vars
-                                   , stateInputs = inp
-                                   , stateNxtInputs = inp'
-                                   , stateLifted = part
-                                   , stateLiftedInputs = partInp
-                                   , stateSpuriousLevel = 0
-                                   , stateSpuriousSucc = False
-                                   , stateNSpurious = 0
-                                   , stateDomainHash = 0 })
-           else return $ State { stateSuccessor = succ
-                               , stateLiftedAst = Nothing
-                               , stateFullAst = Nothing
-                               , stateFull = vars
-                               , stateInputs = inp
-                               , stateNxtInputs = inp'
-                               , stateLifted = unmaskValue (consVars cons) vars
-                               , stateLiftedInputs = unmaskValue (consInp cons) inp
-                               , stateSpuriousLevel = 0
-                               , stateSpuriousSucc = False
-                               , stateNSpurious = 0
-                               , stateDomainHash = 0 }
-  liftIO $ newIORef state
+liftState :: (PartialArgs (TR.State mdl),
+              PartialArgs (TR.Input mdl))
+             => Lifting mdl -> State (TR.Input mdl) (TR.State mdl)
+             -> IO (State (TR.Input mdl) (TR.State mdl))
+liftState lifting st = do
+  nxt <- case stateSuccessor st of
+    Nothing -> return $ \lft -> app and' $ liftNxtAsserts lft
+    Just succ' -> do
+      succ'' <- readIORef succ'
+      return $ \lft -> (not' $ app and' $
+                        assignPartial (liftNxt lft) (stateLifted succ'')) .&&.
+                       (app and' $ assignPartial (liftNxtInputs lft) (stateLiftedInputs succ''))
+  (part,partInp) <- withSMTPool lifting $
+                    \vars' -> lift' ((liftCur vars'),
+                                     liftInputs vars',
+                                     liftNxtInputs vars')
+                              (stateFull st,stateInputs st,stateNxtInputs st,nxt vars')
+  return $ st { stateLifted = part
+              , stateLiftedInputs = partInp }
 
-liftState :: (PartialArgs st,PartialArgs inp) => (st,inp,inp)
+lift' :: (PartialArgs st,PartialArgs inp) => (st,inp,inp)
              -> (Unpacked st,Unpacked inp,Unpacked inp,SMTExpr Bool)
              -> SMT (PartialValue st,PartialValue inp)
-liftState (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
+lift' (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
   let ann_cur = extractArgAnnotation cur
       ann_inp = extractArgAnnotation inp
   ((cmp1,len_st),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
@@ -505,43 +457,6 @@ lift toLift inps nxtInps succ = do
       --return $ error ("Init res2: "++show init_res2)
       return $ Just nlift_abs
 
-rebuildConsecution :: TR.TransitionRelation mdl => IC3 mdl ()
-rebuildConsecution = do
-  num <- gets ic3ConsecutionCount
-  if num > 1000
-    then (do
-             rebuildConsecution'
-             modify (\env -> env { ic3ConsecutionCount = 0 }))
-    else return ()
-
-rebuildConsecution' :: TR.TransitionRelation mdl => IC3 mdl ()
-rebuildConsecution' = do
-  env <- get
-  backend <- asks ic3ConsecutionBackend
-  mdl <- asks ic3Model
-  -- TODO: Heuristic check to see if rebuild is neccessary
-  case ic3Consecution env of
-    Consecution { consSolver = solv } -> liftIO $ close solv
-  ncons <- liftIO $ consecutionNew backend mdl
-  let first_frame = Vec.head (ic3Frames env)
-  init_act <- consecutionPerform ncons $ do
-    init <- varNamed "init_activation"
-    assert $ init .=>. (TR.initialState mdl (consVars ncons))
-    return init
-  let nfirst_frame = first_frame { frameActivation = init_act }
-  nframes <- mapM (\frame -> do
-                      nact <- consecutionPerform ncons $ do
-                        act <- varNamed "activation"
-                        mapM_ (\abs -> do
-                                  assert $ act .=>. (not' $ toDomainTerm abs (ic3Domain env)
-                                                     (consVars ncons))
-                            ) (frameFrontier frame)
-                        return act
-                      return $ frame { frameActivation = nact }
-                  ) (Vec.tail (ic3Frames env))
-  put $ env { ic3Frames = Vec.cons nfirst_frame nframes
-            , ic3Consecution = ncons }
-
 {- | Checks if an abstract state is inductive at a given level.
      This is done by searching for a solution for F_i and (not s) and T and next(s).
      If the formula is unsatisfiable, we return a possible smaller state that is still inductive
@@ -558,34 +473,32 @@ abstractConsecution :: TR.TransitionRelation mdl
                                    (State (TR.Input mdl) (TR.State mdl))
                                   )
 abstractConsecution fi abs_st succ = do
-  rebuildConsecution
-  modify (\env -> env { ic3ConsecutionCount = (ic3ConsecutionCount env)+1 })
+  --rebuildConsecution
+  --modify (\env -> env { ic3ConsecutionCount = (ic3ConsecutionCount env)+1 })
   ic3DebugAct 3 $ do
     abs_st_str <- renderAbstractState abs_st
     liftIO $ putStrLn ("Original abstract state: "++abs_st_str)
   env <- get
-  res <- consecutionPerform (ic3Consecution env) $ stack $ do
-    assert $ not' (toDomainTerm abs_st (ic3Domain env)
-                   (consVars $ ic3Consecution env))
+  res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
+    assert $ not' $ toDomainTerm abs_st (ic3Domain env) (consecutionState vars)
     (_,rev) <- foldlM (\(i,mp) (nd,expr,act) -> do
                           cid <- assertId
                                  (if act then expr
                                   else not' expr)
                           return (i+1,Map.insert cid i mp)
                       ) (0,Map.empty) (toDomainTerms abs_st (ic3Domain env)
-                                       (consVarsPrimed $ ic3Consecution env))
-    assert $ frameActivation' env fi
+                                       (consecutionNxtState vars))
     -- Henning: This tries to take the lifted inputs of the successor into account (doesn't do anything yet)
     case succ of
      Nothing -> return ()
      Just s -> do
        succ' <- liftIO $ readIORef s
-       assert $ app and' $ assignPartial (consNxtInp $ ic3Consecution env)
+       assert $ app and' $ assignPartial (consecutionNxtInput vars)
          (stateLiftedInputs succ')
     res <- checkSat
     if res
       then (do
-               st <- extractSpuriousState env succ
+               st <- extractState succ vars
                return $ Right st)
       else (do
                core <- getUnsatCore
@@ -609,23 +522,24 @@ concreteConsecution :: TR.TransitionRelation mdl
                        -> IC3 mdl (Maybe (IORef (State (TR.Input mdl) (TR.State mdl))))
 concreteConsecution fi st succ = do
   env <- get
-  res <- consecutionPerform (ic3Consecution env) $ do
-    push
-    assert $ frameActivation' env fi
-    assert (app or' $ fmap not' $ assignPartial (consVars $ ic3Consecution env) st)
+  res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
+    assert (app or' $ fmap not' $ assignPartial (consecutionState vars) st)
     do
       succ' <- liftIO $ readIORef succ
-      assert $ app and' $ assignPartial (consNxtInp $ ic3Consecution env)
+      assert $ app and' $ assignPartial (consecutionNxtInput vars)
         (stateLiftedInputs succ')
-    mapM_ assert (assignPartial (consVarsPrimed $ ic3Consecution env) st)
-    checkSat
-  res' <- if res
-          then (do
-                   rst <- extractState (Just succ) True
-                   return $ Just rst)
-          else return Nothing
-  consecutionPerform (ic3Consecution env) pop
-  return res'
+    mapM_ assert (assignPartial (consecutionNxtState vars) st)
+    sat <- checkSat
+    if sat
+      then (do
+               rst <- extractState (Just succ) vars
+               return $ Just rst)
+      else return Nothing
+  case res of
+   Nothing -> return Nothing
+   Just st -> do
+     res' <- liftIO $ liftState (ic3Lifting env) st >>= newIORef
+     return $ Just res'
 
 handleObligations :: TR.TransitionRelation mdl
                      => Queue (TR.Input mdl) (TR.State mdl) -> IC3 mdl Bool
@@ -802,15 +716,7 @@ baseCases st = do
     else return Nothing
 
 extend :: TR.TransitionRelation mdl => IC3 mdl ()
-extend = do
-  frames <- gets ic3Frames
-  if Vec.null frames
-    then (do
-             fr <- newFrame True
-             modify $ \env -> env { ic3Frames = Vec.singleton fr })
-    else (do
-             fr <- newFrame False
-             modify $ \env -> env { ic3Frames = Vec.snoc (ic3Frames env) fr })
+extend = modify (\env -> env { ic3Consecution = extendFrames (ic3Consecution env) })
 
 -- | Strengthens frontier to remove error successors
 --   Returns 'Nothing' if strengthening failed
@@ -823,44 +729,30 @@ strengthen = strengthen' True
     strengthen' trivial = do
       tk <- k
       env <- get
-      {-(rv,act) <- consecutionPerform (ic3Consecution env) $ do
-        act <- varNamed "activation"
-        assert $ act .=>. (app or' $ fmap not' $ consAssertPrimed (ic3Consecution env))
-        push
-        assert act
-        assert $ frameActivation' env tk
-        rv <- checkSat
-        return (rv,act)-}
       ic3Debug 2 $ "Trying to get from frontier at level "++show tk++" to error"
-      rv <- consecutionPerform (ic3Consecution env) $ do
-        push
-        assert $ app or' $ fmap not' $ consAssertPrimed (ic3Consecution env)
-        assert $ frameActivation' env tk
-        checkSat
-      if rv
-        then (do
-                 sti <- extractState Nothing True
-                 --consecutionPerform (ic3Consecution env) $ do
-                 --  pop
-                 --  assert $ not' act
-                 consecutionPerform (ic3Consecution env) pop
-                 tk <- k
-                 let obl = Obligation sti (tk-1) 1
-                     queue = Queue.singleton obl
-                 res <- handleObligations queue
-                 if res
-                   then strengthen' False
-                   else return Nothing)
-        else (do
-                 ic3Debug 2 $ "Can't get to error ("++
-                   (if trivial
-                    then "trivial"
-                    else "not trivial")++")"
-                 --consecutionPerform (ic3Consecution env) $ do
-                 --  pop
-                 --  assert $ not' act
-                 consecutionPerform (ic3Consecution env) pop
-                 return $ Just trivial)
+      rv <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) tk $ \vars -> do
+        assert $ app or' $ fmap not' $ consecutionNxtAsserts vars
+        sat <- checkSat
+        if sat
+          then (do
+                   sti <- extractState Nothing vars
+                   return $ Just sti)
+          else return Nothing
+      case rv of
+       Just sti -> do
+         sti' <- liftIO $ liftState (ic3Lifting env) sti >>= newIORef
+         let obl = Obligation sti' (tk-1) 1
+             queue = Queue.singleton obl
+         res <- handleObligations queue
+         if res
+           then strengthen' False
+           else return Nothing
+       Nothing -> do
+         ic3Debug 2 $ "Can't get to error ("++
+           (if trivial
+            then "trivial"
+            else "not trivial")++")"
+         return $ Just trivial
 
 check :: TR.TransitionRelation mdl
          => mdl -> Options -> IO (Maybe [Unpacked (TR.State mdl,TR.Input mdl)])
@@ -874,7 +766,10 @@ check st opts = do
                                                 addSuggestedPredicates
                                                 extend
                                                 extend
-                                                checkIt)
+                                                res <- checkIt
+                                                ic3DumpStats
+                                                return res
+                                            )
   where
     checkIt = do
       ic3DebugAct 1 (do
@@ -943,45 +838,45 @@ check st opts = do
 propagate :: TR.TransitionRelation mdl
              => Bool -> IC3 mdl Int
 propagate trivial = do
-  do
-    frames <- gets ic3Frames
-    ic3Debug 5 $ "Before propagation: "++
-      (show $ fmap frameFrontier frames)
   earliest <- gets ic3Earliest
   tk <- k
-  modify $ \env -> let (pre,oframes) = Vec.splitAt (earliest-1) (ic3Frames env)
-                       (_,nframes) = mapAccumR (\all frame
-                                                -> let rem = Set.difference (frameFrontier frame) all
-                                                   in (Set.union all rem,frame { frameFrontier = rem })
-                                               ) Set.empty (Vec.drop (earliest-1) oframes)
-                       rframes = pre Vec.++ nframes
-                   in env { ic3Frames = rframes }
-  res <- pushCubes (if trivial
-                    then [tk]
-                    else [1..tk])
-  do
-    frames <- gets ic3Frames
-    ic3Debug 5 $ "After propagation: "++
-      (show $ fmap frameFrontier frames)
-  return res  
+  --ic3Debug 5 $ "Before propagation: "++(show frames)
+  modify $
+    \env -> let cons = ic3Consecution env
+                frames = consecutionFrames cons
+                (pre,oframes) = Vec.splitAt (earliest-1) frames
+                (_,nframes) = mapAccumR (\all frame
+                                         -> let rem = IntSet.difference frame all
+                                            in (IntSet.union all rem,rem)
+                                        ) IntSet.empty (Vec.drop (earliest-1) oframes)
+                frames1 = pre Vec.++ nframes
+                ncons = cons { consecutionFrames = frames1
+                             , consecutionFrameHash = succ (consecutionFrameHash cons) }
+            in env { ic3Consecution = ncons }
+  pushCubes (if trivial
+             then [tk]
+             else [1..tk])
   where
     pushCubes [] = return 0
     pushCubes (i:is) = do
-      frames <- gets ic3Frames
-      let frame = frames Vec.! i
-          cubes = frameFrontier $ frames Vec.! i
+      cubes <- gets ((Vec.! i).consecutionFrames.ic3Consecution)
       ncubes <- foldlM (\keep cube -> do
-                           consRes <- abstractConsecution i cube Nothing
+                           cons <- gets ic3Consecution
+                           consRes <- abstractConsecution i (getCube cube cons) Nothing
                            case consRes of
                              Left core -> do
-                               addAbstractCube (i+1) core
+                               modify $
+                                 \env -> env { ic3Consecution = addCubeAtLevel cube (i+1) cons
+                                             }
                                return keep
-                             Right _ -> return (Set.insert cube keep)
-                       ) Set.empty cubes
-      modify $ \env -> env { ic3Frames = (ic3Frames env) Vec.//
-                                         [(i,frame { frameFrontier = ncubes })]
-                           }
-      if Set.null ncubes
+                             Right _ -> return $ IntSet.insert cube keep
+                       ) IntSet.empty (IntSet.toList cubes)
+      modify $
+        \env -> let cons = ic3Consecution env
+                    frames = consecutionFrames cons
+                    ncons = cons { consecutionFrames = frames Vec.// [(i,ncubes)] }
+                in env { ic3Consecution = ncons }
+      if IntSet.null ncubes
         then return i
         else pushCubes is
 
@@ -1046,12 +941,14 @@ interpolate j s = do
       if j==0
         then assertInterp (translateToMathSAT $ TR.initialState (ic3Model cfg) (interpCur st)) ante --(interpAnte st)
         else (do
-                 let frames = Vec.drop j (ic3Frames env)
-                 mapM_ (\fr -> mapM_ (\ast -> do
-                                         let trm = toDomainTerm ast (ic3Domain env)
+                 let cons = ic3Consecution env
+                     frames = Vec.drop j (consecutionFrames cons)
+                 mapM_ (\fr -> mapM_ (\st_id -> do
+                                         let ast = getCube st_id cons
+                                             trm = toDomainTerm ast (ic3Domain env)
                                                    (interpCur st)
                                          assertInterp (translateToMathSAT $ not' trm) ante --(interpAnte st)
-                                     ) (frameFrontier fr)
+                                     ) (IntSet.toList fr)
                        ) frames)
       assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial (interpCur st) s)
         ante -- (interpAnte st)
@@ -1240,28 +1137,17 @@ ctgDown = ctgDown' 0 0
                  ctgCore' <- mic' (j-1) ctgCore (recDepth+1)
                  addAbstractCube j ctgCore'
                  ctgDown' (ctgs+1) joins level ast keepTo recDepth efMaxCTGs)
-            
-addAbstractCube :: Int -> AbstractState (TR.State mdl)
-                   -> IC3 mdl ()
-addAbstractCube level state = do
-  frame <- fmap (Vec.! level) $ gets ic3Frames
-  if Set.member state (frameFrontier frame)
-    then return ()
-    else (do
-             env <- get
-             let cons = ic3Consecution env
-                 tv = toDomainTerm state (ic3Domain env) (consVars cons)
-             consecutionPerform cons $ assert $ (frameActivation frame) .=>. (not' tv)
-             put $ env { ic3Frames = Vec.update (ic3Frames env)
-                                     (Vec.singleton (level,frame { frameFrontier = Set.insert state
-                                                                                   (frameFrontier frame)
-                                                                 }))
-                       , ic3Earliest = min (ic3Earliest env) level
-                       })
 
-frameActivation' :: IC3Env mdl -> Int -> SMTExpr Bool
+addAbstractCube :: Int -> AbstractState (TR.State mdl) -> IC3 mdl ()
+addAbstractCube lvl st
+  = modify (\env -> let (st_id,cons') = getCubeId st (ic3Consecution env)
+                        cons'' = addCubeAtLevel st_id lvl cons'
+                    in env { ic3Consecution = cons''
+                           , ic3Earliest = min (ic3Earliest env) lvl })
+
+{-frameActivation' :: IC3Env mdl -> Int -> SMTExpr Bool
 frameActivation' env fi
-  = app and' $ Vec.toList $ fmap frameActivation $ Vec.drop fi (ic3Frames env)
+  = app and' $ Vec.toList $ fmap frameActivation $ Vec.drop fi (ic3Frames env)-}
 
 addSuggestedPredicates :: TR.TransitionRelation mdl => IC3 mdl ()
 addSuggestedPredicates = do
@@ -1287,23 +1173,25 @@ renderAbstractState st = do
 -- | Dump the internal IC3 data-structures
 ic3Dump :: IC3 mdl ()
 ic3Dump = do
-  frames <- gets ic3Frames
+  cons <- gets ic3Consecution
+  let frames = consecutionFrames cons
   mapM_ (\(i,fr) -> do
             liftIO $ putStrLn $ "Frame "++show i++":"
-            mapM_ (\cube -> do
-                      cubeStr <- renderAbstractState cube
+            mapM_ (\cube_id -> do
+                      cubeStr <- renderAbstractState (getCube cube_id cons)
                       liftIO $ putStrLn $ "  "++cubeStr
-                  ) (Set.toList $ frameFrontier fr)
+                  ) (IntSet.toList fr)
         ) (zip [0..] (Vec.toList frames))
 
 checkFixpoint :: TR.TransitionRelation mdl => Int -> IC3 mdl ()
 checkFixpoint level = do
-  frames <- gets ic3Frames
+  cons <- gets ic3Consecution
+  let frames = consecutionFrames cons
   mdl <- asks ic3Model
   domain <- gets ic3Domain
-  let fp inp = app and' [ not' $ toDomainTerm st domain inp
+  let fp inp = app and' [ not' $ toDomainTerm (getCube st cons) domain inp
                         | frame <- Vec.toList $ Vec.drop level frames
-                        , st <- Set.toList $ frameFrontier frame ]
+                        , st <- IntSet.toList frame ]
   backend <- liftIO $ createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "fp"
   liftIO $ withSMTBackendExitCleanly backend $ do
     incorrectInitial <- stack $ do
@@ -1344,3 +1232,36 @@ checkFixpoint level = do
       checkSat
     when incorrectFix (error "Fixpoint is doesn't hold in one transition")
 
+newIC3Stats :: IO IC3Stats
+newIC3Stats = do
+  consTime <- newIORef 0
+  domTime <- newIORef 0
+  interpTime <- newIORef 0
+  liftTime <- newIORef 0
+  initTime <- newIORef 0
+  return $ IC3Stats { consecutionTime = consTime
+                    , domainTime = domTime
+                    , interpolationTime = interpTime
+                    , liftingTime = liftTime
+                    , initiationTime = initTime }
+
+ic3DumpStats :: IC3 mdl ()
+ic3DumpStats = do
+  stats <- gets ic3Stats
+  case stats of
+   Just stats -> do
+     consTime <- liftIO $ readIORef (consecutionTime stats)
+     domTime <- liftIO $ readIORef (domainTime stats)
+     interpTime <- liftIO $ readIORef (interpolationTime stats)
+     liftTime <- liftIO $ readIORef (liftingTime stats)
+     initTime <- liftIO $ readIORef (initiationTime stats)
+     liftIO $ putStrLn $ "Consecution time: "++show consTime
+     liftIO $ putStrLn $ "Domain time: "++show domTime
+     liftIO $ putStrLn $ "Interpolation time: "++show interpTime
+     liftIO $ putStrLn $ "Initiation time: "++show initTime
+   Nothing -> return ()
+
+addTiming :: IORef NominalDiffTime -> IO (AnyBackend IO) -> IO (AnyBackend IO)
+addTiming ref act = do
+  AnyBackend b <- act
+  return $ AnyBackend $ timingBackend (\t -> modifyIORef ref (+t)) b

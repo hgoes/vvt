@@ -16,6 +16,7 @@ data Options = Options { optBackendCons :: String
                        , optShowHelp :: Bool
                        , optTimeout :: Maybe Int
                        , optVerbosity :: Int
+                       , optStats :: Bool
                        }
 
 data Encoding = Monolithic
@@ -35,6 +36,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optShowHelp = False
                          , optTimeout = Nothing
                          , optVerbosity = 0
+                         , optStats = False
                          }
   where
     z3 = "z3 -smt2 -in"
@@ -82,6 +84,8 @@ allOpts
      "How much debugging output to show"
     ,Option ['O'] ["optimize"] (NoArg $ \opt -> opt { optOptimizeTR = True })
      "Optimize the transition relation"
+    ,Option ['s'] ["stats"] (NoArg $ \opt -> opt { optStats = True })
+     "Print statistical information"
     ]
 
 parseTime :: String -> Int
