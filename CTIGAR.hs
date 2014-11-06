@@ -88,11 +88,18 @@ data IC3Env mdl
 
 type Lifting mdl = SMTPool () (LiftingState mdl)
 
-data IC3Stats = IC3Stats { consecutionTime :: IORef NominalDiffTime
+data IC3Stats = IC3Stats { startTime :: UTCTime
+                         , consecutionTime :: IORef NominalDiffTime
                          , domainTime :: IORef NominalDiffTime
                          , interpolationTime :: IORef NominalDiffTime
                          , liftingTime :: IORef NominalDiffTime
                          , initiationTime :: IORef NominalDiffTime
+                         , numErased :: Int
+                         , numCTI :: Int
+                         , numUnliftedErased :: Int
+                         , numCTG :: Int
+                         , numMIC :: Int
+                         , numCoreReduced :: Int
                          }
 
 data InterpolationState mdl = InterpolationState { interpCur :: TR.State mdl
@@ -603,10 +610,15 @@ handleObligations queue = case Queue.minView queue of
     generalizeErase obl obls core = do
       n <- abstractGeneralize (oblLevel obl) core
       tk <- k
-      let nobls = if n <= tk
-                  then Queue.insert (obl { oblLevel = n }) obls
-                  else obls
-      handleObligations nobls
+      if n <= tk
+        then handleObligations (Queue.insert (obl { oblLevel = n }) obls)
+        else (do
+                 updateStats (\stats -> stats { numErased = (numErased stats)+1 })
+                 oblState <- liftIO $ readIORef (oblState obl)
+                 case stateLiftedAst oblState of
+                  Nothing -> updateStats (\stats -> stats { numUnliftedErased = (numUnliftedErased stats)+1 })
+                  Just _ -> return ()
+                 handleObligations obls)
 
 removeObligations :: IORef (State inp st)
                      -> Int
@@ -737,9 +749,13 @@ strengthen = strengthen' True
           else return Nothing
       case rv of
        Just sti -> do
-         sti' <- liftIO $ liftState (ic3Lifting env) sti >>= newIORef
-         let obl = Obligation sti' (tk-1) 1
+         sti' <- liftIO $ liftState (ic3Lifting env) sti
+         sti'' <- liftIO $ newIORef sti'
+         let obl = Obligation sti'' (tk-1) 1
              queue = Queue.singleton obl
+         updateStats (\stats -> stats { numCTI = (numCTI stats)+1 })
+         --ic3Debug 2 ("Enqueuing obligation "++show sti++" at level "++
+         --            show (tk-1)++" and depth 1")
          res <- handleObligations queue
          if res
            then strengthen' False
@@ -1021,7 +1037,9 @@ interpolate j s = do
 mic :: TR.TransitionRelation mdl
        => Int -> AbstractState (TR.State mdl)
        -> IC3 mdl (AbstractState (TR.State mdl))
-mic level ast = mic' level ast 1
+mic level ast = do
+  updateStats (\stats -> stats { numMIC = (numMIC stats)+1 })
+  mic' level ast 1
 
 mic' :: TR.TransitionRelation mdl
         => Int -> AbstractState (TR.State mdl) -> Int
@@ -1079,7 +1097,13 @@ ctgDown = ctgDown' 0 0
               then (do
                        res <- abstractConsecution level ast Nothing
                        case res of
-                         Left nast -> return $ Just nast
+                         Left nast -> do
+                           modify (\env -> case ic3Stats env of
+                                    Nothing -> env
+                                    Just stats -> if ast/=nast
+                                                  then env { ic3Stats = Just (stats { numCoreReduced = (numCoreReduced stats)+1 }) }
+                                                  else env)
+                           return $ Just nast
                          Right _ -> return Nothing)
               else (do
                        res <- abstractConsecution level ast Nothing
@@ -1097,7 +1121,9 @@ ctgDown = ctgDown' 0 0
                                         then (do
                                                  res' <- abstractConsecution (level-1) abstractCtg Nothing
                                                  case res' of
-                                                   Left ctgCore -> pushForward ctgs joins level ast keepTo recDepth efMaxCTGs ctgCore level
+                                                   Left ctgCore -> do
+                                                     updateStats (\stats -> stats { numCTG = (numCTG stats)+1 })
+                                                     pushForward ctgs joins level ast keepTo recDepth efMaxCTGs ctgCore level
                                                    Right _ -> checkJoins ctgs joins level ast keepTo recDepth efMaxCTGs abstractCtg)
                                         else checkJoins ctgs joins level ast keepTo recDepth efMaxCTGs abstractCtg)
                              else checkJoins ctgs joins level ast keepTo recDepth efMaxCTGs abstractCtg))
@@ -1227,31 +1253,54 @@ checkFixpoint level = do
 
 newIC3Stats :: IO IC3Stats
 newIC3Stats = do
+  curTime <- getCurrentTime
   consTime <- newIORef 0
   domTime <- newIORef 0
   interpTime <- newIORef 0
   liftTime <- newIORef 0
   initTime <- newIORef 0
-  return $ IC3Stats { consecutionTime = consTime
+  return $ IC3Stats { startTime = curTime
+                    , consecutionTime = consTime
                     , domainTime = domTime
                     , interpolationTime = interpTime
                     , liftingTime = liftTime
-                    , initiationTime = initTime }
+                    , initiationTime = initTime
+                    , numErased = 0
+                    , numCTI = 0
+                    , numCTG = 0
+                    , numMIC = 0
+                    , numCoreReduced = 0
+                    , numUnliftedErased = 0 }
+
+updateStats :: (IC3Stats -> IC3Stats) -> IC3 mdl ()
+updateStats f = modify (\env -> env { ic3Stats = fmap f (ic3Stats env) })
 
 ic3DumpStats :: IC3 mdl ()
 ic3DumpStats = do
   stats <- gets ic3Stats
   case stats of
    Just stats -> do
+     curTime <- liftIO getCurrentTime
      consTime <- liftIO $ readIORef (consecutionTime stats)
      domTime <- liftIO $ readIORef (domainTime stats)
      interpTime <- liftIO $ readIORef (interpolationTime stats)
      liftTime <- liftIO $ readIORef (liftingTime stats)
      initTime <- liftIO $ readIORef (initiationTime stats)
+     numPreds <- gets (domainHash.ic3Domain)
+     liftIO $ putStrLn $ "Total runtime: "++show (diffUTCTime curTime (startTime stats))
      liftIO $ putStrLn $ "Consecution time: "++show consTime
      liftIO $ putStrLn $ "Domain time: "++show domTime
      liftIO $ putStrLn $ "Interpolation time: "++show interpTime
      liftIO $ putStrLn $ "Initiation time: "++show initTime
+     liftIO $ putStrLn $ "# of predicates: "++show numPreds
+     liftIO $ putStrLn $ "# of CTIs: "++show (numCTI stats)
+     liftIO $ putStrLn $ "# of CTGs: "++show (numCTG stats)
+     liftIO $ putStrLn $ "# of MICs: "++show (numMIC stats)
+     liftIO $ putStrLn $ "# of reduced cores: "++show (numCoreReduced stats)
+     liftIO $ putStrLn $ "# erased: "++show (numErased stats)
+     liftIO $ putStrLn $ "% unlifted: "++
+       (show $ (round $ 100*(fromIntegral $ numUnliftedErased stats) /
+                (fromIntegral $ numErased stats) :: Int))
    Nothing -> return ()
 
 addTiming :: IORef NominalDiffTime -> IO (AnyBackend IO) -> IO (AnyBackend IO)
