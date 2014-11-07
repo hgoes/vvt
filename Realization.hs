@@ -4,8 +4,6 @@ module Realization where
 import Gates
 import PartialArgs
 
-import LLVM.FFI
-import Foreign.Ptr
 import Language.SMTLib2
 import Control.Monad.State (MonadIO)
 

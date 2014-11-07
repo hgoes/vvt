@@ -20,11 +20,9 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Foldable (foldlM,concat)
 import Foreign.Storable (peek)
-import Foreign.C.String
-import Foreign.Marshal.Array
-import "mtl" Control.Monad.State (StateT,runStateT,get,gets,put,modify,lift,liftIO,MonadIO)
+import "mtl" Control.Monad.State (StateT,runStateT,get,put,lift,liftIO,MonadIO)
 import System.IO.Unsafe
-import Data.Traversable (mapAccumL,sequence,traverse,mapM)
+import Data.Traversable (sequence,traverse,mapM)
 import Prelude hiding (sequence,mapM,concat)
 import Data.List (intersperse,sortBy)
 import Data.Either (partitionEithers)

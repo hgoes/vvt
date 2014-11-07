@@ -2,9 +2,7 @@
 module PartialArgs where
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
 
-import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Traversable

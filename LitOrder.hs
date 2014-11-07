@@ -4,7 +4,7 @@ import Domain
 
 import Prelude hiding (foldl)
 import Data.Foldable
-import Data.Map (Map,(!))
+import Data.Map (Map)
 import qualified Data.Map as Map
 
 type LitOrder = Map Int Float

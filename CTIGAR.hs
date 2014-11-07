@@ -9,29 +9,23 @@ import Consecution
 import PartialArgs
 import SMTPool
 import LitOrder
-import Gates
 import Options
 
 import Language.SMTLib2
-import Language.SMTLib2.Connection
 import Language.SMTLib2.Internals
 import Language.SMTLib2.Internals.Operators
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
 
-import Data.IORef
-import Data.Set (Set)
-import qualified Data.Set as Set
-import Data.IntSet (IntSet)
-import qualified Data.IntSet as IntSet
-import Data.Map (Map)
 import qualified Data.Map as Map
-import Control.Monad (when,unless)
+import qualified Data.Vector as Vec
+import qualified Data.IntSet as IntSet
+import Data.IORef
+import Control.Monad (when)
 import "mtl" Control.Monad.Trans (liftIO)
 import "mtl" Control.Monad.Reader (ReaderT,runReaderT,ask,asks)
 import "mtl" Control.Monad.State (StateT,evalStateT,gets)
-import qualified "mtl" Control.Monad.Trans as T (lift)
 import Data.List (sort,sortBy)
 import Data.PQueue.Min (MinQueue)
 import qualified Data.PQueue.Min as Queue
@@ -40,20 +34,11 @@ import Data.Foldable
 import Data.Traversable
 import Prelude hiding (sequence_,concat,mapM_,or,and,mapM,foldl)
 import Data.Typeable
-import Foreign.Ptr (Ptr,nullPtr)
-import LLVM.FFI (BasicBlock,Instruction,getNameString,hasName)
-import "mtl" Control.Monad.State (runStateT,execStateT,get,put,modify)
+import "mtl" Control.Monad.State (get,put,modify)
 import Data.Bits (shiftL)
-import Data.Vector (Vector)
-import qualified Data.Vector as Vec
 import Data.Maybe (catMaybes)
-import Data.List (intersperse)
-import Control.Exception (finally)
 import Data.Either (partitionEithers)
-import Data.Ord (comparing)
 import Data.Time.Clock
-
-import Debug.Trace
 
 data IC3Config mdl
   = IC3Cfg { ic3Model :: mdl
@@ -1327,6 +1312,7 @@ ic3DumpStats fp = do
   stats <- gets ic3Stats
   case stats of
    Just stats -> do
+     level <- k
      curTime <- liftIO $ getCurrentTime
      consTime <- liftIO $ readIORef (consecutionTime stats)
      consNum <- liftIO $ readIORef (consecutionNum stats) 
@@ -1344,6 +1330,7 @@ ic3DumpStats fp = do
                                   Nothing -> []
                                   Just rfp -> rfp)
      liftIO $ do
+       putStrLn $ "Level: "++show level
        putStrLn $ "Total runtime: "++show (diffUTCTime curTime (startTime stats))
        putStrLn $ "Consecution time: "++show consTime
        putStrLn $ "Domain time: "++show domTime

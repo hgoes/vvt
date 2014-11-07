@@ -12,7 +12,6 @@ import PartialArgs
 
 import System.IO
 import System.Exit
-import System.Timeout
 import Control.Concurrent
 import Control.Exception
 import Prelude (Either(..),mapM_,Maybe(..),(>>),(>>=),return,Bool(..),undefined,($),String)

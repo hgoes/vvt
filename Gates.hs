@@ -12,8 +12,6 @@ import qualified Data.Map as Map
 import Data.Foldable (foldlM)
 import qualified Data.Graph.Inductive as Gr
 
-import Debug.Trace
-
 newtype GateExpr = GateExpr Int deriving (Typeable,Eq,Ord,Show,Ix)
 
 type GateArray inp outp = Map GateExpr (Gate inp outp)

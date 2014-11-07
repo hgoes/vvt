@@ -8,4 +8,4 @@ Executable hctigar
   Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
                         smtlib2,smtlib2-debug,smtlib2-timing,
                         array,resource-pool,mtl,bytestring,attoparsec<0.11,atto-lisp,text,time
-  GHC-Options:          -threaded
+  GHC-Options:          -threaded -fwarn-unused-imports

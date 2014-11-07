@@ -24,12 +24,10 @@ import qualified Data.Map as Map
 import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.List (delete,filter,intercalate)
+import Data.List (delete,intercalate)
 import Data.Foldable
 import Prelude hiding (foldl,mapM_)
 import Control.Monad (when)
-import Data.Array (Array)
-import qualified Data.Array as Array
 import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 import Data.Typeable
