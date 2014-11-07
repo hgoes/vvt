@@ -1,0 +1,7 @@
+*.hi
+*.bc
+*.c.pre
+*.c.pre*
+*.cpachecker.c
+dist
+*.o
