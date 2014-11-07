@@ -90,16 +90,25 @@ type Lifting mdl = SMTPool () (LiftingState mdl)
 
 data IC3Stats = IC3Stats { startTime :: UTCTime
                          , consecutionTime :: IORef NominalDiffTime
+                         , consecutionNum :: IORef Int
                          , domainTime :: IORef NominalDiffTime
+                         , domainNum :: IORef Int
                          , interpolationTime :: IORef NominalDiffTime
+                         , interpolationNum :: IORef Int
                          , liftingTime :: IORef NominalDiffTime
+                         , liftingNum :: IORef Int
                          , initiationTime :: IORef NominalDiffTime
+                         , initiationNum :: IORef Int
                          , numErased :: Int
                          , numCTI :: Int
                          , numUnliftedErased :: Int
                          , numCTG :: Int
                          , numMIC :: Int
                          , numCoreReduced :: Int
+                         , numAbortJoin :: Int
+                         , numAbortMic :: Int
+                         , numRefinements :: Int
+                         , numAddPreds :: Int
                          }
 
 data InterpolationState mdl = InterpolationState { interpCur :: TR.State mdl
@@ -202,19 +211,24 @@ runIC3 cfg act = do
            else return Nothing
   let consBackend = case stats of
         Nothing -> ic3ConsecutionBackend cfg
-        Just stats -> addTiming (consecutionTime stats) (ic3ConsecutionBackend cfg)
+        Just stats -> addTiming (consecutionTime stats) (consecutionNum stats)
+                      (ic3ConsecutionBackend cfg)
       liftingBackend = case stats of
         Nothing -> ic3LiftingBackend cfg -- >>= namedDebugBackend "lift"
-        Just stats -> addTiming (liftingTime stats) (ic3LiftingBackend cfg)
+        Just stats -> addTiming (liftingTime stats) (liftingNum stats)
+                      (ic3LiftingBackend cfg)
       initiationBackend = case stats of
         Nothing -> ic3InitBackend cfg -- >>= namedDebugBackend "init"
-        Just stats -> addTiming (initiationTime stats) (ic3InitBackend cfg)
+        Just stats -> addTiming (initiationTime stats) (initiationNum stats)
+                      (ic3InitBackend cfg)
       domainBackend = case stats of
         Nothing -> ic3DomainBackend cfg -- >>= namedDebugBackend "domain"
-        Just stats -> addTiming (domainTime stats) (ic3DomainBackend cfg)
+        Just stats -> addTiming (domainTime stats) (domainNum stats)
+                      (ic3DomainBackend cfg)
       interpBackend' = case stats of
         Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
-        Just stats -> addTiming (interpolationTime stats) (ic3InterpolationBackend cfg)
+        Just stats -> addTiming (interpolationTime stats) (interpolationNum stats)
+                      (ic3InterpolationBackend cfg)
   cons <- consecutionNew consBackend
           (do
               cur <- TR.createStateVars "" mdl
@@ -768,19 +782,22 @@ strengthen = strengthen' True
          return $ Just trivial
 
 check :: TR.TransitionRelation mdl
-         => mdl -> Options -> IO (Maybe [Unpacked (TR.State mdl,TR.Input mdl)])
+         => mdl -> Options
+         -> IO (Either [Unpacked (TR.State mdl,TR.Input mdl)] [AbstractState (TR.State mdl)])
 check st opts = do
   let prog:args = words (optBackendBase opts)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
   case tr of
-    Just tr' -> return (Just tr')
+    Just tr' -> return (Left tr')
     Nothing -> runIC3 (mkIC3Config st opts) (do
                                                 addSuggestedPredicates
                                                 extend
                                                 extend
                                                 res <- checkIt
-                                                ic3DumpStats
+                                                ic3DumpStats (case res of
+                                                               Left _ -> Nothing
+                                                               Right fp -> Just fp)
                                                 return res
                                             )
   where
@@ -811,14 +828,15 @@ check st opts = do
            Nothing -> do
              rtr <- mapM renderState tr
              error $ "Error trace is infeasible:\n"++unlines rtr
-           Just res' -> return (Just res')
+           Just res' -> return (Left res')
         Just trivial -> do
           pres <- propagate trivial
           if pres==0
             then checkIt
             else (do
-                     checkFixpoint pres
-                     return Nothing)
+                     fp <- getAbstractFixpoint pres
+                     checkFixpoint fp
+                     return (Right fp))
     getWitnessTr Nothing = return []
     getWitnessTr (Just st) = do
       rst <- readIORef st
@@ -847,6 +865,19 @@ check st opts = do
       concr <- getValues x
       concrs <- getWitness real xs
       return $ concr:concrs
+
+getFixpoint :: Domain st -> [AbstractState st] -> st -> SMTExpr Bool
+getFixpoint domain sts inp = app and' [ not' $ toDomainTerm st domain inp
+                                      | st <- sts ]
+
+getAbstractFixpoint :: Int -> IC3 mdl [AbstractState (TR.State mdl)]
+getAbstractFixpoint level = do
+  cons <- gets ic3Consecution
+  let frames = consecutionFrames cons
+      fpFrames = Vec.drop level frames
+  return [ getCube st cons
+         | frame <- Vec.toList fpFrames
+         , st <- IntSet.toList frame ]
 
 propagate :: TR.TransitionRelation mdl
              => Bool -> IC3 mdl Int
@@ -929,6 +960,8 @@ elimSpuriousTrans st level = do
                    (ic3PredicateExtractor env)
                    (stateFull rst)
                    (stateLifted rst)
+  updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
+                               , numAddPreds = (numAddPreds stats)+(length props) })
   put $ env { ic3PredicateExtractor = nextr }
   interp <- interpolate level (stateLifted rst)
   domain <- gets ic3Domain
@@ -1052,7 +1085,9 @@ mic' level ast recDepth = do
                   Vec.toList ast
   mic'' sortedAst 0 attempts
   where
-    mic'' ast _ 0 = return ast
+    mic'' ast _ 0 = do
+      updateStats (\stats -> stats { numAbortMic = (numAbortMic stats)+1 })
+      return ast
     mic'' ast i attempts
       | i >= Vec.length ast = return ast
       | otherwise = do
@@ -1131,7 +1166,9 @@ ctgDown = ctgDown' 0 0
       cfg <- ask
       if joins < ic3MaxJoins cfg
         then (case joined of
-                 Nothing -> return Nothing
+                 Nothing -> do
+                   updateStats (\stats -> stats { numAbortJoin = (numAbortJoin stats)+1 })
+                   return Nothing
                  Just joined' -- XXX: Henning: The case split here is to prevent looping, find out if it is actually correct.
                    | Vec.length joined' < Vec.length ast -> ctgDown' 0 (joins+1) level joined' keepTo recDepth efMaxCTGs
                    | otherwise -> return Nothing)
@@ -1202,15 +1239,11 @@ ic3Dump = do
                   ) (IntSet.toList fr)
         ) (zip [0..] (Vec.toList frames))
 
-checkFixpoint :: TR.TransitionRelation mdl => Int -> IC3 mdl ()
-checkFixpoint level = do
-  cons <- gets ic3Consecution
-  let frames = consecutionFrames cons
+checkFixpoint :: TR.TransitionRelation mdl => [AbstractState (TR.State mdl)] -> IC3 mdl ()
+checkFixpoint abs_fp = do
   mdl <- asks ic3Model
   domain <- gets ic3Domain
-  let fp inp = app and' [ not' $ toDomainTerm (getCube st cons) domain inp
-                        | frame <- Vec.toList $ Vec.drop level frames
-                        , st <- IntSet.toList frame ]
+  let fp = getFixpoint domain abs_fp
   backend <- liftIO $ createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "fp"
   liftIO $ withSMTBackendExitCleanly backend $ do
     incorrectInitial <- stack $ do
@@ -1255,55 +1288,93 @@ newIC3Stats :: IO IC3Stats
 newIC3Stats = do
   curTime <- getCurrentTime
   consTime <- newIORef 0
+  consNum <- newIORef 0
   domTime <- newIORef 0
+  domNum <- newIORef 0
   interpTime <- newIORef 0
+  interpNum <- newIORef 0
   liftTime <- newIORef 0
+  liftNum <- newIORef 0
   initTime <- newIORef 0
+  initNum <- newIORef 0
   return $ IC3Stats { startTime = curTime
                     , consecutionTime = consTime
+                    , consecutionNum = consNum
                     , domainTime = domTime
+                    , domainNum = domNum
                     , interpolationTime = interpTime
+                    , interpolationNum = interpNum
                     , liftingTime = liftTime
+                    , liftingNum = liftNum
                     , initiationTime = initTime
+                    , initiationNum = initNum
                     , numErased = 0
                     , numCTI = 0
                     , numCTG = 0
                     , numMIC = 0
                     , numCoreReduced = 0
-                    , numUnliftedErased = 0 }
+                    , numUnliftedErased = 0
+                    , numAbortJoin = 0
+                    , numAbortMic = 0
+                    , numRefinements = 0
+                    , numAddPreds = 0 }
 
 updateStats :: (IC3Stats -> IC3Stats) -> IC3 mdl ()
 updateStats f = modify (\env -> env { ic3Stats = fmap f (ic3Stats env) })
 
-ic3DumpStats :: IC3 mdl ()
-ic3DumpStats = do
+ic3DumpStats :: Maybe [AbstractState (TR.State mdl)] -> IC3 mdl ()
+ic3DumpStats fp = do
   stats <- gets ic3Stats
   case stats of
    Just stats -> do
-     curTime <- liftIO getCurrentTime
+     curTime <- liftIO $ getCurrentTime
      consTime <- liftIO $ readIORef (consecutionTime stats)
+     consNum <- liftIO $ readIORef (consecutionNum stats) 
      domTime <- liftIO $ readIORef (domainTime stats)
+     domNum <- liftIO $ readIORef (domainNum stats)
      interpTime <- liftIO $ readIORef (interpolationTime stats)
+     interpNum <- liftIO $ readIORef (interpolationNum stats)
      liftTime <- liftIO $ readIORef (liftingTime stats)
+     liftNum <- liftIO $ readIORef (liftingNum stats)
      initTime <- liftIO $ readIORef (initiationTime stats)
+     initNum <- liftIO $ readIORef (initiationNum stats)
      numPreds <- gets (domainHash.ic3Domain)
-     liftIO $ putStrLn $ "Total runtime: "++show (diffUTCTime curTime (startTime stats))
-     liftIO $ putStrLn $ "Consecution time: "++show consTime
-     liftIO $ putStrLn $ "Domain time: "++show domTime
-     liftIO $ putStrLn $ "Interpolation time: "++show interpTime
-     liftIO $ putStrLn $ "Initiation time: "++show initTime
-     liftIO $ putStrLn $ "# of predicates: "++show numPreds
-     liftIO $ putStrLn $ "# of CTIs: "++show (numCTI stats)
-     liftIO $ putStrLn $ "# of CTGs: "++show (numCTG stats)
-     liftIO $ putStrLn $ "# of MICs: "++show (numMIC stats)
-     liftIO $ putStrLn $ "# of reduced cores: "++show (numCoreReduced stats)
-     liftIO $ putStrLn $ "# erased: "++show (numErased stats)
-     liftIO $ putStrLn $ "% unlifted: "++
-       (show $ (round $ 100*(fromIntegral $ numUnliftedErased stats) /
-                (fromIntegral $ numErased stats) :: Int))
+     let (numCl,numLit) = foldl (\(numCl,numLit) st -> (numCl+1,numLit+Vec.length st))
+                          (0,0) (case fp of
+                                  Nothing -> []
+                                  Just rfp -> rfp)
+     liftIO $ do
+       putStrLn $ "Total runtime: "++show (diffUTCTime curTime (startTime stats))
+       putStrLn $ "Consecution time: "++show consTime
+       putStrLn $ "Domain time: "++show domTime
+       putStrLn $ "Interpolation time: "++show interpTime
+       putStrLn $ "Initiation time: "++show initTime
+       putStrLn $ "# of consecution queries: "++show consNum
+       putStrLn $ "# of domain queries: "++show domNum
+       putStrLn $ "# of interpolation queries: "++show interpNum
+       putStrLn $ "# of lifting queries: "++show liftNum
+       putStrLn $ "# of initiation queries: "++show initNum
+       putStrLn $ "# of predicates: "++show numPreds
+       putStrLn $ "# of CTIs: "++show (numCTI stats)
+       putStrLn $ "# of CTGs: "++show (numCTG stats)
+       putStrLn $ "# of MICs: "++show (numMIC stats)
+       putStrLn $ "# of reduced cores: "++show (numCoreReduced stats)
+       putStrLn $ "# of aborted joins: "++show (numAbortJoin stats)
+       putStrLn $ "# of aborted mics: "++show (numAbortMic stats)
+       putStrLn $ "# of refinements: "++show (numRefinements stats)
+       putStrLn $ "# of additional predicates: "++show (numAddPreds stats)
+       when (numCl>0) $ do
+         putStrLn $ "# of fixpoint clauses: "++show numCl
+         putStrLn $ "# of avg. literals per clause: "++show (numLit `div` numCl)
+       putStrLn $ "# erased: "++show (numErased stats)
+       putStrLn $ "% unlifted: "++
+         (show $ (round $ 100*(fromIntegral $ numUnliftedErased stats) /
+                  (fromIntegral $ numErased stats) :: Int))
    Nothing -> return ()
 
-addTiming :: IORef NominalDiffTime -> IO (AnyBackend IO) -> IO (AnyBackend IO)
-addTiming ref act = do
+addTiming :: IORef NominalDiffTime -> IORef Int -> IO (AnyBackend IO) -> IO (AnyBackend IO)
+addTiming time_ref num_ref act = do
   AnyBackend b <- act
-  return $ AnyBackend $ timingBackend (\t -> modifyIORef ref (+t)) b
+  return $ AnyBackend $ timingBackend (\t -> modifyIORef time_ref (+t) >>
+                                             modifyIORef num_ref (+1)
+                                      ) b

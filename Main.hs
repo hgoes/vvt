@@ -26,7 +26,8 @@ main = do
    Right (file,opts) -> getTransitionRelation file opts $ \st -> do
      let ropts = RealizationOptions { useErrorState = True
                                     , exactPredecessors = False
-                                    , optimize = optOptimizeTR opts }
+                                    , optimize = optOptimizeTR opts
+                                    , eliminateDiv = True }
      tr <- case optTimeout opts of
             Nothing -> check st opts
             Just to -> do
@@ -45,8 +46,8 @@ main = do
                  hPutStrLn stderr "Timeout"
                  exitWith (ExitFailure (-2))
      case tr of
-      Nothing -> putStrLn "No bug found."
-      Just tr' -> do
+      Right fp -> putStrLn "No bug found."
+      Left tr' -> do
         putStrLn "Bug found:"
         mapM_ (\(step,_) -> renderPartialState st
                             (unmaskValue (getUndefState st) step) >>= putStrLn
@@ -62,7 +63,8 @@ getTransitionRelation file opts f = do
    Monolithic -> do
      let ropts = RealizationOptions { useErrorState = True
                                     , exactPredecessors = False
-                                    , optimize = optOptimizeTR opts }
+                                    , optimize = optOptimizeTR opts
+                                    , eliminateDiv = False }
      fun <- getProgram (optOptimizeTR opts) (optFunction opts) file
      st <- getModel ropts fun
      f st

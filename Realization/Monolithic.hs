@@ -94,6 +94,7 @@ type ErrorTrace = [ConcreteValues]
 data RealizationOptions = RealizationOptions { useErrorState :: Bool
                                              , exactPredecessors :: Bool
                                              , optimize :: Bool
+                                             , eliminateDiv :: Bool
                                              }
 
 blockGraph :: Ptr Function -> IO BlockGraph
@@ -617,6 +618,28 @@ realizeInstruction opts ana real (castDown -> Just sw) = do
                  , forwardEdges = Map.insertWith (++)
                                   def [const defEdge]
                                   (forwardEdges real) }) cases
+realizeInstruction opts ana real i@(castDown -> Just opInst)
+  | eliminateDiv opts = do
+  op <- binOpGetOpCode opInst
+  case op of
+   LShr -> do
+     lhs <- getOperand opInst 0
+     rhs <- getOperand opInst 1
+     flhs <- realizeValue ana real lhs
+     frhs <- realizeValue ana real rhs
+     case frhs of
+      IntConst rv -> do
+        tp <- getType opInst >>= translateType
+        defineInstr' ana (real { inputs = Map.insert i tp (inputs real)
+                               , assumes = (\inp@(_,inp',_)
+                                            -> (asSMTValue flhs inp) .==.
+                                               (castUntypedExprValue $ inp' Map.! i
+                                                :: SMTExpr Integer)*(2^rv)):
+                                           (assumes real)
+                               }) i tp (\(_,inp,_) -> inp Map.! i)
+   _ -> do
+     res <- realizeDefInstruction ana real i
+     defineInstr ana real i res
 realizeInstruction opts ana real i = do
   res <- realizeDefInstruction ana real i
   defineInstr ana real i res
