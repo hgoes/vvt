@@ -676,5 +676,6 @@ instance TransitionRelation Realization where
                           else return $ "!"++name
                     ) (sortBy (comparing (not . snd)) xs)
         return $ concat $ intersperse "," lst
-  suggestedPredicates mdl = blkPredicates (blocks mdl)++
+  suggestedPredicates mdl = fmap (\p -> (True,p)) $
+                            blkPredicates (blocks mdl)++
                             splitPredicates (cmpPredicates (latches mdl))

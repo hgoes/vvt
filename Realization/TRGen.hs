@@ -186,8 +186,8 @@ instance TransitionRelation TRGen where
       assgns = [ var++"="++show val
                | (var,Just val) <- Map.toList st ]
   suggestedPredicates trgen
-    = cmpPredicates (Map.delete ".s" (trVars trgen))++
-      [\st -> translateLisp () (Map.union st defaultInps) l
+    = (fmap (\p -> (True,p)) $ cmpPredicates (Map.delete ".s" (trVars trgen)))++
+      [(False,\st -> translateLisp () (Map.union st defaultInps) l)
       | l <- trSuggested trgen ]
     where
       defaultInps = fmap (\tp -> case () of

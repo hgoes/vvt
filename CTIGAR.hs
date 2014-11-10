@@ -1194,8 +1194,10 @@ addSuggestedPredicates :: TR.TransitionRelation mdl => IC3 mdl ()
 addSuggestedPredicates = do
   mdl <- asks ic3Model
   domain <- gets ic3Domain
-  ndomain <- foldlM (\cdomain trm -> do
-                        (_,ndom) <- liftIO $ domainAddUniqueUnsafe trm cdomain
+  ndomain <- foldlM (\cdomain (unique,trm) -> do
+                        (_,ndom) <- if unique
+                                    then liftIO $ domainAddUniqueUnsafe trm cdomain
+                                    else liftIO $ domainAdd trm cdomain
                         return ndom
                     ) domain (TR.suggestedPredicates mdl)
   modify $ \env -> env { ic3Domain = ndomain }

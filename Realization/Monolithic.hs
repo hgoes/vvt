@@ -972,7 +972,8 @@ instance TransitionRelation RealizedBlocks where
                           else return $ "!"++name
                     ) (sortBy (comparing (not . snd)) xs)
         return $ concat $ intersperse "," lst
-  suggestedPredicates mdl = blkPredicates (fmap (const ()) (realizedLatchBlocks mdl))++
+  suggestedPredicates mdl = fmap (\p -> (True,p)) $
+                            blkPredicates (fmap (const ()) (realizedLatchBlocks mdl))++
                             splitPredicates (cmpPredicates (fmap fst (realizedLatches mdl)))
   defaultPredicateExtractor _ = return emptyRSM
   extractPredicates mdl rsm full lifted = do
