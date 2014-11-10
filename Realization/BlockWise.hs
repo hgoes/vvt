@@ -66,6 +66,15 @@ realizeValue (castDown -> Just i) real _ = do
   if bw==1
     then return (NormalValue () (const $ constant $ rv/=0),real)
     else return (IntConst (fromIntegral rv),real)
+realizeValue (castDown -> Just undef) real _ = do
+  tp <- getType (undef::Ptr UndefValue)
+  defaultValue tp
+  where
+    defaultValue (castDown -> Just itp) = do
+      bw <- getBitWidth itp
+      if bw==1
+        then return (NormalValue () (const $ constant False),real)
+        else return (IntConst 0,real)
 
 mkGate :: Ptr Instruction -> RealizedValue Inputs
           -> (Inputs -> SMTExpr Bool)
