@@ -245,6 +245,15 @@ realizeValue ana real (castDown -> Just i) = do
   if bw==1
     then return $ NormalValue () (const $ constant $ rv/=0)
     else return $ IntConst (fromIntegral rv)
+realizeValue ana real (castDown -> Just undef) = do
+  tp <- getType (undef::Ptr UndefValue)
+  defaultValue tp
+  where
+    defaultValue (castDown -> Just itp) = do
+      bw <- getBitWidth itp
+      if bw==1
+        then return $ NormalValue () (const $ constant False)
+        else return $ IntConst 0
 
 realizeBlock :: RealizationOptions -> Analyzation -> Realization -> Ptr BasicBlock
                 -> IO Realization
