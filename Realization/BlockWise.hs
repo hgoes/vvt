@@ -23,6 +23,8 @@ import Data.List (intersperse,sortBy)
 import Data.Ord (comparing)
 import Prelude hiding (sequence)
 
+import System.IO.Unsafe
+
 type Inputs = (Map (Ptr BasicBlock) (SMTExpr Bool), -- Blocks
                Map (Ptr Instruction) (SMTExpr UntypedValue), -- Latches
                Map (Ptr Instruction) (SMTExpr UntypedValue)) -- Inputs
@@ -50,9 +52,9 @@ realizeValue (castDown -> Just instr) real defs
        tp <- getType instr >>= translateType
        let val = withProxyArgValue tp $
                  \(_::a) ann
-                 -> NormalValue ann (\(_,l,_) -> castUntypedExprValue
-                                                 (l Map.! instr)
-                                                 :: SMTExpr a)
+                 -> NormalValue ann (\(_,l,_) -> case Map.lookup instr l of
+                                                  Nothing -> error $ "Instruction "++show (unsafePerformIO $ getNameString instr)++" not found."
+                                                  Just i -> castUntypedExprValue i :: SMTExpr a)
        return (val,
                real { latches = Map.insert instr tp (latches real)
                     })
@@ -178,7 +180,9 @@ realizeInstruction i@(castDown -> Just call) act real defs = do
        -> return (act,
                   Map.insert i (NormalValue ann
                                 (\(_,_,inps)
-                                 -> castUntypedExprValue (inps Map.! i)::SMTExpr a)
+                                 -> case Map.lookup i inps of
+                                     Nothing -> error $ "Input "++show (unsafePerformIO $ getNameString i)++" not found."
+                                     Just i' -> castUntypedExprValue i' ::SMTExpr a)
                                ) defs,
                   real { inputs = Map.insert i tp (inputs real) })
    "assert" -> do
@@ -404,7 +408,9 @@ realizeFunction fun = do
   blks <- getBasicBlockList fun >>= ipListToList
   foldlM (\real blk -> do
              instrs <- getInstList blk >>= ipListToList
-             let act (acts,_,_) = acts Map.! blk
+             let act (acts,_,_) = case Map.lookup blk acts of
+                   Nothing -> error $ "Activation for block "++(show $ unsafePerformIO $ getNameString blk)++" not found."
+                   Just a -> a
              (_,defs,nreal) <- foldlM (\(cact,cdefs,creal) instr
                                         -> realizeInstruction instr cact creal cdefs
                                       ) (act,Map.empty,real) instrs
@@ -453,10 +459,13 @@ finalizeRealization real = do
                              blk <- liftIO $ instructionGetParent instr
                              gts <- get
                              name <- liftIO $ getNameString instr
-                             let nfun inp@(blks,latch,_) = ite (blks Map.! blk)
-                                                           (fun inp)
-                                                           (castUntypedExprValue $
-                                                            latch Map.! instr)
+                             let nfun inp@(blks,latch,_) = case Map.lookup blk blks of
+                                   Nothing -> error $ "Activation for block "++show (unsafePerformIO $ getNameString blk)++" not found."
+                                   Just act -> case Map.lookup instr latch of
+                                     Nothing -> error $ "Latch variable "++show (unsafePerformIO $ getNameString instr)++" not found."
+                                     Just i -> ite act
+                                               (fun inp)
+                                               (castUntypedExprValue i)
                                  (nval,ngts) = addGate gts
                                                (Gate { gateTransfer = nfun
                                                      , gateAnnotation = ann
@@ -473,8 +482,11 @@ finalizeRealization real = do
                          \ann f -> do
                            gates <- get
                            name <- liftIO $ getNameString instr
-                           let buildITE [] (_,latch,_) = castUntypedExprValue $
-                                                         latch Map.! instr
+                           let buildITE [(_,val)] inp
+                                 | not $ Map.member instr (latches real) = asSMTValue val inp
+                               buildITE [] (_,latch,_) = case Map.lookup instr latch of
+                                 Nothing -> error $ "Latch variable "++show (unsafePerformIO $ getNameString instr)++" not found."
+                                 Just i -> castUntypedExprValue i
                                buildITE ((c,val):rest) inp
                                  = ite (c inp) (asSMTValue val inp)
                                    (buildITE rest inp)
