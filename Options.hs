@@ -17,6 +17,7 @@ data Options = Options { optBackendCons :: String
                        , optTimeout :: Maybe Int
                        , optVerbosity :: Int
                        , optStats :: Bool
+                       , optDumpModule :: Bool
                        }
 
 data Encoding = Monolithic
@@ -37,6 +38,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optTimeout = Nothing
                          , optVerbosity = 0
                          , optStats = False
+                         , optDumpModule = False
                          }
   where
     z3 = "z3 -smt2 -in"
@@ -86,6 +88,8 @@ allOpts
      "Optimize the transition relation"
     ,Option ['s'] ["stats"] (NoArg $ \opt -> opt { optStats = True })
      "Print statistical information"
+    ,Option [] ["dump-module"] (NoArg $ \opt -> opt { optDumpModule = True })
+     "Dump the LLVM module"
     ]
 
 parseTime :: String -> Int

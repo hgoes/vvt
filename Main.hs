@@ -64,11 +64,11 @@ getTransitionRelation file opts f = do
                                     , exactPredecessors = False
                                     , optimize = optOptimizeTR opts
                                     , eliminateDiv = False }
-     fun <- getProgram (optOptimizeTR opts) (optFunction opts) file
+     fun <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- getModel ropts fun
      f st
    BlockWise -> do
-     fun <- getProgram (optOptimizeTR opts) (optFunction opts) file
+     fun <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- BlockWise.realizeFunction fun
      f st
    TRGen -> do

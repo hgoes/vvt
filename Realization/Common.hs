@@ -44,8 +44,8 @@ getFunctionName ci = do
           val <- getOperand c 0
           getFunctionName' val
 
-getProgram :: Bool -> String -> String -> IO (Ptr Function)
-getProgram optimize entry file = do
+getProgram :: Bool -> Bool -> String -> String -> IO (Ptr Function)
+getProgram dump optimize entry file = do
   loadRes <- getFileMemoryBufferSimple file
   buf <- case loadRes of
     Left err -> error $ "Error while loading bitcode file: "++show err
@@ -54,7 +54,9 @@ getProgram optimize entry file = do
   ctx <- newLLVMContext
   mod <- parseIR buf diag ctx
   applyOptimizations optimize mod entry
-  --moduleDump mod
+  if dump
+    then moduleDump mod
+    else return ()
   moduleGetFunctionString mod entry
 
 applyOptimizations :: Bool -> Ptr Module -> String -> IO ()
