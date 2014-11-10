@@ -46,7 +46,10 @@ getFunctionName ci = do
 
 getProgram :: Bool -> String -> String -> IO (Ptr Function)
 getProgram optimize entry file = do
-  Just buf <- getFileMemoryBufferSimple file
+  loadRes <- getFileMemoryBufferSimple file
+  buf <- case loadRes of
+    Left err -> error $ "Error while loading bitcode file: "++show err
+    Right b -> return b
   diag <- newSMDiagnostic
   ctx <- newLLVMContext
   mod <- parseIR buf diag ctx
