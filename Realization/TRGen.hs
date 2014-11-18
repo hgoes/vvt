@@ -104,7 +104,7 @@ translateLisp ann vars lisp
                emptyDataTypeInfo
                (\expr -> case cast expr of
                  Just r -> r)
-               (Just $ getSort u ann) lisp of
+               (Just $ getSort u ann) 0 lisp of
            Just r -> r
   where
     withUndef :: (a -> SMTExpr a) -> SMTExpr a

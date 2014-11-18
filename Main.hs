@@ -23,10 +23,6 @@ main = do
      mapM_ (hPutStrLn stderr) errs
      exitWith (ExitFailure (-1))
    Right (file,opts) -> getTransitionRelation file opts $ \st -> do
-     let ropts = RealizationOptions { useErrorState = True
-                                    , exactPredecessors = False
-                                    , optimize = optOptimizeTR opts
-                                    , eliminateDiv = True }
      tr <- case optTimeout opts of
             Nothing -> check st opts
             Just to -> do

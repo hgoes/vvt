@@ -26,7 +26,7 @@ import Control.Monad (when)
 import "mtl" Control.Monad.Trans (liftIO)
 import "mtl" Control.Monad.Reader (ReaderT,runReaderT,ask,asks)
 import "mtl" Control.Monad.State (StateT,evalStateT,gets)
-import Data.List (sort,sortBy)
+import Data.List (sort,sortBy,genericIndex)
 import Data.PQueue.Min (MinQueue)
 import qualified Data.PQueue.Min as Queue
 import Data.Graph.Inductive (Node)
@@ -994,7 +994,13 @@ interpolate j s = do
       return $ fmap (TR.relativizeExpr (ic3Model cfg) (interpReverse st)
                     ) $ splitInterpolant $ negateInterpolant interp1
   where
-    cleanInterpolant (Let ann arg f) = cleanInterpolant (f arg)
+    cleanInterpolant (Let lvl args f)
+      = let (_,f') = foldExpr (\_ e -> case e of
+                                        QVar lvl' idx _
+                                          | lvl==lvl' -> ((),castUntypedExpr $ args `genericIndex` idx)
+                                        _ -> ((),e)
+                              ) () f
+        in cleanInterpolant f'
     cleanInterpolant (App (SMTLogic op) es) = App (SMTLogic op)
                                               (fmap cleanInterpolant es)
     cleanInterpolant (App SMTNot e) = App SMTNot (cleanInterpolant e)
