@@ -61,7 +61,7 @@ getTransitionRelation file opts f = do
                                     , eliminateDiv = False
                                     , integerEncoding = EncInt
                                     , forceNondet = const False
-                                    , useKarr = True }
+                                    , useKarr = optKarr opts }
      fun <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- getModel ropts fun
      f st

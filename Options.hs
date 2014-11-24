@@ -18,6 +18,7 @@ data Options = Options { optBackendCons :: String
                        , optVerbosity :: Int
                        , optStats :: Bool
                        , optDumpModule :: Bool
+                       , optKarr :: Bool
                        }
 
 data Encoding = Monolithic
@@ -39,6 +40,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optVerbosity = 0
                          , optStats = False
                          , optDumpModule = False
+                         , optKarr = True
                          }
   where
     z3 = "z3 -smt2 -in"
@@ -86,6 +88,7 @@ allOpts
      "How much debugging output to show"
     ,Option ['O'] ["optimize"] (NoArg $ \opt -> opt { optOptimizeTR = True })
      "Optimize the transition relation"
+    ,Option [] ["no-karr"] (NoArg $ \opt -> opt { optKarr = False }) "Disable the Karr analysis"
     ,Option ['s'] ["stats"] (NoArg $ \opt -> opt { optStats = True })
      "Print statistical information"
     ,Option [] ["dump-module"] (NoArg $ \opt -> opt { optDumpModule = True })
