@@ -167,8 +167,14 @@ instance TransitionRelation TRGen where
     let st = case Map.lookup ".s" full of
           Just (UntypedValue v) -> case cast v of
             Just r -> r
-        nrsm = addRSMState st (Map.mapMaybe id lifted) rsm
-    mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
+        nrsm = addRSMState st (Map.mapMaybe (\el -> do
+                                                rel <- el
+                                                cast rel
+                                            ) lifted) rsm
+    (nrsm',props) <- mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
+    return (nrsm',[ \vals -> prop (\instr -> case cast $ vals Map.! instr of
+                                    Just r -> r
+                                  ) | prop <- props ])
   createRevState pre trgen = do
     vars <- createStateVars pre trgen
     return (vars,Map.fromList [ (idx,name) | (name,Var idx _) <- Map.toList vars ])
@@ -186,7 +192,16 @@ instance TransitionRelation TRGen where
       assgns = [ var++"="++show val
                | (var,Just val) <- Map.toList st ]
   suggestedPredicates trgen
-    = (fmap (\p -> (True,p)) $ cmpPredicates (Map.delete ".s" (trVars trgen)))++
+    = (fmap (\p -> (True,p))
+       [ \mp -> (castUntypedExprValue (mp Map.! i1)) .>.
+                (castUntypedExprValue (mp Map.! i2)::SMTExpr Integer)
+       | (i1,tp1) <- Map.toList (trVars trgen)
+       , i1/=".s"
+       , tp1==ProxyArgValue (undefined::Integer) ()
+       , (i2,tp2) <- Map.toList (trVars trgen)
+       , i1/=i2
+       , i2/=".s"
+       , tp2==ProxyArgValue (undefined::Integer) ()])++
       [(False,\st -> translateLisp () (Map.union st defaultInps) l)
       | l <- trSuggested trgen ]
     where

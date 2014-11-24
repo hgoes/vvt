@@ -7,5 +7,5 @@ Executable hctigar
   Main-Is:              Main.hs
   Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
                         smtlib2,smtlib2-debug,smtlib2-timing,
-                        array,resource-pool,mtl,bytestring,attoparsec<0.11,atto-lisp,text,time
+                        array,resource-pool,mtl,bytestring,attoparsec<0.11,atto-lisp,text,time,linear
   GHC-Options:          -threaded -fwarn-unused-imports

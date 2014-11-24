@@ -26,12 +26,12 @@ import Prelude hiding (sequence)
 import System.IO.Unsafe
 
 type Inputs = (Map (Ptr BasicBlock) (SMTExpr Bool), -- Blocks
-               Map (Ptr Instruction) (SMTExpr UntypedValue), -- Latches
-               Map (Ptr Instruction) (SMTExpr UntypedValue)) -- Inputs
+               Map (Ptr Instruction) SymInstr, -- Latches
+               Map (Ptr Instruction) SymInstr) -- Inputs
 
 data Realization = Realization { blocks :: Map (Ptr BasicBlock) ()
-                               , latches :: Map (Ptr Instruction) ProxyArgValue
-                               , inputs :: Map (Ptr Instruction) ProxyArgValue
+                               , latches :: Map (Ptr Instruction) InstrType
+                               , inputs :: Map (Ptr Instruction) InstrType
                                , gates :: GateMap Inputs
                                , outputBlocks :: Map (Ptr BasicBlock) [Inputs -> SMTExpr Bool]
                                , outputInstrs :: Map (Ptr Instruction) (RealizedValue Inputs)
@@ -50,11 +50,9 @@ realizeValue (castDown -> Just instr) real defs
      Just val -> return (val,real)
      Nothing -> do
        tp <- getType instr >>= translateType
-       let val = withProxyArgValue tp $
-                 \(_::a) ann
-                 -> NormalValue ann (\(_,l,_) -> case Map.lookup instr l of
-                                                  Nothing -> error $ "Instruction "++show (unsafePerformIO $ getNameString instr)++" not found."
-                                                  Just i -> castUntypedExprValue i :: SMTExpr a)
+       let val = NormalValue tp (\(_,l,_) -> case Map.lookup instr l of
+                                  Nothing -> error $ "Instruction "++show (unsafePerformIO $ getNameString instr)++" not found."
+                                  Just i -> i)
        return (val,
                real { latches = Map.insert instr tp (latches real)
                     })
@@ -64,7 +62,7 @@ realizeValue (castDown -> Just i) real _ = do
   v <- constantIntGetValue i
   rv <- apIntGetSExtValue v
   if bw==1
-    then return (NormalValue () (const $ constant $ rv/=0),real)
+    then return (NormalValue TpBool (const $ SymBool $ constant $ rv/=0),real)
     else return (IntConst (fromIntegral rv),real)
 realizeValue (castDown -> Just undef) real _ = do
   tp <- getType (undef::Ptr UndefValue)
@@ -73,7 +71,7 @@ realizeValue (castDown -> Just undef) real _ = do
     defaultValue (castDown -> Just itp) = do
       bw <- getBitWidth itp
       if bw==1
-        then return (NormalValue () (const $ constant False),real)
+        then return (NormalValue TpBool (const $ SymBool $ constant False),real)
         else return (IntConst 0,real)
 
 mkGate :: Ptr Instruction -> RealizedValue Inputs
@@ -85,10 +83,7 @@ mkGate :: Ptr Instruction -> RealizedValue Inputs
                  Realization)
 mkGate instr (NormalValue ann fun) act real defs = do
   name <- getNameString instr
-  let (rexpr,ngates) = addGate (gates real)
-                       (Gate { gateTransfer = fun
-                             , gateAnnotation = ann
-                             , gateName = Just name })
+  let (rexpr,ngates) = addSymGate (gates real) ann fun (Just name)
       val = NormalValue ann (const rexpr)
   return (act,
           Map.insert instr val defs,
@@ -141,7 +136,7 @@ realizeInstruction (castDown -> Just brInst) act real defs = do
              ifFalseName <- getNameString ifFalse
              cond <- branchInstGetCondition brInst
              (vcond,real1) <- realizeValue cond real defs
-             let vcond' = asSMTValue vcond
+             let vcond' = symBool . asSMTValue vcond EncInt
                  condTrue inp = app and' $ [act inp,vcond' inp]
                  condFalse inp = app and' $ [act inp,not' $ vcond' inp]
                  (condTrue',gates1) = addGate (gates real1)
@@ -184,20 +179,18 @@ realizeInstruction i@(castDown -> Just call) act real defs = do
   case fname of
    '_':'_':'n':'o':'n':'d':'e':'t':_ -> do
      tp <- getType i >>= translateType
-     withProxyArgValue tp $
-       \(_::a) ann
-       -> return (act,
-                  Map.insert i (NormalValue ann
-                                (\(_,_,inps)
-                                 -> case Map.lookup i inps of
-                                     Nothing -> error $ "Input "++show (unsafePerformIO $ getNameString i)++" not found."
-                                     Just i' -> castUntypedExprValue i' ::SMTExpr a)
-                               ) defs,
-                  real { inputs = Map.insert i tp (inputs real) })
+     return (act,
+             Map.insert i (NormalValue tp
+                           (\(_,_,inps)
+                            -> case Map.lookup i inps of
+                                Nothing -> error $ "Input "++show (unsafePerformIO $ getNameString i)++" not found."
+                                Just i' -> i')
+                          ) defs,
+             real { inputs = Map.insert i tp (inputs real) })
    "assert" -> do
      cond' <- callInstGetArgOperand call 0
      (cond,real1) <- realizeValue cond' real defs
-     let rcond = asSMTValue cond
+     let rcond = symBool . asSMTValue cond EncInt
          (cond',gates1) = addGate (gates real1)
                           (Gate { gateTransfer = \inp -> act inp .&&. rcond inp
                                 , gateAnnotation = ()
@@ -217,7 +210,7 @@ realizeInstruction i@(castDown -> Just call) act real defs = do
    "assume" -> do
      cond' <- callInstGetArgOperand call 0
      (cond,real1) <- realizeValue cond' real defs
-     return (act,defs,real1 { assumes = (\inp -> (act inp) .=>. (asSMTValue cond inp)):
+     return (act,defs,real1 { assumes = (\inp -> (act inp) .=>. (symBool $ asSMTValue cond EncInt inp)):
                                         (assumes real1) })
    _ -> error $ "Unknown function "++fname
 realizeInstruction (castDown -> Just ret) acts real defs = do
@@ -228,7 +221,7 @@ realizeInstruction (castDown -> Just sw) act real defs = do
   srcName <- getNameString src
   cond' <- switchInstGetCondition sw
   (cond'',real1) <- realizeValue cond' real defs
-  let cond = asSMTValue cond''
+  let cond = asInteger' EncInt cond''
   def <- switchInstGetDefaultDest sw
   defName <- getNameString def
   cases <- switchInstGetCases sw >>=
@@ -275,54 +268,54 @@ realizeInstruction i@(castDown -> Just opInst) act real defs = do
   (flhs,real1) <- realizeValue lhs real defs
   (frhs,real2) <- realizeValue rhs real1 defs
   val <- case op of
-   Add -> return $ NormalValue () $
-          \inp -> (asSMTValue flhs inp :: SMTExpr Integer) +
-                  (asSMTValue frhs inp)
-   Sub -> return $ NormalValue () $
-          \inp -> (asSMTValue flhs inp :: SMTExpr Integer) -
-                  (asSMTValue frhs inp)
-   Mul -> return $ NormalValue () $
-          \inp -> (asSMTValue flhs inp :: SMTExpr Integer) *
-                  (asSMTValue frhs inp)
-   And -> if tp==(ProxyArgValue (undefined::Bool) ())
-          then return $ NormalValue () $
-               \inp -> (asSMTValue flhs inp) .&&.
-                       (asSMTValue frhs inp)
+   Add -> return $ NormalValue tp $
+          \inp -> SymInteger $ (asInteger' EncInt flhs inp) +
+                  (asInteger' EncInt frhs inp)
+   Sub -> return $ NormalValue tp $
+          \inp -> SymInteger $ (asInteger' EncInt flhs inp) -
+                  (asInteger' EncInt frhs inp)
+   Mul -> return $ NormalValue tp $
+          \inp -> SymInteger $ (asInteger' EncInt flhs inp) *
+                  (asInteger' EncInt frhs inp)
+   And -> if tp==TpBool
+          then return $ NormalValue TpBool $
+               \inp -> SymBool $ (symBool $ asSMTValue flhs EncInt inp) .&&.
+                       (symBool $ asSMTValue frhs EncInt inp)
           else error "And operator can't handle non-bool inputs."
-   Or -> if tp==(ProxyArgValue (undefined::Bool) ())
-         then return $ NormalValue () $
-              \inp -> (asSMTValue flhs inp) .||.
-                      (asSMTValue frhs inp)
-         else (if tp==(ProxyArgValue (undefined::Integer) ())
+   Or -> if tp==TpBool
+         then return $ NormalValue TpBool $
+              \inp -> SymBool $ (symBool $ asSMTValue flhs EncInt inp) .||.
+                      (symBool $ asSMTValue frhs EncInt inp)
+         else (if tp==TpInteger
                then return (case flhs of
                              OrList xs -> case frhs of
                                OrList ys -> OrList $ xs++ys
-                               _ -> OrList $ xs++[asSMTValue frhs]
+                               _ -> OrList $ xs++[asSMTValue frhs EncInt]
                              _ -> case frhs of
-                               OrList ys -> OrList $ [asSMTValue flhs]++ys
-                               _ -> OrList [asSMTValue flhs,
-                                            asSMTValue frhs])
+                               OrList ys -> OrList $ [asSMTValue flhs EncInt]++ys
+                               _ -> OrList [asSMTValue flhs EncInt,
+                                            asSMTValue frhs EncInt])
                else error "Or operator can only handle bool and int inputs.")
    Xor -> case (flhs,frhs) of
      (ExtBool l,ExtBool r) -> return $ ExtBool (\inp -> app xor
                                                         [l inp
                                                         ,r inp])
      (ExtBool l,IntConst 1) -> return $ ExtBool (\inp -> not' $ l inp)
-     _ -> if tp==(ProxyArgValue (undefined::Bool) ())
-          then return $ NormalValue () $
-               \inp -> app xor
-                       [asSMTValue flhs inp
-                       ,asSMTValue frhs inp]
+     _ -> if tp==TpBool
+          then return $ NormalValue TpBool $
+               \inp -> SymBool $ app xor
+                       [symBool $ asSMTValue flhs EncInt inp
+                       ,symBool $ asSMTValue frhs EncInt inp]
           else error "Xor operator can't handle non-bool inputs."
    Shl -> case frhs of
      IntConst rv
-       -> return $ NormalValue () $
-          \inp -> (asSMTValue flhs inp :: SMTExpr Integer)*
+       -> return $ NormalValue TpInteger $
+          \inp -> SymInteger $ (asInteger' EncInt flhs inp)*
                   (constant $ 2^rv)
    LShr -> case frhs of
      IntConst rv
-       -> return $ NormalValue () $
-          \inp -> (asSMTValue flhs inp) `div'` (constant $ 2^rv)
+       -> return $ NormalValue TpInteger $
+          \inp -> SymInteger $ (asInteger' EncInt flhs inp) `div'` (constant $ 2^rv)
    _ -> error $ "Unknown operator: "++show op
   mkGate i val act real2 defs
 realizeInstruction i@(castDown -> Just icmp) act real defs = do
@@ -331,69 +324,24 @@ realizeInstruction i@(castDown -> Just icmp) act real defs = do
   rhs' <- getOperand icmp 1
   (lhs,real1) <- realizeValue lhs' real defs
   (rhs,real2) <- realizeValue rhs' real1 defs
-  let val = case op of
-             I_EQ -> case (lhs,rhs) of
-               (OrList xs,IntConst 0) -> NormalValue () (\inp -> app and' [ (x inp) .==. 0 | x <- xs ])
-               (IntConst 0,OrList xs) -> NormalValue () (\inp -> app and' [ (x inp) .==. 0 | x <- xs ])
-               _ -> withSMTValue lhs $
-                    \_ lhs' -> NormalValue () (\inp -> (lhs' inp) .==. (asSMTValue rhs inp))
-             I_NE -> case (lhs,rhs) of
-               (OrList xs,IntConst 0) -> NormalValue () (\inp -> app or' [ not' $ (x inp) .==. 0
-                                                                         | x <- xs ])
-               (IntConst 0,OrList xs) -> NormalValue () (\inp -> app or' [ not' $ (x inp) .==. 0
-                                                                         | x <- xs ])
-               _ -> withSMTValue lhs $
-                    \_ lhs' -> NormalValue () (\inp -> not' $ (lhs' inp) .==. (asSMTValue rhs inp))
-             I_SGE -> NormalValue () $
-                      \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>=.
-                              (asSMTValue rhs inp)
-             I_UGE -> NormalValue () $
-                      \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>=.
-                              (asSMTValue rhs inp)
-             I_SGT -> NormalValue () $
-                      \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>.
-                              (asSMTValue rhs inp)
-             I_UGT -> case rhs of
-               IntConst n -> NormalValue () $
-                             \inp -> app or' [(asSMTValue lhs inp) .>.
-                                              (constant n)
-                                             ,(asSMTValue lhs inp :: SMTExpr Integer) .<. 0]
-               _ -> NormalValue () $
-                    \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .>.
-                            (asSMTValue rhs inp)
-             I_SLE -> NormalValue () $
-                      \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<=.
-                              (asSMTValue rhs inp)
-             I_ULE -> NormalValue () $
-                      \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<=.
-                              (asSMTValue rhs inp)
-             I_SLT -> case (lhs,rhs) of
-               (OrList xs,IntConst 0) -> NormalValue () (\inp -> app and' [ (x inp) .<. 0
-                                                                          | x <- xs ])
-               _ -> NormalValue () $
-                    \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<.
-                            (asSMTValue rhs inp)
-             I_ULT -> NormalValue () $
-                      \inp -> (asSMTValue lhs inp :: SMTExpr Integer) .<.
-                              (asSMTValue rhs inp)
-  mkGate i val act real2 defs
+  let val = encodeCmpOp EncInt op lhs rhs
+  mkGate i (NormalValue TpBool (SymBool . val)) act real2 defs
 realizeInstruction i@(castDown -> Just (zext::Ptr ZExtInst)) act real defs = do
   op <- getOperand zext 0
   tp <- valueGetType op >>= translateType
   (fop,real1) <- realizeValue op real defs
-  let val = if tp==(ProxyArgValue (undefined::Bool) ())
-            then ExtBool (asSMTValue fop)
-            else (withProxyArgValue tp $
-                  \(_::a) ann -> NormalValue ann $
-                                 \inp -> asSMTValue fop inp :: SMTExpr a)
+  let val = if tp==TpBool
+            then ExtBool (symBool . asSMTValue fop EncInt)
+            else NormalValue tp $
+                 \inp -> asSMTValue fop EncInt inp
   mkGate i val act real1 defs
 realizeInstruction i@(castDown -> Just (trunc::Ptr TruncInst)) act real defs = do
   op <- getOperand trunc 0
   tp <- valueGetType i >>= translateType
   (fop,real1) <- realizeValue op real defs
-  let val = if tp==(ProxyArgValue (undefined::Bool) ())
-            then NormalValue () $
-                 \inp -> (asSMTValue fop inp) .==. (constant (1::Integer))
+  let val = if tp==TpBool
+            then NormalValue TpBool $
+                 \inp -> SymBool $ (asInteger' EncInt fop inp) .==. (constant 1)
             else fop
   mkGate i val act real1 defs
 realizeInstruction i@(castDown -> Just select) act real defs = do
@@ -404,12 +352,10 @@ realizeInstruction i@(castDown -> Just select) act real defs = do
   fVal' <- selectInstGetFalseValue select
   (fVal,real3) <- realizeValue fVal' real2 defs
   tp <- valueGetType tVal' >>= translateType
-  let val = withProxyArgValue tp $
-            \(_::a) ann
-            -> NormalValue ann $
-               \inp -> ite (asSMTValue cond inp)
-                       (asSMTValue tVal inp :: SMTExpr a)
-                       (asSMTValue fVal inp)
+  let val = NormalValue tp $
+            \inp -> symITE (symBool $ asSMTValue cond EncInt inp)
+                    (asSMTValue tVal EncInt inp)
+                    (asSMTValue fVal EncInt inp)
   mkGate i val act real3 defs
 
 realizeFunction :: Ptr Function -> IO Realization
@@ -463,73 +409,65 @@ finalizeRealization real = do
   (instrs2,gates2) <- runStateT
                       (Map.traverseWithKey
                        (\instr val
-                        -> withSMTValue val $
-                           \ann fun -> do
-                             blk <- liftIO $ instructionGetParent instr
-                             gts <- get
-                             name <- liftIO $ getNameString instr
-                             let nfun inp@(blks,latch,_) = case Map.lookup blk blks of
-                                   Nothing -> error $ "Activation for block "++show (unsafePerformIO $ getNameString blk)++" not found."
-                                   Just act -> case Map.lookup instr latch of
-                                     Nothing -> error $ "Latch variable "++show (unsafePerformIO $ getNameString instr)++" not found."
-                                     Just i -> ite act
-                                               (fun inp)
-                                               (castUntypedExprValue i)
-                                 (nval,ngts) = addGate gts
-                                               (Gate { gateTransfer = nfun
-                                                     , gateAnnotation = ann
-                                                     , gateName = Just $ "O."++name
-                                                     })
-                             put ngts
-                             return (NormalValue ann (const nval))
+                        -> do
+                          let (tp,fun) = toSMTValue val EncInt
+                          blk <- liftIO $ instructionGetParent instr
+                          gts <- get
+                          name <- liftIO $ getNameString instr
+                          let nfun inp@(blks,latch,_) = case Map.lookup blk blks of
+                                Nothing -> error $ "Activation for block "++show (unsafePerformIO $ getNameString blk)++" not found."
+                                Just act -> case Map.lookup instr latch of
+                                  Nothing -> error $ "Latch variable "++show (unsafePerformIO $ getNameString instr)++" not found."
+                                  Just i ->  symITE act (fun inp) i
+                              (nval,ngts) = addSymGate gts tp nfun (Just $ "O."++name)
+                          put ngts
+                          return (NormalValue tp (const nval))
                        ) instrs1
                       ) gates1
   (phis1,gates3) <- runStateT
                     (Map.traverseWithKey
                      (\instr ((c1,val1):rest)
-                      -> withSMTValue val1 $
-                         \ann f -> do
-                           gates <- get
-                           name <- liftIO $ getNameString instr
-                           let buildITE [(_,val)] inp
-                                 | not $ Map.member instr (latches real) = asSMTValue val inp
-                               buildITE [] (_,latch,_) = case Map.lookup instr latch of
-                                 Nothing -> error $ "Latch variable "++show (unsafePerformIO $ getNameString instr)++" not found."
-                                 Just i -> castUntypedExprValue i
-                               buildITE ((c,val):rest) inp
-                                 = ite (c inp) (asSMTValue val inp)
-                                   (buildITE rest inp)
-                               (ncond,ngates) = addGate gates
-                                                (Gate { gateTransfer = case rest of
-                                                         [] -> f
-                                                         _ -> \inp -> ite (c1 inp)
-                                                                      (f inp)
-                                                                      (buildITE rest inp)
-                                                      , gateAnnotation = ann
-                                                      , gateName = Just name
-                                                      })
-                           put ngates
-                           return (NormalValue ann (const ncond))
+                      -> do
+                        let (tp,f) = toSMTValue val1 EncInt
+                        gates <- get
+                        name <- liftIO $ getNameString instr
+                        let buildITE [(_,val)] inp
+                              | not $ Map.member instr (latches real) = asSMTValue val EncInt inp
+                            buildITE [] (_,latch,_) = case Map.lookup instr latch of
+                              Nothing -> error $ "Latch variable "++show (unsafePerformIO $ getNameString instr)++" not found."
+                              Just i -> i
+                            buildITE ((c,val):rest) inp
+                              = symITE (c inp) (asSMTValue val EncInt inp)
+                                (buildITE rest inp)
+                            (ncond,ngates) = addSymGate gates tp
+                                             (case rest of
+                                               [] -> f
+                                               _ -> \inp -> symITE (c1 inp)
+                                                            (f inp)
+                                                            (buildITE rest inp))
+                                             (Just name)
+                        put ngates
+                        return (NormalValue tp (const ncond))
                      ) (outputPhis real)
                     ) gates2
   return $ real { outputBlocks = blks2
                 , outputInstrs = Map.union instrs2 phis1
                 , gates = gates3 }
 
-translateType :: Ptr Type -> IO ProxyArgValue
+translateType :: Ptr Type -> IO InstrType
 translateType (castDown -> Just itp) = do
   bw <- getBitWidth itp
   case bw of
-    1 -> return (ProxyArgValue (undefined::Bool) ())
-    _ -> return (ProxyArgValue (undefined::Integer) ())
+    1 -> return TpBool
+    _ -> return TpInteger
 translateType tp = do
   typeDump tp
   error "Can't translate type"
 
 instance TransitionRelation Realization where
   type State Realization = (Map (Ptr BasicBlock) (SMTExpr Bool),
-                            Map (Ptr Instruction) (SMTExpr UntypedValue))
-  type Input Realization = Map (Ptr Instruction) (SMTExpr UntypedValue)
+                            Map (Ptr Instruction) SymInstr)
+  type Input Realization = Map (Ptr Instruction) SymInstr
   type RevState Realization = Map Integer (Either (Ptr BasicBlock) (Ptr Instruction))
   type PredicateExtractor Realization = RSMState (Ptr BasicBlock) (Ptr Instruction)
   createStateVars pre st = do
@@ -548,7 +486,7 @@ instance TransitionRelation Realization where
                          then getNameString instr
                          else return "instr"
                     return (pre++"L."++n)
-                  varNamedAnn name tp
+                  argVarsAnnNamed name tp
               ) (latches st)
     return (blks,instrs)
   createInputVars pre st
@@ -560,7 +498,7 @@ instance TransitionRelation Realization where
                  then getNameString instr
                  else return "input"
             return (pre++"I."++n)
-          varNamedAnn name ann
+          argVarsAnnNamed name ann
       ) (inputs st)
   initialState real (blks,_) = app and' [ if blk==initBlk real
                                           then act
@@ -588,13 +526,13 @@ instance TransitionRelation Realization where
                     ) gts
     (ninstrs,gts2) <- runStateT
                       (Map.traverseWithKey
-                       (\instr val -> withSMTValue val $
-                                      \ann fun -> do
-                                        gt <- get
-                                        (expr,ngt) <- lift $ declareGate (fun inp') gt
-                                                      (gates real) inp'
-                                        put ngt
-                                        return (UntypedExprValue expr)
+                       (\instr val -> do
+                           let fun = asSMTValue val EncInt
+                           gt <- get
+                           (expr,ngt) <- lift $ declareSymGate (fun inp') gt
+                                         (gates real) inp'
+                           put ngt
+                           return expr
                        ) (outputInstrs real)
                       ) gts1
     return ((nblks,ninstrs),gts2)
@@ -619,9 +557,14 @@ instance TransitionRelation Realization where
   extractPredicates real rsm full lifted = do
     let blk = case [ blk | (blk,True) <- Map.toList (fst full) ] of
           [b] -> b
-        nrsm = addRSMState blk (Map.mapMaybe id $ snd lifted) rsm
+        nrsm = addRSMState blk (Map.mapMaybe (\el -> do
+                                                 rel <- el
+                                                 case rel of
+                                                  ValInteger v -> Just v
+                                                  _ -> Nothing
+                                             ) $ snd lifted) rsm
     (nrsm',props) <- mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
-    return (nrsm',fmap (\prop (_,vals) -> prop vals) props)
+    return (nrsm',fmap (\prop (_,vals) -> prop (symInt . (vals Map.!))) props)
   createRevState pre st = do
     (blks,instrs) <- createStateVars pre st
     let rmp1 = Map.foldlWithKey
@@ -629,8 +572,9 @@ instance TransitionRelation Realization where
                  -> Map.insert idx (Left blk) rmp
                ) Map.empty blks
         rmp2 = Map.foldlWithKey
-               (\rmp instr (Var idx _)
-                 -> Map.insert idx (Right instr) rmp
+               (\rmp instr e -> case e of
+                 SymInteger (Var idx _) -> Map.insert idx (Right instr) rmp
+                 SymBool (Var idx _) -> Map.insert idx (Right instr) rmp
                ) rmp1 instrs
     return ((blks,instrs),rmp2)
   relativizeExpr _ rev trm (blks,instrs)
@@ -641,8 +585,11 @@ instance TransitionRelation Realization where
                                   -> case cast (blks Map.! blk) of
                                       Just r -> r
                                 Just (Right instr)
-                                  -> case entypeValue cast (instrs Map.! instr) of
-                                      Just r -> r
+                                  -> case instrs Map.! instr of
+                                      SymInteger v -> case cast v of
+                                        Just r -> r
+                                      SymBool v -> case cast v of
+                                        Just r -> r
                               _ -> expr)
                      ) () trm
   renderPartialState _ (blks,instrs) = do

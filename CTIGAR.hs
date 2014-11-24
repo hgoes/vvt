@@ -206,10 +206,12 @@ runIC3 cfg act = do
         Nothing -> ic3InitBackend cfg -- >>= namedDebugBackend "init"
         Just stats -> addTiming (initiationTime stats) (initiationNum stats)
                       (ic3InitBackend cfg)
+      --initiationBackend = initiationBackend' >>= namedDebugBackend "init"
       domainBackend = case stats of
-        Nothing -> ic3DomainBackend cfg -- >>= namedDebugBackend "domain"
+        Nothing -> ic3DomainBackend cfg
         Just stats -> addTiming (domainTime stats) (domainNum stats)
                       (ic3DomainBackend cfg)
+      --domainBackend = domainBackend' >>= namedDebugBackend "domain"
       interpBackend' = case stats of
         Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
         Just stats -> addTiming (interpolationTime stats) (interpolationNum stats)
@@ -408,7 +410,8 @@ updateAbstraction ref = do
     then return False
     else (do
              full <- liftIO $ domainAbstract
-                     (\x -> argEq x (liftArgs (stateFull st) (TR.annotationState mdl)){-app and' $ assignPartial x (stateLifted st)-})
+                     (\x -> {-argEq x (liftArgs (stateFull st) (TR.annotationState mdl))-}
+                       app and' $ assignPartial x (stateLifted st))
                      initialPred
                      dom
              lifted <- case stateSuccessor st of
@@ -800,7 +803,7 @@ check st opts = do
           cex <- gets ic3CexState
           tr <- liftIO $ getWitnessTr cex
           res <- liftIO $ do
-            backend <- createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "err" pipe
+            backend <- createSMTPipe "z3" ["-in","-smt2"] >>= namedDebugBackend "err"
             withSMTBackendExitCleanly backend $ do
               st0 <- TR.createStateVars "" real
               assert $ TR.initialState real st0

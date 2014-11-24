@@ -26,15 +26,14 @@ data Coeffs var = Coeffs { coeffsVar :: Map var (SMTExpr Integer)
 emptyRSM :: RSMState loc var
 emptyRSM = RSMState Map.empty
 
-addRSMState :: (Ord loc,Ord var) => loc -> Map var UntypedValue
+addRSMState :: (Ord loc,Ord var) => loc -> Map var Integer
                -> RSMState loc var -> RSMState loc var
 addRSMState loc instrs st
-  = st { rsmLocations = Map.insertWith joinLoc loc (RSMLoc { rsmClasses = Map.singleton (Map.keysSet onlyInts) (Set.singleton onlyInts)
+  = st { rsmLocations = Map.insertWith joinLoc loc (RSMLoc { rsmClasses = Map.singleton (Map.keysSet instrs) (Set.singleton instrs)
                                                            })
                         (rsmLocations st)
        }
   where
-    onlyInts = Map.mapMaybe (\(UntypedValue val) -> cast val) instrs
     joinLoc :: Ord var => RSMLoc var -> RSMLoc var -> RSMLoc var
     joinLoc l1 l2 = RSMLoc { rsmClasses = Map.unionWith Set.union (rsmClasses l1) (rsmClasses l2)
                            }
@@ -70,19 +69,19 @@ createLines coeffs points = do
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: (Monad m,Ord var) => Coeffs var -> SMT' m [Map var (SMTExpr UntypedValue) -> SMTExpr Bool]
+extractLine :: (Monad m,Ord var) => Coeffs var -> SMT' m [(var -> SMTExpr Integer) -> SMTExpr Bool]
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
   let rcoeffs' = Map.mapMaybe (\c -> if c==0
                                      then Nothing
                                      else Just c
                               ) rcoeffs
-      lhs vals = case Map.elems (Map.intersectionWith
-                                 (\co v -> case co of
-                                            1 -> castUntypedExprValue v
-                                            -1 -> -(castUntypedExprValue v)
-                                            _ -> (constant co)*(castUntypedExprValue v))
-                                 rcoeffs' vals) of
+      lhs vals = case Map.elems (Map.mapWithKey
+                                 (\instr co -> case co of
+                                   1 -> vals instr
+                                   -1 -> -(vals instr)
+                                   _ -> (constant co)*(vals instr)
+                                 ) rcoeffs') of
                   [x] -> x
                   xs -> app plus xs
   rconst <- getValue (coeffsConst coeffs)
@@ -92,7 +91,7 @@ extractLine coeffs = do
                    .<. (constant rconst)]
 
 mineStates :: (MonadIO m,SMTBackend b IO,Ord var) => IO b -> RSMState loc var
-              -> m (RSMState loc var,[Map var (SMTExpr UntypedValue) -> SMTExpr Bool])
+              -> m (RSMState loc var,[(var -> SMTExpr Integer) -> SMTExpr Bool])
 mineStates backend st
   = runStateT
     (do

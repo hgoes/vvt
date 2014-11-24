@@ -14,7 +14,6 @@ import System.IO
 import System.Exit
 import Control.Concurrent
 import Control.Exception
-import Prelude (Either(..),mapM_,Maybe(..),(>>),(>>=),return,Bool(..),undefined,($),String)
 
 main = do
   opts <- readOptions
@@ -59,7 +58,10 @@ getTransitionRelation file opts f = do
      let ropts = RealizationOptions { useErrorState = True
                                     , exactPredecessors = False
                                     , optimize = optOptimizeTR opts
-                                    , eliminateDiv = False }
+                                    , eliminateDiv = False
+                                    , integerEncoding = EncInt
+                                    , forceNondet = const False
+                                    , useKarr = True }
      fun <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- getModel ropts fun
      f st
