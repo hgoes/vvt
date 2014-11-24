@@ -80,3 +80,21 @@ instance (Typeable a,Ord a,Show a,PartialArgs b) => PartialArgs (Map a b) where
       in (rmp,rmask)
   unmaskValue (_::Map a b) mp = fmap (unmaskValue (undefined::b)) mp
   assignPartial mp mpPart = concat $ Map.elems $ Map.intersectionWith assignPartial mp mpPart
+
+instance (PartialArgs a) => PartialArgs (Maybe a) where
+  type PartialValue (Maybe a) = Maybe (PartialValue a)
+  maskValue _ Nothing mask = (Nothing,mask)
+  maskValue (_::Maybe a) (Just x) mask = let (nx,nmask) = maskValue (undefined::a) x mask
+                                         in (Just nx,nmask)
+  unmaskValue (_::Maybe a) v = fmap (unmaskValue (undefined::a)) v
+  assignPartial Nothing Nothing = []
+  assignPartial (Just x) (Just vx) = assignPartial x vx
+
+instance (PartialArgs a) => PartialArgs [a] where
+  type PartialValue [a] = [PartialValue a]
+  maskValue _ [] mask = ([],mask)
+  maskValue (_::[a]) (x:xs) mask = let (x',mask1) = maskValue (undefined::a) x mask
+                                       (xs',mask2) = maskValue (undefined::[a]) xs mask1
+                                   in (x':xs',mask2)
+  unmaskValue (_::[a]) xs = fmap (unmaskValue (undefined::a)) xs
+  assignPartial xs ys = concat $ zipWith assignPartial xs ys
