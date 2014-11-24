@@ -554,20 +554,21 @@ realizeInstruction opts ana real i@(castDown -> Just ret) = do
 realizeInstruction opts ana real (castDown -> Just sw) = do
   src <- instructionGetParent sw
   srcName <- getNameString src
-  NormalValue _ (cast -> Just cond) <- switchInstGetCondition sw
-                                       >>= realizeValue ana real
+  cond <- switchInstGetCondition sw
+          >>= realizeValue ana real
   def <- switchInstGetDefaultDest sw
   defName <- getNameString def
   cases <- switchInstGetCases sw >>=
            mapM (\(val,trg) -> do
                     APInt _ val' <- constantIntGetValue val >>= peek
                     return (val',trg))
-  let act = case Map.lookup src (blockActivations real) of
+  let cond' = asInteger' (integerEncoding opts) cond
+      act = case Map.lookup src (blockActivations real) of
         Just a -> a
       (defEdge,ngates) = addGate (gateMp real)
                          (Gate { gateTransfer = \inp -> app and' ((act inp):
                                                                   [ not' $
-                                                                    (cond inp)
+                                                                    (cond' inp)
                                                                     .==.
                                                                     (constant val)
                                                                   | (val,_) <- cases ])
@@ -578,7 +579,7 @@ realizeInstruction opts ana real (castDown -> Just sw) = do
              trgName <- getNameString trg
              let (edge,ngates) = addGate (gateMp real)
                                  (Gate { gateTransfer = \inp -> (act inp) .&&.
-                                                                ((cond inp)
+                                                                ((cond' inp)
                                                                  .==.
                                                                  (constant val))
                                        , gateAnnotation = ()
