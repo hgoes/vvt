@@ -979,9 +979,14 @@ instance TransitionRelation RealizedBlocks where
   suggestedPredicates mdl = (fmap (\p -> (True,p)) $
                              blkPredicates (fmap (const ()) (realizedLatchBlocks mdl))++
                              splitPredicates (cmpPredicates (fmap fst (realizedLatches mdl))))++
-                            [ (False,\(_,instrs) -> op (app plus [ if f==1
-                                                                   then (symInt $ instrs Map.! i)*(constant f)
-                                                                   else (symInt $ instrs Map.! i)*(constant f) | (i,f) <- vec, f/=0 ]) (constant c))
+                            [ (False,\(_,instrs) -> op (case [ if f==1
+                                                               then (symInt $ instrs Map.! i)*(constant f)
+                                                               else (symInt $ instrs Map.! i)*(constant f)
+                                                             | (i,f) <- vec, f/=0 ] of
+                                                         [] -> constant 0
+                                                         [x] -> x
+                                                         xs -> app plus xs
+                                                       ) (constant c))
                             | (blk,aff) <- realizedKarr mdl
                             , (vec,c) <- aff
                             , op <- [(.>.),(.>=.)] ]
