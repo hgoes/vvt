@@ -1376,6 +1376,6 @@ ic3DumpStats fp = do
 addTiming :: IORef NominalDiffTime -> IORef Int -> IO (AnyBackend IO) -> IO (AnyBackend IO)
 addTiming time_ref num_ref act = do
   AnyBackend b <- act
-  return $ AnyBackend $ timingBackend (\t -> modifyIORef time_ref (+t) >>
-                                             modifyIORef num_ref (+1)
+  return $ AnyBackend $ timingBackend (\t -> modifyIORef' time_ref (+t) >>
+                                             modifyIORef' num_ref (+1)
                                       ) b
