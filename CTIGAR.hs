@@ -399,6 +399,7 @@ updateAbstraction ref = do
   st <- liftIO $ readIORef ref
   dom <- gets ic3Domain
   mdl <- asks ic3Model
+  initialPred <- gets ic3InitialProperty
   succUpdated <- case stateSuccessor st of
     Nothing -> return False
     Just succ -> updateAbstraction succ
@@ -408,6 +409,7 @@ updateAbstraction ref = do
     else (do
              full <- liftIO $ domainAbstract
                      (\x -> argEq x (liftArgs (stateFull st) (TR.annotationState mdl)){-app and' $ assignPartial x (stateLifted st)-})
+                     initialPred
                      dom
              lifted <- case stateSuccessor st of
                Nothing -> lift full (stateInputs st) (stateNxtInputs st) Nothing
@@ -1137,9 +1139,10 @@ ctgDown = ctgDown' 0 0
                          Left core -> return (Just core)
                          Right ctg -> do
                            domain <- gets ic3Domain
+                           initialPred <- gets ic3InitialProperty
                            abstractCtg <- liftIO $ domainAbstract
                                           (\x -> app and' $ assignPartial x (stateLifted ctg)
-                                          ) domain
+                                          ) initialPred domain
                            if ctgs < efMaxCTGs && level > 1
                              then (do
                                       init <- initiationAbstract abstractCtg

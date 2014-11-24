@@ -256,9 +256,10 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                    xs -> return $ Just (Set.unions xs))
 
 domainAbstract :: (a -> SMTExpr Bool)  -- ^ An expression which describes the concrete state
+                  -> Node -- ^ A property that must be considered
                   -> Domain a
                   -> IO (AbstractState a)
-domainAbstract expr dom = do
+domainAbstract expr mustUse dom = do
   Right res <- withSMTPool' (domainPool dom) $ \inst vars -> do
     ninst <- updateInstance dom inst vars
     lst <- stack $ do
@@ -270,7 +271,7 @@ domainAbstract expr dom = do
                       " doesn't have a valid abstraction")
       mapM (\(nd,repr) -> do
                let Just (_,_,predVars) = lab (domainGraph dom) nd
-               if Set.null $ Set.difference predVars exprVars
+               if nd==mustUse || (Set.null $ Set.difference predVars exprVars)
                  then (do
                           c <- getValue repr
                           return $ Just (nd,c))
