@@ -20,6 +20,15 @@ import Linear
 import "mtl" Control.Monad.State (StateT,runStateT,get,put,lift)
 import Prelude hiding (mapM)
 import Data.Traversable (mapM,mapAccumL)
+import qualified Data.Text as T
+import Data.AttoLisp (Lisp,lisp)
+import Language.SMTLib2.Pipe
+import Data.Fix
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BS8
+import Data.Attoparsec
+import System.IO
+import Data.Maybe (catMaybes)
 
 data RealizedValue inp = NormalValue InstrType (inp -> SymInstr)
                        | IntConst Integer
@@ -70,6 +79,10 @@ asInteger (EncLin _ extr) (SymLinear vec c) inp
 
 asInteger' :: IntegerEncoding inp -> RealizedValue inp -> inp -> SMTExpr Integer
 asInteger' enc val inp = asInteger enc (asSMTValue val enc inp) inp
+
+asSMTUntyped :: SymInstr -> SMTExpr Untyped
+asSMTUntyped (SymBool x) = UntypedExpr x
+asSMTUntyped (SymInteger x) = UntypedExpr x
 
 getFunctionName :: Ptr CallInst -> IO String
 getFunctionName ci = do
@@ -445,4 +458,65 @@ instance PartialArgs SymInstr where
   assignPartial _ Nothing = []
   assignPartial (SymBool c) (Just (ValBool v)) = [c.==.(constant v)]
   assignPartial (SymInteger c) (Just (ValInteger v)) = [c.==.(constant v)]
-                                          
+
+parseLLVMPreds :: Handle -> [Ptr BasicBlock] -> [Ptr Instruction]
+               -> (a -> Ptr Instruction -> SymInstr)
+               -> (a -> Ptr BasicBlock -> SMTExpr Bool)
+               -> IO [a -> SMTExpr Bool]
+parseLLVMPreds h bbs instrs getInstr getBB = do
+  instrLst <- mapM (\instr -> do
+                       iHasName <- hasName instr
+                       if iHasName
+                         then (do
+                                  name <- getNameString instr
+                                  return $ Just (T.pack name,instr))
+                         else return Nothing) instrs
+  bbLst <- mapM (\bb -> if bb==nullPtr
+                        then return $ Just (T.pack "err",bb)
+                        else (do
+                                 bHasName <- hasName bb
+                                 if bHasName
+                                   then (do
+                                            name <- getNameString bb
+                                            return $ Just (T.pack name,bb))
+                                   else return Nothing)) bbs
+  let instrMp = Map.fromList $ catMaybes instrLst
+      bbMp = Map.fromList $ catMaybes bbLst
+  doParse instrMp bbMp
+  where
+    doParse instrMp bbMp = do
+      isEnd <- hIsEOF h
+      if isEnd
+        then return []
+        else (do
+                 ln <- BS.hGetLine h
+                 let continue (Done _ r) = return r
+                     continue res@(Partial _) = do
+                       line <- BS.hGetLine h
+                       continue (feed (feed res line) (BS8.singleton '\n'))
+                     continue (Fail str' ctx msg) = error $ "Error parsing extra predicate in "++show ctx++" "++show str'++": "++msg
+                 lsp <- continue $ parse lisp (BS8.snoc ln '\n')
+                 let pred = parseLLVMPred
+                            (\name -> case Map.lookup name instrMp of
+                                       Just i -> Left i
+                                       Nothing -> case Map.lookup name bbMp of
+                                         Just b -> Right b
+                                         Nothing -> error $ "Unknown instruction or basic block in extra predicates: "++show name)
+                            getInstr getBB lsp
+                 preds <- doParse instrMp bbMp
+                 return (pred:preds))
+
+parseLLVMPred :: (T.Text -> Either (Ptr Instruction) (Ptr BasicBlock))
+              -> (a -> Ptr Instruction -> SymInstr)
+              -> (a -> Ptr BasicBlock -> SMTExpr Bool)
+              -> Lisp
+              -> a -> SMTExpr Bool
+parseLLVMPred lookup getInstr getBB lsp arg
+  = case lispToExpr commonFunctions (\name -> Just $ case lookup name of
+                                      Left instr -> asSMTUntyped (getInstr arg instr)
+                                      Right bb -> UntypedExpr $ getBB arg bb
+                                    ) emptyDataTypeInfo
+         (\expr -> case cast expr of
+           Just e -> e)
+         (Just (Fix BoolSort)) 0 lsp of
+     Just r -> r

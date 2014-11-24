@@ -19,6 +19,7 @@ data Options = Options { optBackendCons :: String
                        , optStats :: Bool
                        , optDumpModule :: Bool
                        , optKarr :: Bool
+                       , optExtraPredicates :: Maybe String
                        }
 
 data Encoding = Monolithic
@@ -41,6 +42,7 @@ defaultOptions = Options { optBackendCons = z3
                          , optStats = False
                          , optDumpModule = False
                          , optKarr = True
+                         , optExtraPredicates = Nothing
                          }
   where
     z3 = "z3 -smt2 -in"
@@ -89,6 +91,8 @@ allOpts
     ,Option ['O'] ["optimize"] (NoArg $ \opt -> opt { optOptimizeTR = True })
      "Optimize the transition relation"
     ,Option [] ["no-karr"] (NoArg $ \opt -> opt { optKarr = False }) "Disable the Karr analysis"
+    ,Option [] ["predicates"] (ReqArg (\str opt -> opt { optExtraPredicates = Just str }) "file")
+     "Read extra predicates from a file"
     ,Option ['s'] ["stats"] (NoArg $ \opt -> opt { optStats = True })
      "Print statistical information"
     ,Option [] ["dump-module"] (NoArg $ \opt -> opt { optDumpModule = True })

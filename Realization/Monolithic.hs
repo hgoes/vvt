@@ -34,6 +34,7 @@ import Data.Maybe (catMaybes)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 import qualified Data.IntMap as IMap
+import System.IO (withFile,IOMode(ReadMode))
 
 import Language.SMTLib2.Debug
 
@@ -90,6 +91,7 @@ data RealizedBlocks = RealizedBlocks { realizedLatchBlocks :: Map (Ptr BasicBloc
                                      , realizedInit :: Ptr BasicBlock
                                      , realizedLinear :: Maybe (Vector (Ptr Instruction))
                                      , realizedKarr :: [(Ptr BasicBlock,[([(Ptr Instruction,Integer)],Integer)])]
+                                     , realizedExtraPredicates :: [(LatchActs,ValueMap) -> SMTExpr Bool]
                                      }
 
 data ConcreteValues = ConcreteValues { block :: Ptr BasicBlock
@@ -106,6 +108,7 @@ data RealizationOptions = RealizationOptions { useErrorState :: Bool
                                              , integerEncoding :: IntegerEncoding LLVMInput
                                              , forceNondet :: Ptr Instruction -> Bool
                                              , useKarr :: Bool
+                                             , extraPredicates :: Maybe String
                                              }
 
 blockGraph :: Ptr Function -> IO BlockGraph
@@ -654,7 +657,16 @@ getModel opts fun = do
                                                else Nothing
                                    ) $ realizedLatches res) fun
            else return []
-  return (res { realizedKarr = karrT })
+  extra <- case extraPredicates opts of
+    Nothing -> return []
+    Just file -> withFile file ReadMode $
+                 \h -> parseLLVMPreds h
+                       (Map.keys $ realizedLatchBlocks res)
+                       (Map.keys $ realizedLatches res)
+                       (\(_,instrs) i -> instrs Map.! i)
+                       (\(blks,_) b -> blks Map.! b)
+  return (res { realizedKarr = karrT
+              , realizedExtraPredicates = extra })
 
 getModel' :: RealizationOptions -> Ptr BasicBlock -> Analyzation -> Realization
              -> IO RealizedBlocks
@@ -707,6 +719,7 @@ getModel' opts init ana real = do
                                               EncInt -> Nothing
                                               EncLin v _ -> Just v
                           , realizedKarr = []
+                          , realizedExtraPredicates = []
                           }
   where
     (gates1,latchBlks) = Map.mapAccumWithKey
@@ -990,7 +1003,8 @@ instance TransitionRelation RealizedBlocks where
                                                        ) (constant c))
                             | (blk,aff) <- realizedKarr mdl
                             , (vec,c) <- aff
-                            , op <- [(.>.),(.>=.)] ]
+                            , op <- [(.>.),(.>=.)] ]++
+                            [ (False,pred) | pred <- realizedExtraPredicates mdl ]
   defaultPredicateExtractor _ = return emptyRSM
   extractPredicates mdl rsm full lifted = do
     let blk = case [ blk | (blk,True) <- Map.toList (fst full) ] of
@@ -1024,6 +1038,7 @@ getKarrTrans opts instrs fun = do
                             Just (_::Ptr ICmpInst) -> True
                             _ -> False
                          , useKarr = False
+                         , extraPredicates = Nothing
                          }) fun
   pipe <- createSMTPipe "z3" ["-smt2","-in"] -- >>= namedDebugBackend "karr"
   trans <- withSMTBackend pipe $ do
