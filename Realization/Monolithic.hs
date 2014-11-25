@@ -23,6 +23,7 @@ import qualified Data.Set as Set
 import Data.Foldable (foldlM,concat)
 import Foreign.Storable (peek)
 import "mtl" Control.Monad.State (StateT,runStateT,get,put,lift,liftIO,MonadIO)
+import Control.Monad (when)
 import System.IO.Unsafe
 import Data.Traversable (sequence,traverse,mapM)
 import Prelude hiding (sequence,mapM,concat)
@@ -109,6 +110,7 @@ data RealizationOptions = RealizationOptions { useErrorState :: Bool
                                              , forceNondet :: Ptr Instruction -> Bool
                                              , useKarr :: Bool
                                              , extraPredicates :: Maybe String
+                                             , verbosity :: Int
                                              }
 
 blockGraph :: Ptr Function -> IO BlockGraph
@@ -1063,6 +1065,9 @@ getKarrTrans opts instrs fun = do
                          , useKarr = False
                          , extraPredicates = Nothing
                          }) fun
+  when (verbosity opts > 2) $ do
+    instrNames <- mapM getNameString instrs
+    putStrLn $ "Karr variables: "++show instrNames
   pipe <- createSMTPipe "z3" ["-smt2","-in"] -- >>= namedDebugBackend "karr"
   trans <- withSMTBackend pipe $ do
     (blks,instrs) <- createStateVars "" nmdl
@@ -1081,6 +1086,8 @@ getKarrTrans opts instrs fun = do
                 (\src trg -> trans' Map.! src Map.! trg)
                 (\src -> Map.keys $ trans' Map.! src)
       karrStEnd = finishKarr karrSt0
+  when (verbosity opts > 2) $ do
+    putStrLn $ "Karr result: "++show karrStEnd
   return [ (ndBlk,[ (zipWith (\x y -> (x,y)) instrs (Vec.toList vec),c)
                   | (vec,c) <- extractPredicateVec diag ])
          | (nd,diag) <- IMap.toList (karrNodes karrStEnd)
@@ -1101,6 +1108,11 @@ getKarrTrans opts instrs fun = do
                              ) instrVec
                  let src_blk = head [ blk | (blk,True) <- Map.toList cblks ]
                      trg_blk = head [ blk | (blk,True) <- Map.toList cnblks ]
+                 when (verbosity opts > 2) $ do
+                   liftIO $ (if src_blk==nullPtr then return "err" else getNameString src_blk) >>= putStr
+                   liftIO $ putStr " ~> "
+                   liftIO $ (if trg_blk==nullPtr then return "err" else getNameString trg_blk) >>= putStr
+                   liftIO $ putStr ": " >> putStr (show $ Vec.toList $ fmap Vec.toList cvecs) >> putStr " " >> print (Vec.toList ccs)
                  -- Block solution
                  assert $ app or' $ concat
                    [ Map.elems $ Map.intersectionWith (\v c -> not' $ v .==. constant c) blks cblks
