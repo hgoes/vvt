@@ -625,6 +625,32 @@ realizeInstruction opts ana real i@(castDown -> Just opInst)
    _ -> do
      res <- realizeDefInstruction opts ana real i
      defineInstr opts ana real i res
+realizeInstruction opts@(RealizationOptions { integerEncoding = enc@(EncLin _ _) }) ana real i@(castDown -> Just icmp) = do
+  op <- getICmpOp icmp
+  lhs <- getOperand icmp 0 >>= realizeValue ana real
+  rhs <- getOperand icmp 1 >>= realizeValue ana real
+  defineInstr' opts ana (real { inputs = Map.insert i TpBool (inputs real)
+                              }) i TpBool $
+    \inps@(_,inp,_,_)
+    -> let lhs' = asSMTValue lhs enc inps
+           rhs' = asSMTValue rhs enc inps
+       in SymBool $ case lhs' of
+           SymLinear vl cl -> case rhs' of
+             SymLinear vr cr -> ite (app and' $
+                                     (Vec.toList $ fmap (.==. (constant 0)) vl)++
+                                     (Vec.toList $ fmap (.==. (constant 0)) vr))
+                                (case op of
+                                  I_EQ -> cl .==. cr
+                                  I_NE -> not' $ cl .==. cr
+                                  I_SGE -> cl .>=. cr
+                                  I_UGE -> cl .>=. cr
+                                  I_SGT -> cl .>. cr
+                                  I_UGT -> cl .>. cr
+                                  I_SLE -> cl .<=. cr
+                                  I_ULE -> cl .<=. cr
+                                  I_SLT -> cl .<. cr
+                                  I_ULT -> cl .<. cr)
+                                (symBool $ inp Map.! i)
 realizeInstruction opts ana real i = do
   if forceNondet opts i
     then (do
@@ -1034,9 +1060,6 @@ getKarrTrans :: RealizationOptions -> [Ptr Instruction] -> Ptr Function
                 -> IO [(Ptr BasicBlock,[([(Ptr Instruction,Integer)],Integer)])]
 getKarrTrans opts instrs fun = do
   nmdl <- getModel (opts { integerEncoding = EncLin instrVec (\(_,_,_,Just lin) -> lin)
-                         , forceNondet = \i -> case castDown i of
-                            Just (_::Ptr ICmpInst) -> True
-                            _ -> False
                          , useKarr = False
                          , extraPredicates = Nothing
                          }) fun
