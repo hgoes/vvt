@@ -12,7 +12,6 @@ import Karr
 import Language.SMTLib2 hiding (getModel)
 import Language.SMTLib2.Internals hiding (Value)
 import Language.SMTLib2.Pipe (createSMTPipe)
-import qualified Language.SMTLib2.Internals as SMT
 import Foreign.Ptr
 import LLVM.FFI hiding (Vector)
 import qualified Data.Graph.Inductive as Gr
@@ -27,11 +26,10 @@ import Control.Monad (when)
 import System.IO.Unsafe
 import Data.Traversable (sequence,traverse,mapM)
 import Prelude hiding (sequence,mapM,concat)
-import Data.List (intersperse,sortBy,intercalate)
+import Data.List (intersperse,sortBy)
 import Data.Either (partitionEithers)
 import Data.Typeable (cast)
 import Data.Ord (comparing)
-import Data.Maybe (catMaybes)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 import qualified Data.IntMap as IMap

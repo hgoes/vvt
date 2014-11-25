@@ -14,7 +14,7 @@ module Domain
 
 import Language.SMTLib2
 import SMTPool
-import Language.SMTLib2.Internals (SMTExpr(..),SMTFunction(..),SMTModel(..))
+import Language.SMTLib2.Internals (SMTExpr(..),SMTFunction(..))
 import Language.SMTLib2.Internals.Operators
 
 import Data.Graph.Inductive

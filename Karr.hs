@@ -1,14 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables,GADTs #-}
 module Karr where
 
-{-import Affine
-import Polynom
-import ExprPreprocess
-import Model-}
-
-import Language.SMTLib2
-import Language.SMTLib2.Internals
-
 import Data.Vector (Vector,(//),(!))
 import qualified Data.Vector as Vec
 import Linear.Vector
@@ -17,10 +9,7 @@ import Prelude as P hiding (all)
 
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IMap
-import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Data.Typeable
-import Data.Maybe (catMaybes)
 import Data.List as L
 
 import Data.Graph.Inductive as Gr
@@ -51,34 +40,6 @@ renderKarrTrans st = traceGraph [start] Set.empty Gr.empty
               in L.foldl (\cgr v
                           -> insEdge (n,v,karrTransition st n v) cgr
                          ) gr2 (karrSuccessor st n))
-{-
-runKarr :: (Args inp,Args st) => CFGModel inp st -> IntMap [st -> SMTExpr Bool]
-runKarr mdl = fmap (\diag -> fmap predicateVecToFun $ extractPredicateVec diag) $ karrNodes $ runKarr' (initKarrFromCFG mdl)
-  where
-    runKarr' st = if karrComplete st
-                  then st
-                  else runKarr' (stepKarr st)
-
-runKarrDebug :: (Args inp,Args st) => CFGModel inp st -> IntMap [SMTExpr Bool]
-runKarrDebug mdl = fmap (fmap (\fun -> fun st)) $ runKarr mdl
-  where
-    (k,st) = foldExprsId (\i _ ann -> (i+1,Var i ann)) 0 undefined (cfgStAnnotation mdl)
-
-initKarrFromCFG :: (Args inp,Args st) => CFGModel inp st -> KarrState
-initKarrFromCFG (mdl::CFGModel inp st)
-  = initKarr numSts (cfgInit mdl)
-    (\_ trg -> tmap IMap.! trg)
-    (suc (cfgGraph mdl))
-  where
-    tmap = IMap.fromList [ (nd,getTransformMat
-                               (cfgInpAnnotation mdl)
-                               (cfgStAnnotation mdl)
-                               (nodeTransformation node))
-                         | (nd,node) <- labNodes (cfgGraph mdl) ]
-    (numSts,_) = foldExprsId (\n e _ -> case cast e of
-                                 Nothing -> (n,e)
-                                 Just (_::SMTExpr Integer) -> (n+1,e)) 0 (undefined::st) (cfgStAnnotation mdl)
--}
 
 finishKarr :: KarrState -> KarrState
 finishKarr st = if karrComplete st
@@ -133,39 +94,6 @@ stepKarr st = case karrQueue st of
 karrComplete :: KarrState -> Bool
 karrComplete st = P.null (karrQueue st)
 
-testTrans :: SMTExpr Bool -> (SMTExpr Integer,SMTExpr Integer) -> (SMTExpr Integer,SMTExpr Integer)
-testTrans inp (x,y) = (ite inp (x+5) (x+y),2*(y+x))
-
-{-
-getTransformMat :: (Args inp,Args st) => ArgAnnotation inp -> ArgAnnotation st -> (inp -> st -> st) -> [(Vector (Vector Integer),Vector Integer)]
-getTransformMat ann_inp ann_st f
-  = [ (Vec.fromList $
-       [ case aff of
-            Nothing -> Vec.generate (fromIntegral k) (\i' -> if i'==(fromIntegral i) then 1 else 0)
-            Just aff' -> Vec.generate (fromIntegral k) (\i' -> case Map.lookup (fromIntegral i') (affineFactors aff') of
-                                                           Nothing -> 0
-                                                           Just x -> x)
-       | (i,aff) <- aff_exprs' ],
-       Vec.fromList $
-       [ case aff of
-            Nothing -> 0
-            Just aff' -> affineConstant aff'
-       | (_,aff) <- aff_exprs' ])
-    | aff_exprs' <- aff_exprs ]
-  where
-    {-(n,inp) = foldExprsId (\i e ann -> case cast e of
-                              Nothing -> (i,InternalObj () ann)
-                              Just (_::SMTExpr Integer) -> (i+1,Var i ann)) 0 undefined ann_inp-}
-    (k,st) = foldExprsId (\i e ann -> case cast e of
-                             Nothing -> (i,InternalObj () ann)
-                             Just (_::SMTExpr Integer) -> (i+1,Var i ann)) 0 undefined ann_st
-    sts = [ catMaybes [ cast expr | UntypedExpr expr <- fromArgs arg ]
-          | x <- removeInputs ann_inp ann_st f st
-          , (conds,arg) <- removeArgGuards x ]
-    aff_exprs = [ [ (i,affineFromExpr (expr::SMTExpr Integer))
-                  | (i,expr) <- P.zip [0..(k-1)] st' ]
-                | st' <- sts ]-}
-
 initBasis :: Vector Integer -> DiagonalBasis
 initBasis vec = DiagBasis { basisVector = vec
                           , basisVectors = IMap.empty }
@@ -214,83 +142,6 @@ extractPredicateVec diag
                                      then 1
                                      else 0))
     solved = gaussElim system
-extractPredicateVec diag
-  = elimLines (IMap.keys (basisVectors diag)) matr diag
-  where
-    matr = Vec.generate (Vec.length $ basisVector diag)
-           (\i -> Vec.generate (Vec.length $ basisVector diag)
-                  (\j -> if i==j then 1 else 0))
-    elimLines [] matr diag = [(matr!0,(basisVector diag)!0)]
-    elimLines (i:is) matr diag = let (nmatr,ndiag) = elimLine i matr diag
-                                 in elimLines is nmatr ndiag
-    elimLine :: Int -> Vector (Vector Integer) -> DiagonalBasis -> (Vector (Vector Integer),
-                                                                    DiagonalBasis)
-    elimLine i matr diag
-      = let col = (basisVectors diag) IMap.! i
-            piv = col!i
-            ms = fmap (\el -> let p = lcm piv el
-                              in (p `div` el,p `div` piv)
-                      ) col
-        in (Vec.imap (\j ln -> if col!j==0
-                               then ln
-                               else (let (m,n) = ms!j
-                                     in ln^*m ^-^ (matr!i)^*n)
-                     ) matr,
-            DiagBasis { basisVector = Vec.imap
-                                      (\j c -> if col!j==0
-                                               then c
-                                               else (let (m,n) = ms!j
-                                                     in c*m-(basisVector diag)!i*n)
-                                      ) (basisVector diag)
-                      , basisVectors = IMap.mapWithKey
-                                       (\p vec
-                                        -> Vec.imap
-                                           (\j v -> if col!j==0
-                                                    then v
-                                                    else (let (m,n) = ms!j
-                                                          in v*m-(vec!i)*n)
-                                           ) vec
-                                       ) (basisVectors diag)
-                      })
-{-extractPredicateVec diag
-  = trace (show (diag,f,nbase,ndiag)) $
-    [ Vec.generate ((Vec.length nbase)+1)
-      (\i' -> if i'==0
-              then -v
-              else (if i'==(i+1)
-                    then -f
-                    else (case IMap.lookup (i'-1) ndiag of
-                             Nothing -> 0
-                             Just v' -> v' ! i)))
-    | (i,v) <- P.zip [0..] (Vec.toList nbase)
-    , IMap.notMember i ndiag ]
-  where
-    (f,nbase) = IMap.foldlWithKey (\(cf,cbase) i vec
-                                   -> if (cbase!i)==0
-                                      then (cf,cbase)
-                                      else let m = lcm (cbase!i) (vec!i)
-                                               base0 = cbase ^* (m `div` (cbase!i))
-                                               base1 = vec ^* (m `div` (vec!i))
-                                               nf = lcm (m `div` (cbase!i)) cf
-                                           in (nf,base0 ^-^ base1)
-                                  ) (1,basisVector diag) (basisVectors diag)
-    ndiag = IMap.mapWithKey (\i v -> fmap (\x -> (x*f) `div` (v!i)) v) (basisVectors diag)-}
-
-predicateVecToFun :: (Args st) => Vector Integer -> st -> SMTExpr Bool
-predicateVecToFun v st = (constant c) .==. (app plus $ catMaybes $ match (fromArgs st) facs)
-  where
-    c:facs = Vec.toList v
-    match _ [] = []
-    match ((UntypedExpr e):es) facs = case cast e of
-      Nothing -> match es facs
-      Just e' -> (case P.head facs of
-                     0 -> Nothing
-                     1 -> Just e'
-                     -1 -> Just (app neg e')
-                     f -> Just $ (constant f)*e'):(match es (P.tail facs))
-
-testExpr :: SMTExpr Integer
-testExpr = 2*((Var 0 ()) + (constant 4)) + (Var 1 ()) + (Var 0 ())*(Var 0 ())
 
 testKarr1 :: [(Int,(Vector Integer,Integer))]
 testKarr1 = [ (n,vec)

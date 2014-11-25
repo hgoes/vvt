@@ -2,7 +2,6 @@
 module Realization.TRGen where
 
 import Realization
-import Realization.Common
 import RSM
 
 import Language.SMTLib2
