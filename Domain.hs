@@ -35,7 +35,7 @@ import Data.Typeable
 import Language.SMTLib2.Pipe
 import "mtl" Control.Monad.Trans (liftIO)
 
--- | Stores a lattice of abstractions
+-- | Stores a lattice of abstractions.
 --   An edge from A to B signifies that A includes B
 data Domain a = Domain { domainAnnotation :: ArgAnnotation a
                        , domainGArg :: a
@@ -52,10 +52,15 @@ data DomainInstance a = DomainInstance { domainNodes :: Map Node (SMTExpr Bool)
                                        , domainIsFresh :: Bool
                                        }
 
---type AbstractState a = Map Node Bool
+-- | An abstract state is a partial mapping of predicates to true or false, indicating whether or not a predicate is true or false in the abstracted state.
 type AbstractState a = Vector (Node,Bool)
 
-initialDomain :: (Args a,SMTBackend b IO) => Int -> IO b -> ArgAnnotation a -> SMT a -> IO (Domain a)
+-- | Create the initial domain containing only true and false.
+initialDomain :: (Args a,SMTBackend b IO) => Int -- ^ How verbose the domain should be (0 = no output)
+              -> IO b -- ^ A function to create SMT backends
+              -> ArgAnnotation a -- ^ The annotation for the data type abstracted by the domain
+              -> SMT a -- ^ An SMT action to create an instance of the abstracted data type
+              -> IO (Domain a)
 initialDomain verb backend ann (alloc::SMT a) = do
   let initInst = DomainInstance { domainNodes = Map.fromList
                                                 [(domainTop,constant True)
@@ -156,6 +161,7 @@ checkImplication e1 e2 = stack $ do
   r <- checkSat
   return $ not r
 
+-- | Like `domainAdd` but the caller has to guarantee that the predicate is neither a sub- nor a super-set of any predicate in the domain.
 domainAddUniqueUnsafe :: Args a => (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
 domainAddUniqueUnsafe pred dom = do
   let (qpred,vars) = generalizePredicate dom pred
@@ -169,7 +175,11 @@ domainAddUniqueUnsafe pred dom = do
                                        (domainNodesRev dom)
                     })
 
-domainAdd :: Args a => (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
+-- | Add a new predicate to the domain.
+--   Returns the node representing the new predicate.
+domainAdd :: Args a => (a -> SMTExpr Bool) -- ^ The predicate as a boolean function over the abstracted data type.
+          -> Domain a -- ^ The domain to which to add the predicate
+          -> IO (Node,Domain a)
 domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
   Just nd -> return (nd,dom)
   Nothing -> do
@@ -255,9 +265,10 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                    [] -> return $ Just (Set.singleton cur)
                    xs -> return $ Just (Set.unions xs))
 
+-- | Create an abstract state from a concrete state.
 domainAbstract :: (a -> SMTExpr Bool)  -- ^ An expression which describes the concrete state
                   -> Node -- ^ A property that must be considered
-                  -> Domain a
+                  -> Domain a -- ^ The domain to use for the abstraction
                   -> IO (AbstractState a)
 domainAbstract expr mustUse dom = do
   Right res <- withSMTPool' (domainPool dom) $ \inst vars -> do
@@ -282,7 +293,11 @@ domainAbstract expr mustUse dom = do
   where
     (_,exprVars) = generalizePredicate dom expr
 
-toDomainTerm :: AbstractState a -> Domain a -> a -> SMTExpr Bool
+-- | Create an SMT expression that represents an abstract state.
+toDomainTerm :: AbstractState a -- ^ The abstract state to represent
+             -> Domain a -- ^ The domain to use (The abstract state must have been created using this domain)
+             -> a -- ^ An instance of the abstracted data type
+             -> SMTExpr Bool
 toDomainTerm state dom vars
   = app and' [ if act
                then term vars
@@ -299,26 +314,6 @@ toDomainTerms state dom vars
 -- | Since a domain can only grow, we can hash its "version" using its size.
 domainHash :: Domain a -> Int
 domainHash dom = domainNextNode dom
-
-{-
-newtype Str = Str String
-
-instance Show Str where
-  show (Str x) = x
-
-domainDump :: Domain a -> IO String
-domainDump dom
-  = withSMTPool (domainPool dom) $
-    \vars -> do
-      let nodes = labNodes (domainGraph dom)
-          edges = labEdges (domainGraph dom)
-      nodes' <- mapM (\(nd,term) -> do
-                         str <- renderExpr (term vars)
-                         return (nd,Str $ show nd++": "++str)
-                     ) nodes
-      let edges' = fmap (\(x,y,()) -> (x,y,Str "")) edges
-          gr = mkGraph nodes' edges' :: Gr Str Str
-      return $ graphviz' gr-}
 
 renderDomainTerm :: AbstractState a -> Domain a -> IO String
 renderDomainTerm st dom
