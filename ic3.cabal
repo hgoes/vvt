@@ -13,3 +13,7 @@ Executable hctigar
 Executable vvt-karr
   Main-Is:              bin/Karr.hs
   Build-Depends:        base,vector,smtlib2
+
+Executable vvt-pp
+  Main-Is:              bin/Pretty.hs
+  Build-Depends:        atto-lisp,attoparsec<0.11,text,pretty
