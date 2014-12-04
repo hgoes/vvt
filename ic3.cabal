@@ -17,3 +17,7 @@ Executable vvt-karr
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs
   Build-Depends:        atto-lisp,attoparsec<0.11,text,pretty
+
+Executable vvt-bmc
+  Main-Is:              bin/BMC.hs
+  Build-Depends:        smtlib2
