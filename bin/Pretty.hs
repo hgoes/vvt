@@ -1,4 +1,4 @@
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ViewPatterns,OverloadedStrings #-}
 module Main where
 
 import qualified Data.AttoLisp as L
@@ -28,8 +28,14 @@ ppLisp (L.Symbol name) = text $ T.unpack name
 ppLisp (L.String str) = doubleQuotes $ text $ T.unpack str
 ppLisp (L.Number num) = ppNumber num
 ppLisp (L.List []) = parens empty
-ppLisp (L.List (x:xs)) = parens (ppLisp x <+> ppList xs)
-
+ppLisp (L.List (x:xs))
+  | hOp x = parens (ppLisp x <+> ppList xs)
+  | length xs < 4 = parens (hsep (fmap ppLisp (x:xs)))
+  | otherwise = parens (ppLisp x <+> ppList xs)
+  where
+    hOp (L.Symbol "and") = True
+    hOp (L.Symbol "or") = True
+    hOp _ = False
 ppNumber :: L.Number -> Doc
 ppNumber (L.I num) = integer num
 ppNumber (L.D num) = double num
