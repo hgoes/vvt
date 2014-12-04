@@ -15,7 +15,7 @@ import qualified Data.AttoLisp as L
 import Data.Attoparsec
 import qualified Data.Text as T
 import qualified Data.ByteString as BS
-import System.IO (withFile,IOMode(..))
+import System.IO (Handle)
 import Data.Typeable
 import Data.Fix
 import Prelude hiding (sequence,mapM)
@@ -43,16 +43,15 @@ data LispVar = Input T.Text
              | Gate T.Text
              deriving (Eq,Ord,Show,Typeable)
 
-readLispFile :: FilePath -> IO L.Lisp
-readLispFile fp = withFile fp ReadMode $
-                  \h -> do
-                    str <- BS.hGet h 1024
-                    let parseAll (Done _ r) = return r
-                        parseAll (Partial f) = do
-                          str <- BS.hGet h 1024
-                          parseAll (f str)
-                        parseAll (Fail _ _ err) = error $ "Couldn't parse lisp program: "++err
-                    parseAll $ parse L.lisp str
+readLispFile :: Handle -> IO L.Lisp
+readLispFile h = do
+  str <- BS.hGet h 1024
+  let parseAll (Done _ r) = return r
+      parseAll (Partial f) = do
+        str <- BS.hGet h 1024
+        parseAll (f str)
+      parseAll (Fail _ _ err) = error $ "Couldn't parse lisp program: "++err
+  parseAll $ parse L.lisp str
 
 parseLispProgram :: L.Lisp -> LispProgram
 parseLispProgram descr = case descr of

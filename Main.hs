@@ -77,6 +77,7 @@ getTransitionRelation file opts f = do
      trgen <- TRGen.readTRGen True file
      f trgen
    Lisp -> do
-     program <- fmap LispP.parseLispProgram $ LispP.readLispFile file
+     program <- fmap LispP.parseLispProgram $
+                withFile file ReadMode LispP.readLispFile
      nprogram <- LispP.addKarrPredicates program
      f nprogram
