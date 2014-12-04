@@ -851,6 +851,7 @@ instance TransitionRelation RealizedBlocks where
   type Input RealizedBlocks = (ValueMap,Maybe [SMTExpr Integer])
   type RevState RealizedBlocks = Map Integer (Either (Ptr BasicBlock) (Ptr Instruction))
   type PredicateExtractor RealizedBlocks = RSMState (Ptr BasicBlock) (Ptr Instruction)
+  type RealizationProgress RealizedBlocks = RealizedGates
   createStateVars pre st = do
     blks <- sequence $ Map.mapWithKey
             (\blk _ -> do
@@ -1044,6 +1045,7 @@ instance TransitionRelation RealizedBlocks where
     (nrsm',props) <- mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
     return (nrsm',fmap (\prop (_,vals) -> prop (\v -> case vals Map.! v of
                                                        SymInteger rv -> rv)) props)
+  startingProgress _ = Map.empty
 
 assertPredicates :: RealizedBlocks -> [(LatchActs,ValueMap) -> SMTExpr Bool]
 assertPredicates mdl

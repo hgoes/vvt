@@ -470,6 +470,7 @@ instance TransitionRelation Realization where
   type Input Realization = Map (Ptr Instruction) SymInstr
   type RevState Realization = Map Integer (Either (Ptr BasicBlock) (Ptr Instruction))
   type PredicateExtractor Realization = RSMState (Ptr BasicBlock) (Ptr Instruction)
+  type RealizationProgress Realization = RealizedGates
   createStateVars pre st = do
     blks <- sequence $ Map.mapWithKey
             (\blk _ -> do
@@ -626,3 +627,4 @@ instance TransitionRelation Realization where
   suggestedPredicates mdl = fmap (\p -> (True,p)) $
                             blkPredicates (blocks mdl)++
                             splitPredicates (cmpPredicates (latches mdl))
+  startingProgress _ = Map.empty

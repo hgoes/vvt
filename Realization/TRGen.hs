@@ -114,6 +114,7 @@ instance TransitionRelation TRGen where
   type Input TRGen = Map String (SMTExpr UntypedValue)
   type RevState TRGen = Map Integer String
   type PredicateExtractor TRGen = RSMState Integer String
+  type RealizationProgress TRGen = ()
   createStateVars pre trgen
     = sequence $ Map.mapWithKey
       (\name tp -> varNamedAnn (pre++name) tp)
@@ -211,6 +212,7 @@ instance TransitionRelation TRGen where
                              | tp==ProxyArgValue (undefined::Bool) ()
                                -> UntypedExprValue (constant False)
                          ) (trNondets trgen)
+  startingProgress _ = ()
 
 minMaxBy :: Ord b => (a -> b) -> [a] -> (a,a)
 minMaxBy f (x:xs) = minMax' x x xs

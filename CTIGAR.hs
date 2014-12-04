@@ -221,13 +221,13 @@ runIC3 cfg act = do
               cur <- TR.createStateVars "" mdl
               assert (TR.stateInvariant mdl cur)
               inp <- TR.createInputVars "" mdl
-              (nxt,real1) <- TR.declareNextState mdl cur inp Nothing Map.empty
+              (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
               --assert (blockConstraint nxtBlks)
               (asserts1,real2) <- TR.declareAssertions mdl cur inp real1
               (assumps1,real3) <- TR.declareAssumptions mdl cur inp real2
               mapM_ assert assumps1
               nxtInp <- TR.createInputVars "nxt." mdl
-              (asserts2,_) <- TR.declareAssertions mdl nxt nxtInp Map.empty
+              (asserts2,_) <- TR.declareAssertions mdl nxt nxtInp (TR.startingProgress mdl)
               mapM assert asserts1
               return $ ConsecutionVars { consecutionInput = inp
                                        , consecutionNxtInput = nxtInp
@@ -240,11 +240,11 @@ runIC3 cfg act = do
     cur <- TR.createStateVars "" mdl
     assert $ TR.stateInvariant mdl cur
     inp <- TR.createInputVars "inp." mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp Nothing Map.empty
+    (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
     (assumps,real2) <- TR.declareAssumptions mdl cur inp real1
     mapM_ assert assumps
     inp' <- TR.createInputVars "inp.nxt." mdl
-    (asserts,real1') <- TR.declareAssertions mdl nxt inp' Map.empty
+    (asserts,real1') <- TR.declareAssertions mdl nxt inp' (TR.startingProgress mdl)
     return $ LiftingState cur inp nxt inp' asserts
   initiation <- createSMTPool initiationBackend $ do
     cur <- TR.createStateVars "" mdl
@@ -257,7 +257,7 @@ runIC3 cfg act = do
     post <- interpolationGroup
     cur <- TR.createStateVars "" mdl
     inp <- TR.createInputVars "" mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) Map.empty
+    (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) (TR.startingProgress mdl)
     (asserts,real2) <- TR.declareAssertions mdl cur inp real1
     (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
     (nxt',rev) <- TR.createRevState "" mdl
@@ -700,7 +700,7 @@ baseCases st = do
   inp0 <- TR.createInputVars "" st
   assert $ TR.initialState st cur0
   comment "Assumptions:"
-  (assumps0,real0) <- TR.declareAssumptions st cur0 inp0 Map.empty
+  (assumps0,real0) <- TR.declareAssumptions st cur0 inp0 (TR.startingProgress st)
   mapM_ assert assumps0
   comment "Declare assertions:"
   (asserts0,real1) <- TR.declareAssertions st cur0 inp0 real0
@@ -709,7 +709,7 @@ baseCases st = do
   comment "Inputs 2:"
   inp1 <- TR.createInputVars "nxt" st
   comment "Assumptions 2:"
-  (assumps1,real0) <- TR.declareAssumptions st cur1 inp1 Map.empty
+  (assumps1,real0) <- TR.declareAssumptions st cur1 inp1 (TR.startingProgress st)
   mapM_ assert assumps1
   comment "Declare assertions 2:"
   (asserts1,_) <- TR.declareAssertions st cur1 inp1 real0
@@ -834,7 +834,7 @@ check st opts = do
       return $ (stateLifted rst):rest
     constructTrace real st [] errs = do
       inps <- TR.createInputVars "" real
-      (ass,_) <- TR.declareAssertions real st inps Map.empty
+      (ass,_) <- TR.declareAssertions real st inps (TR.startingProgress real)
       comment "Assertions"
       assert $ app or' (fmap not' (ass++errs))
       return []
@@ -843,7 +843,7 @@ check st opts = do
       assert $ app and' $ assignPartial st x
       comment "Inputs"
       inps <- TR.createInputVars "" real
-      (assumps,real0) <- TR.declareAssumptions real st inps Map.empty
+      (assumps,real0) <- TR.declareAssumptions real st inps (TR.startingProgress real)
       (nxt_st,real1) <- TR.declareNextState real st inps Nothing real0
       (ass,real2) <- TR.declareAssertions real st inps real1
       comment "Assumptions"
@@ -1256,13 +1256,13 @@ checkFixpoint abs_fp = do
       assert $ TR.stateInvariant mdl cur
       assert $ fp cur
       inp <- TR.createInputVars "" mdl
-      (asserts,real0) <- TR.declareAssertions mdl cur inp Map.empty
+      (asserts,real0) <- TR.declareAssertions mdl cur inp (TR.startingProgress mdl)
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
       assert $ app and' assumps
       (nxt,real2) <- TR.declareNextState mdl cur inp Nothing real1
       inp' <- TR.createInputVars "nxt" mdl
-      (asserts',real0') <- TR.declareAssertions mdl nxt inp' Map.empty
+      (asserts',real0') <- TR.declareAssertions mdl nxt inp' (TR.startingProgress mdl)
       assert $ not' $ app and' asserts'
       (assumps',real1') <- TR.declareAssumptions mdl nxt inp' real0'
       assert $ app and' assumps'
@@ -1273,7 +1273,7 @@ checkFixpoint abs_fp = do
       assert $ TR.stateInvariant mdl cur
       assert $ fp cur
       inp <- TR.createInputVars "" mdl
-      (asserts,real0) <- TR.declareAssertions mdl cur inp Map.empty
+      (asserts,real0) <- TR.declareAssertions mdl cur inp (TR.startingProgress mdl)
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
       assert $ app and' assumps
