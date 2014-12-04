@@ -7,6 +7,7 @@ import System.Console.GetOpt
 import System.Environment
 import Language.SMTLib2.Pipe
 import Language.SMTLib2
+import Language.SMTLib2.Debug
 import PartialArgs
 import qualified Data.Map as Map
 
@@ -14,14 +15,16 @@ data Options = Options { showHelp :: Bool
                        , solver :: String
                        , solverArgs :: [String]
                        , bmcDepth :: Integer
-                       , incremental :: Bool }
+                       , incremental :: Bool
+                       , debug :: Bool }
 
 defaultOptions :: Options
 defaultOptions = Options { showHelp = False
                          , solver = "z3"
                          , solverArgs = ["-in","-smt2"]
                          , bmcDepth = 10
-                         , incremental = False }
+                         , incremental = False
+                         , debug = False }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
@@ -29,7 +32,8 @@ optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Sho
            ,Option ['s'] ["solver"] (ReqArg (\str opt -> let solv:args = words str
                                                          in opt { solver = solv
                                                                 , solverArgs = args }) "bin") "The SMT solver executable"
-           ,Option ['i'] ["incremental"] (NoArg $ \opt -> opt { incremental = True }) "Run in incremental mode"]
+           ,Option ['i'] ["incremental"] (NoArg $ \opt -> opt { incremental = True }) "Run in incremental mode"
+           ,Option [] ["debug"] (NoArg $ \opt -> opt { debug = True }) "Output the SMT stream"]
 
 main = do
   args <- getArgs
@@ -45,11 +49,16 @@ main = do
     then putStrLn $ usageInfo "Usage:\n\n    vvt-bmc [OPTIONS]\n\nAvailable options:" optDescr
     else (do
              prog <- fmap parseLispProgram $ readLispFile stdin
-             pipe <- createSMTPipe (solver opts) (solverArgs opts) -- >>= namedDebugBackend "karr"
-             res <- withSMTBackend pipe $ do
-               st0 <- createStateVars "" prog
-               assert $ initialState prog st0
-               bmc prog (incremental opts) (bmcDepth opts) 0 st0 []
+             pipe <- createSMTPipe (solver opts) (solverArgs opts)
+             let act = do
+                   st0 <- createStateVars "" prog
+                   assert $ initialState prog st0
+                   bmc prog (incremental opts) (bmcDepth opts) 0 st0 []
+             res <- if debug opts
+                    then (do
+                             pipe' <- namedDebugBackend "bmc" pipe
+                             withSMTBackend pipe' act)
+                    else withSMTBackend pipe act
              case res of
               Nothing -> putStrLn "No bug found."
               Just bug -> do

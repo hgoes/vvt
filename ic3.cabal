@@ -20,4 +20,4 @@ Executable vvt-pp
 
 Executable vvt-bmc
   Main-Is:              bin/BMC.hs
-  Build-Depends:        smtlib2
+  Build-Depends:        smtlib2,smtlib2-debug
