@@ -25,6 +25,7 @@ data Options = Options { optBackendCons :: String
 data Encoding = Monolithic
               | BlockWise
               | TRGen
+              | Lisp
 
 defaultOptions :: Options
 defaultOptions = Options { optBackendCons = z3
@@ -60,6 +61,7 @@ allOpts
                                "monolithic" -> Monolithic
                                "blockwise" -> BlockWise
                                "trgen" -> TRGen
+                               "lisp" -> Lisp
                             }) "name")
      "Choose an encoding for the transition relation:\n  monolithic - Translate the whole program graph into one step (default)\n  blockwise - Each LLVM block is its own step\n  trgen - Use the original CTIGAR encoding"
     ,Option [] ["backend-cons"]

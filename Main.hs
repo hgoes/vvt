@@ -6,6 +6,8 @@ import Realization.Common
 import Realization.Monolithic
 import qualified Realization.BlockWise as BlockWise
 import qualified Realization.TRGen as TRGen
+import qualified Realization.Lisp as LispP
+import qualified Realization.LispKarr as LispP
 import Options
 import CTIGAR (check)
 import PartialArgs
@@ -74,3 +76,7 @@ getTransitionRelation file opts f = do
    TRGen -> do
      trgen <- TRGen.readTRGen True file
      f trgen
+   Lisp -> do
+     program <- fmap LispP.parseLispProgram $ LispP.readLispFile file
+     nprogram <- LispP.addKarrPredicates program
+     f nprogram

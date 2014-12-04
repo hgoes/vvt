@@ -9,3 +9,7 @@ Executable hctigar
                         smtlib2,smtlib2-debug,smtlib2-timing,
                         array,resource-pool,mtl,bytestring,attoparsec<0.11,atto-lisp,text,time,linear,data-fix
   GHC-Options:          -threaded -fwarn-unused-imports
+
+Executable vvt-karr
+  Main-Is:              bin/Karr.hs
+  Build-Depends:        base,vector,smtlib2
