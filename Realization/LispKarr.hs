@@ -284,7 +284,15 @@ translateCond prog linVars state inp gates (App (SMTOrd op) (lhs,rhs)) = case ca
                  [ v .==. 0 | v <- Map.elems lhs_v ]++
                  [ v .==. 0 | v <- Map.elems rhs_v ]
                 ) (App (SMTOrd op) (lhs_c,rhs_c)) nondet,gates2)
-  
+translateCond prog linVars state inp gates (App SMTEq [lhs,rhs]) = case cast (lhs,rhs) of
+  Just (lhs',rhs') -> do
+    ((lhs_v,lhs_c),gates1) <- translateLinear prog linVars state inp gates lhs'
+    ((rhs_v,rhs_c),gates2) <- translateLinear prog linVars state inp gates1 rhs'
+    nondet <- varNamed "nondet"
+    return (ite (app and' $
+                 [ v .==. 0 | v <- Map.elems lhs_v ]++
+                 [ v .==. 0 | v <- Map.elems rhs_v ]
+                ) (App SMTEq [lhs_c,rhs_c]) nondet,gates2)
 translateCond _ _ _ _ _ expr = error $ "Failed to translate boolean expression "++show expr
 
 toLinear :: Map T.Text Int -> SMTExpr Integer -> LinearExpr

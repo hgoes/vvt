@@ -79,5 +79,7 @@ getTransitionRelation file opts f = do
    Lisp -> do
      program <- fmap LispP.parseLispProgram $
                 withFile file ReadMode LispP.readLispFile
-     nprogram <- LispP.addKarrPredicates program
+     nprogram <- if optKarr opts
+                 then LispP.addKarrPredicates program
+                 else return program
      f nprogram
