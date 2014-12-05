@@ -21,6 +21,7 @@ import Data.Fix
 import Prelude hiding (sequence,mapM)
 import Data.Traversable
 import Control.Monad.State (runStateT,get,put,lift)
+import Data.List (genericLength)
 
 data LispProgram
   = LispProgram { programAnnotation :: Annotation
@@ -43,6 +44,8 @@ data LispVar = Input T.Text
              | Gate T.Text
              deriving (Eq,Ord,Show,Typeable)
 
+data CArray a = CArray { cArrayEntries :: [a] } deriving (Eq,Ord,Show,Typeable)
+
 readLispFile :: Handle -> IO L.Lisp
 readLispFile h = do
   str <- BS.hGet h 1024
@@ -58,11 +61,13 @@ parseLispProgram descr = case descr of
   L.List (L.Symbol "program":elems)
     -> let (ann,elems') = parseAnnotation elems Map.empty
            mp = Map.fromList [ (key,defs) | L.List (L.Symbol key:defs) <- elems ]
-           dts = emptyDataTypeInfo
+           dts = addDataTypeStructure tcCArray emptyDataTypeInfo
            state = case Map.lookup "state" mp of
                     Just sts -> parseVarMap sts
+                    Nothing -> Map.empty
            inp = case Map.lookup "input" mp of
                   Just sts -> parseVarMap sts
+                  Nothing -> Map.empty
            gates = case Map.lookup "gates" mp of
              Just gts -> let gts' = fmap (\gt -> case gt of
                                            L.List [L.Symbol name,sort,def]
@@ -334,3 +339,82 @@ addPredicate prog pred
   = if elem pred (programPredicates prog)
     then prog
     else prog { programPredicates = pred:programPredicates prog }
+
+instance SMTType a => SMTType (CArray a) where
+  type SMTAnnotation (CArray a) = SMTAnnotation a
+  getSort (_::CArray a) ann = Fix (NamedSort "CArray" [getSort (undefined::a) ann])
+  asDataType (_::CArray a) ann = Just ("CArray",tcCArray)
+  asValueType (arr::CArray a) ann f = asValueType (undefined::a) ann $
+                                      \(_::b) ann' -> case cast arr of
+                                      Just arr' -> f (arr'::CArray b) ann'
+  getProxyArgs (_::CArray a) ann = [ProxyArg (undefined::a) ann]
+  annotationFromSort (_::CArray a) (Fix (NamedSort "CArray" [s]))
+    = annotationFromSort (undefined::a) s
+
+tcCArray :: TypeCollection
+tcCArray = TypeCollection 1 [dtCArray]
+
+dtCArray :: DataType
+dtCArray = DataType { dataTypeName = "CArray"
+                    , dataTypeConstructors = [conCArray]
+                    , dataTypeGetUndefined = \tps f -> case tps of
+                                                        [ProxyArg (_::t) ann]
+                                                          -> f (undefined::CArray t) ann
+                    }
+
+conCArray :: Constr
+conCArray = Constr { conName = "CArray"
+                   , conFields = [fieldSize,fieldEntries]
+                   , construct = \tps vals f
+                                 -> error "Cannot create instance of CArray"
+                   , conTest = \_ _ -> True
+                   }
+
+fieldSize :: DataField
+fieldSize = DataField { fieldName = "size"
+                      , fieldSort = Fix $ NormalSort IntSort
+                      , fieldGet = \tps arg f
+                                   -> case tps of
+                                       [ProxyArg (_::t) ann]
+                                         -> case cast arg of
+                                             Just (arr::CArray t)
+                                               -> f (genericLength $ cArrayEntries arr
+                                                     :: Integer) ()
+                      }
+
+fieldEntries :: DataField
+fieldEntries = DataField { fieldName = "entries"
+                         , fieldSort = Fix $ NormalSort (ArraySort
+                                                         [Fix $ NormalSort IntSort]
+                                                         (Fix $ ArgumentSort 0))
+                         , fieldGet = \tps arr f -> case tps of
+                         [ProxyArg (_::t) ann] -> f (error "Cannot extract entries field from CArray"::SMTArray (SMTExpr Integer) t) ((),ann)
+                         }
+
+constructorCArray :: SMTType a => SMTAnnotation a -> Constructor (SMTExpr Integer,SMTExpr (SMTArray (SMTExpr Integer) a)) (CArray a)
+constructorCArray ann
+  = withUndef $ \u -> Constructor [ProxyArg u ann] dtCArray conCArray
+  where
+    withUndef :: (t -> Constructor (SMTExpr Integer,SMTExpr (SMTArray (SMTExpr Integer) t)) (CArray t))
+                 -> Constructor (SMTExpr Integer,SMTExpr (SMTArray (SMTExpr Integer) t)) (CArray t)
+    withUndef f = f undefined
+
+instance SMTValue a => SMTValue (CArray a) where
+  unmangle = ComplexUnmangling $
+             \f (expr::SMTExpr (CArray a)) ann -> do
+               sz <- f (App (SMTFieldSel (Field [ProxyArg (undefined::a) ann]
+                                          dtCArray conCArray fieldSize))
+                        expr) ()
+               entrs <- mapM (\idx -> f (App SMTSelect
+                                         (App (SMTFieldSel (Field [ProxyArg (undefined::a) ann]
+                                                            dtCArray conCArray fieldEntries))
+                                          expr,Const (idx::Integer) ())) ann
+                             ) [0..sz-1]
+               return $ Just (CArray entrs)
+  mangle = ComplexMangling $
+           \(CArray entrs) ann
+           -> let arr = foldl (\arr (idx,entr)
+                               -> App SMTStore (arr,Const idx (),Const entr ann)
+                              ) (App (SMTConstArray ()) (Const (head entrs) ann))
+                        (zip [0..] entrs)
+              in App (SMTConstructor $ constructorCArray ann) (Const (genericLength entrs) (),arr)
