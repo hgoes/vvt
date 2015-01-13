@@ -42,7 +42,7 @@ getKarrPredicates linVars init_st trans
                 | (name,idx) <- Map.toList linVars
                 , let f = vec Vec.! idx
                 , f/=0
-                , let x = InternalObj (State name) ()]) `op`
+                , let x = InternalObj (LispVar name State NormalAccess) ()]) `op`
       (constant c)
     | (nd,diag) <- IMap.toList $ karrNodes karr1
     , (vec,c) <- extractPredicateVec diag
@@ -146,14 +146,14 @@ getKarrTrans prog = do
     mapM_ assert invars
     (nLinear,gt1) <- runStateT (mapM (\nxt -> do
                                          gates <- get
-                                         (nxt',ngates) <- lift $ translateLinear prog linVars state inp gates (castUntypedExprValue nxt)
+                                         (nxt',ngates) <- lift $ translateLinear prog linVars state inp gates (castUntypedExpr nxt)
                                          put ngates
                                          return nxt'
                                      ) (Map.intersection (programNext prog) linSt)
                                ) gt0
     (nPCs,gt2) <- runStateT (mapM (\nxt -> do
                                       gates <- get
-                                      (nxt',ngates) <- lift $ translateCond prog linVars state inp gates (castUntypedExprValue nxt)
+                                      (nxt',ngates) <- lift $ translateCond prog linVars state inp gates (castUntypedExpr nxt)
                                       put ngates
                                       return nxt'
                                   ) (Map.intersection (programNext prog) pcVars)
@@ -202,26 +202,25 @@ translateLinear :: Monad m
                 -> LinearGates
                 -> SMTExpr Integer
                 -> SMT' m (LinearExpr,LinearGates)
-translateLinear prog linVars state inp gates (InternalObj (cast -> Just (State s)) _)
-  = case Map.lookup s state of
-     Just (Right lin) -> return (lin,gates)
-     Just (Left expr) -> return (toLinear linVars (castUntypedExprValue expr),gates)
-translateLinear prog linVars state inp gates (InternalObj (cast -> Just (Input s)) _)
-  = case Map.lookup s inp of
-     Just (Right lin) -> return (lin,gates)
-     Just (Left expr) -> return (toLinear linVars (castUntypedExprValue expr),gates)
-translateLinear prog linVars state inp gates (InternalObj (cast -> Just (Gate s)) _)
-  = case Map.lookup s gates of
-     Just (Right lin) -> return (lin,gates)
-     Just (Left expr) -> return (toLinear linVars (castUntypedExpr expr),gates)
-     Nothing -> case Map.lookup s (programGates prog) of
-       Just (_,expr) -> do
-         ((nvars,nc),ngates) <- translateLinear prog linVars state inp gates (castUntypedExpr expr)
-         nlin <- sequence $ Map.mapWithKey
-                 (\name expr -> defConstNamed (T.unpack s) expr
-                 ) nvars
-         nnc <- defConstNamed (T.unpack s++".c") nc
-         return ((nlin,nnc),Map.insert s (Right (nlin,nnc)) ngates)
+translateLinear prog linVars state inp gates (InternalObj (cast -> Just (LispVar name cat acc)) _)
+  = case cat of
+     State -> case Map.lookup name state of
+       Just (Right lin) -> return (lin,gates)
+       Just (Left expr) -> return (toLinear linVars (castUntypedExprValue expr),gates)
+     Input -> case Map.lookup name inp of
+       Just (Right lin) -> return (lin,gates)
+       Just (Left expr) -> return (toLinear linVars (castUntypedExprValue expr),gates)
+     Gate ->  case Map.lookup name gates of
+       Just (Right lin) -> return (lin,gates)
+       Just (Left expr) -> return (toLinear linVars (castUntypedExpr expr),gates)
+       Nothing -> case Map.lookup name (programGates prog) of
+         Just (_,expr) -> do
+           ((nvars,nc),ngates) <- translateLinear prog linVars state inp gates (castUntypedExpr expr)
+           nlin <- sequence $ Map.mapWithKey
+                   (\name expr -> defConstNamed (T.unpack name) expr
+                   ) nvars
+           nnc <- defConstNamed (T.unpack name++".c") nc
+           return ((nlin,nnc),Map.insert name (Right (nlin,nnc)) ngates)
 translateLinear prog linVars state inp gates e@(Const _ ())
   = return (toLinear linVars e,gates)
 translateLinear prog linVars state inp gates (App (SMTArith Plus) [lhs,rhs]) = do
@@ -248,20 +247,19 @@ translateCond :: Monad m
               -> LinearGates
               -> SMTExpr Bool
               -> SMT' m (SMTExpr Bool,LinearGates)
-translateCond prog linVars state inp gates (InternalObj (cast -> Just (State s)) _)
-  = case Map.lookup s state of
-     Just (Left expr) -> return (castUntypedExprValue expr,gates)
-translateCond prog linVars state inp gates (InternalObj (cast -> Just (Input s)) _)
-  = case Map.lookup s inp of
-     Just (Left expr) -> return (castUntypedExprValue expr,gates)
-translateCond prog linVars state inp gates (InternalObj (cast -> Just (Gate s)) _)
-  = case Map.lookup s gates of
-     Just (Left expr) -> return (castUntypedExpr expr,gates)
-     Nothing -> case Map.lookup s (programGates prog) of
-       Just (_,expr) -> do
-         (nexpr,ngates) <- translateCond prog linVars state inp gates (castUntypedExpr expr)
-         nnexpr <- defConstNamed (T.unpack s) nexpr
-         return (nnexpr,Map.insert s (Left $ UntypedExpr nexpr) ngates)
+translateCond prog linVars state inp gates (InternalObj (cast -> Just (LispVar name cat acc)) _)
+  = case cat of
+     State -> case Map.lookup name state of
+       Just (Left expr) -> return (castUntypedExprValue expr,gates)
+     Input -> case Map.lookup name inp of
+       Just (Left expr) -> return (castUntypedExprValue expr,gates)
+     Gate -> case Map.lookup name gates of
+       Just (Left expr) -> return (castUntypedExpr expr,gates)
+       Nothing -> case Map.lookup name (programGates prog) of
+         Just (_,expr) -> do
+           (nexpr,ngates) <- translateCond prog linVars state inp gates (castUntypedExpr expr)
+           nnexpr <- defConstNamed (T.unpack name) nexpr
+           return (nnexpr,Map.insert name (Left $ UntypedExpr nexpr) ngates)
 translateCond _ _ _ _ gates (Const x ()) = return (Const x (),gates)
 translateCond prog linVars state inp gates (App (SMTLogic op) xs) = do
   (xs',ngates) <- runStateT (mapM (\x -> do
