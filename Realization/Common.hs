@@ -455,9 +455,9 @@ instance PartialArgs SymInstr where
                             then val
                             else Nothing,xs)
   unmaskValue _ val = Just val
-  assignPartial _ Nothing = []
-  assignPartial (SymBool c) (Just (ValBool v)) = [c.==.(constant v)]
-  assignPartial (SymInteger c) (Just (ValInteger v)) = [c.==.(constant v)]
+  assignPartial _ Nothing = [Nothing]
+  assignPartial (SymBool c) (Just (ValBool v)) = [Just $ c.==.(constant v)]
+  assignPartial (SymInteger c) (Just (ValInteger v)) = [Just $ c.==.(constant v)]
 
 parseLLVMPreds :: Handle -> [Ptr BasicBlock] -> [Ptr Instruction]
                -> (a -> Ptr Instruction -> SymInstr)

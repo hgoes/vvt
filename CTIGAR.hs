@@ -321,9 +321,11 @@ liftState lifting st = do
     Nothing -> return $ \lft -> app and' $ liftNxtAsserts lft
     Just succ' -> do
       succ'' <- readIORef succ'
-      return $ \lft -> (not' $ app and' $
-                        assignPartial (liftNxt lft) (stateLifted succ'')) .&&.
-                       (app and' $ assignPartial (liftNxtInputs lft) (stateLiftedInputs succ''))
+      return $ \lft -> (not' $ app and' [ cond
+                                        | Just cond <- assignPartial (liftNxt lft) (stateLifted succ'')
+                                        ]) .&&.
+                       (app and' [ cond
+                                 | Just cond <- assignPartial (liftNxtInputs lft) (stateLiftedInputs succ'')])
   (part,partInp) <- withSMTPool lifting $
                     \vars' -> lift' ((liftCur vars'),
                                      liftInputs vars',
@@ -336,27 +338,25 @@ lift' :: (PartialArgs st,PartialArgs inp) => (st,inp,inp)
              -> (Unpacked st,Unpacked inp,Unpacked inp,SMTExpr Bool)
              -> SMT (PartialValue st,PartialValue inp)
 lift' (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
-  let ann_cur = extractArgAnnotation cur
-      ann_inp = extractArgAnnotation inp
-  ((cmp1,len_st),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
-                                        cid <- assertId (arg1 .==. arg2)
-                                        return ((Map.insert cid (Left n) mp,n+1),
-                                                [arg1,arg2],
-                                                error "U3")
-                                    ) (Map.empty,0)
-                         [(cur,()),(liftArgs vcur ann_cur,())] ann_cur
-  ((cmp2,len_inp),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
-                                         cid <- assertId (arg1 .==. arg2)
-                                         return ((Map.insert cid (Right n) mp,n+1),
-                                                 [arg1,arg2],
-                                                 error "U3")
-                                     ) (cmp1,0)
-                          [(inp,()),(liftArgs vinp ann_inp,())] ann_inp
+  let assignedCur = assignPartial cur (unmaskValue cur vcur)
+      assignedInp = assignPartial inp (unmaskValue inp vinp)
+  (cmp1,len_st) <- foldlM (\(mp,n) cond -> case cond of
+                            Nothing -> return (mp,n+1)
+                            Just cond' -> do
+                              cid <- assertId cond'
+                              return (Map.insert cid (Left n) mp,n+1)
+                          ) (Map.empty,0) assignedCur
+  (cmp2,len_inp) <- foldlM (\(mp,n) cond -> case cond of
+                             Nothing -> return (mp,n+1)
+                             Just cond' -> do
+                               cid <- assertId cond'
+                               return (Map.insert cid (Right n) mp,n+1)
+                           ) (cmp1,0) assignedInp
   --assert $ argEq inp (liftArgs vinp ann_inp)
-  assert $ argEq inp' (liftArgs vinp' ann_inp)
+  assert $ argEq inp' (liftArgs vinp' (extractArgAnnotation inp'))
   assert vnxt
   res <- checkSat
-  when res $ error "The model appears to be non-deterministic."
+  when res $ error $ "The model appears to be non-deterministic."
   core <- getUnsatCore
   let (coreSt,coreInp) = partitionEithers $ fmap (cmp2 Map.!) core
       partSt = toTruthValues len_st 0 (sort coreSt)
@@ -390,7 +390,7 @@ initiationConcrete vals = do
   env <- get
   liftIO $ fmap not $ withSMTPool (ic3Initiation env) $
     \vars -> stack $ do
-      mapM assert (assignPartial vars vals)
+      mapM assert (assignPartial' vars vals)
       checkSat
 
 -- From ConsRefConcrPred
@@ -411,7 +411,7 @@ updateAbstraction ref = do
     else (do
              full <- liftIO $ domainAbstract
                      (\x -> {-argEq x (liftArgs (stateFull st) (TR.annotationState mdl))-}
-                       app and' $ assignPartial x (stateLifted st))
+                       app and' $ assignPartial' x (stateLifted st))
                      initialPred
                      dom
              lifted <- case stateSuccessor st of
@@ -501,7 +501,7 @@ abstractConsecution fi abs_st succ = do
      Nothing -> return ()
      Just s -> do
        succ' <- liftIO $ readIORef s
-       assert $ app and' $ assignPartial (consecutionNxtInput vars)
+       assert $ app and' $ assignPartial' (consecutionNxtInput vars)
          (stateLiftedInputs succ')
     res <- checkSat
     if res
@@ -531,12 +531,12 @@ concreteConsecution :: TR.TransitionRelation mdl
 concreteConsecution fi st succ = do
   env <- get
   res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
-    assert (app or' $ fmap not' $ assignPartial (consecutionState vars) st)
+    assert (app or' $ fmap not' $ assignPartial' (consecutionState vars) st)
     do
       succ' <- liftIO $ readIORef succ
-      assert $ app and' $ assignPartial (consecutionNxtInput vars)
+      assert $ app and' $ assignPartial' (consecutionNxtInput vars)
         (stateLiftedInputs succ')
-    mapM_ assert (assignPartial (consecutionNxtState vars) st)
+    mapM_ assert (assignPartial' (consecutionNxtState vars) st)
     sat <- checkSat
     if sat
       then (do
@@ -840,7 +840,7 @@ check st opts = do
       return []
     constructTrace real st (x:xs) asserts = do
       comment "Assignments"
-      assert $ app and' $ assignPartial st x
+      assert $ app and' $ assignPartial' st x
       comment "Inputs"
       inps <- TR.createInputVars "" real
       (assumps,real0) <- TR.declareAssumptions real st inps (TR.startingProgress real)
@@ -986,9 +986,9 @@ interpolate j s = do
                                          assertInterp (translateToMathSAT $ not' trm) ante --(interpAnte st)
                                      ) (IntSet.toList fr)
                        ) frames)
-      assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial (interpCur st) s)
+      assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial' (interpCur st) s)
         ante -- (interpAnte st)
-      assertInterp (translateToMathSAT $ app and' $ assignPartial (interpNxt st) s)
+      assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxt st) s)
         post -- (interpPost st)
       res <- checkSat
       when res $ error "Interpolation query is SAT"
@@ -1144,7 +1144,7 @@ ctgDown = ctgDown' 0 0
                            domain <- gets ic3Domain
                            initialPred <- gets ic3InitialProperty
                            abstractCtg <- liftIO $ domainAbstract
-                                          (\x -> app and' $ assignPartial x (stateLifted ctg)
+                                          (\x -> app and' $ assignPartial' x (stateLifted ctg)
                                           ) initialPred domain
                            if ctgs < efMaxCTGs && level > 1
                              then (do
