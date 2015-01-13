@@ -8,8 +8,10 @@ import System.Environment
 import Language.SMTLib2.Pipe
 import Language.SMTLib2
 import Language.SMTLib2.Debug
+import Language.SMTLib2.DatatypeEmulator
 import PartialArgs
 import qualified Data.Map as Map
+import Control.Monad.Trans (liftIO)
 
 data Options = Options { showHelp :: Bool
                        , solver :: String
@@ -53,12 +55,11 @@ main = do
              let act = do
                    st0 <- createStateVars "" prog
                    assert $ initialState prog st0
+                   assert $ stateInvariant prog st0
                    bmc prog (incremental opts) (bmcDepth opts) 0 st0 []
              res <- if debug opts
-                    then (do
-                             pipe' <- namedDebugBackend "bmc" pipe
-                             withSMTBackend pipe' act)
-                    else withSMTBackend pipe act
+                    then (withSMTBackend ({-emulateDataTypes $-} namedDebugBackend "bmc" $ pipe) act)
+                    else (withSMTBackend ({-emulateDataTypes-} pipe) act)
              case res of
               Nothing -> putStrLn "No bug found."
               Just bug -> do
@@ -86,6 +87,7 @@ main = do
       (asserts,gts2) <- declareAssertions prog st inp gts1
       res <- if inc
              then stack $ do
+               liftIO $ putStrLn $ "Level "++show n
                assert $ app or' $ fmap not' asserts
                r <- checkSat
                if r
