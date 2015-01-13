@@ -1159,7 +1159,7 @@ buildKarrCFG rev mp trans ((src,trg,vec,c):rest)
 
 sanityCheck :: RealizedBlocks -> IO Bool
 sanityCheck mdl = do
-  pipe <- createSMTPipe "z3" ["-smt2","-in"] >>= namedDebugBackend "sanity"
+  pipe <- createSMTPipe "z3" ["-smt2","-in"] -- >>= namedDebugBackend "sanity"
   withSMTBackend pipe $ do
     (blks,instrs) <- createStateVars "" mdl
     inp@(inpInstrs,lin) <- createInputVars "" mdl
