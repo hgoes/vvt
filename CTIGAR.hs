@@ -220,8 +220,8 @@ runIC3 cfg act = do
   cons <- consecutionNew consBackend
           (do
               cur <- TR.createStateVars "" mdl
-              assert (TR.stateInvariant mdl cur)
               inp <- TR.createInputVars "" mdl
+              assert (TR.stateInvariant mdl inp cur)
               (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
               --assert (blockConstraint nxtBlks)
               (asserts1,real2) <- TR.declareAssertions mdl cur inp real1
@@ -239,8 +239,8 @@ runIC3 cfg act = do
   lifting <- createSMTPool liftingBackend $ do
     setOption (ProduceUnsatCores True)
     cur <- TR.createStateVars "" mdl
-    assert $ TR.stateInvariant mdl cur
     inp <- TR.createInputVars "inp." mdl
+    assert $ TR.stateInvariant mdl inp cur
     (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
     (assumps,real2) <- TR.declareAssumptions mdl cur inp real1
     mapM_ assert assumps
@@ -262,7 +262,7 @@ runIC3 cfg act = do
     (asserts,real2) <- TR.declareAssertions mdl cur inp real1
     (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
     (nxt',rev) <- TR.createRevState "" mdl
-    assertInterp (TR.stateInvariant mdl cur) ante
+    assertInterp (TR.stateInvariant mdl inp cur) ante
     mapM_ (\asump -> assertInterp asump ante) assumps
     mapM_ (\assert -> assertInterp assert ante) asserts
     assertInterp (argEq nxt' nxt) ante
@@ -1256,9 +1256,9 @@ checkFixpoint abs_fp = do
     when incorrectInitial (error "Fixpoint doesn't cover initial condition")
     errorReachable <- stack $ do
       cur <- TR.createStateVars "" mdl
-      assert $ TR.stateInvariant mdl cur
-      assert $ fp cur
       inp <- TR.createInputVars "" mdl
+      assert $ TR.stateInvariant mdl inp cur
+      assert $ fp cur
       (asserts,real0) <- TR.declareAssertions mdl cur inp (TR.startingProgress mdl)
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
@@ -1273,15 +1273,16 @@ checkFixpoint abs_fp = do
     when errorReachable (error "Fixpoint doesn't imply property")
     incorrectFix <- stack $ do
       cur <- TR.createStateVars "" mdl
-      assert $ TR.stateInvariant mdl cur
-      assert $ fp cur
       inp <- TR.createInputVars "" mdl
+      assert $ TR.stateInvariant mdl inp cur
+      assert $ fp cur
       (asserts,real0) <- TR.declareAssertions mdl cur inp (TR.startingProgress mdl)
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
       assert $ app and' assumps
       (nxt,real2) <- TR.declareNextState mdl cur inp Nothing real1
-      assert $ TR.stateInvariant mdl nxt
+      nxt_inp <- TR.createInputVars "" mdl
+      assert $ TR.stateInvariant mdl nxt_inp nxt
       assert $ not' $ fp nxt
       checkSat
     when incorrectFix (error "Fixpoint is doesn't hold in one transition")

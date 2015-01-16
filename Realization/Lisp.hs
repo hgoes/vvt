@@ -149,7 +149,7 @@ parseLispProgram descr = case descr of
                              ) xs
            invar = case Map.lookup "invariant" mp of
              Nothing -> []
-             Just xs -> fmap (\x -> parseLispExpr state Map.empty Map.empty dts
+             Just xs -> fmap (\x -> parseLispExpr state inp Map.empty dts
                                     (Fix BoolSort) x (\y -> case cast y of
                                                              Just y' -> y')
                              ) xs
@@ -309,11 +309,11 @@ instance TransitionRelation LispProgram where
                                      [] -> constant True
                                      xs -> app and' xs
                          in relativize st Map.empty Map.empty expr
-  stateInvariant prog st = let expr = case programInvariant prog of
-                                     [e] -> e
-                                     [] -> constant True
-                                     xs -> app and' xs
-                           in relativize st Map.empty Map.empty expr
+  stateInvariant prog inp st = let expr = case programInvariant prog of
+                                           [e] -> e
+                                           [] -> constant True
+                                           xs -> app and' xs
+                               in relativize st inp Map.empty expr
   startingProgress _ = Map.empty
   declareNextState prog st inp grp gates
     = runStateT (sequence $ Map.mapWithKey

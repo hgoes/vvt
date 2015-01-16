@@ -55,7 +55,7 @@ main = do
              let act = do
                    st0 <- createStateVars "" prog
                    assert $ initialState prog st0
-                   assert $ stateInvariant prog st0
+                   --assert $ stateInvariant prog st0
                    bmc prog (incremental opts) (bmcDepth opts) 0 st0 []
              res <- if debug opts
                     then (withSMTBackend ({-emulateDataTypes $-} namedDebugBackend "bmc" $ pipe) act)

@@ -16,7 +16,7 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
   createStateVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (State t)
   createInputVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (Input t)
   initialState :: t -> State t -> SMTExpr Bool
-  stateInvariant :: t -> State t -> SMTExpr Bool
+  stateInvariant :: t -> Input t -> State t -> SMTExpr Bool
   declareNextState :: (Functor m,MonadIO m) => t -> State t -> Input t -> Maybe InterpolationGroup
                       -> RealizationProgress t
                       -> SMT' m (State t,RealizationProgress t)
