@@ -8,6 +8,8 @@ import qualified Realization.BlockWise as BlockWise
 import qualified Realization.TRGen as TRGen
 import qualified Realization.Lisp as LispP
 import qualified Realization.LispKarr as LispP
+import qualified Realization.Threaded as Threaded
+import qualified Realization.Threaded.Translation as Threaded
 import Options
 import CTIGAR (check)
 import PartialArgs
@@ -66,11 +68,17 @@ getTransitionRelation file opts f = do
                                     , useKarr = optKarr opts
                                     , extraPredicates = optExtraPredicates opts
                                     , verbosity = optVerbosity opts }
-     fun <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
+     (_,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- getModel ropts fun
      f st
+   Threaded -> do
+     (mod,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
+     real <- Threaded.realizeProgram mod fun
+     lisp <- Threaded.toLispProgram real
+     print $ LispP.programToLisp lisp
+     error "Threaded..."
    BlockWise -> do
-     fun <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
+     (_,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- BlockWise.realizeFunction fun
      f st
    TRGen -> do

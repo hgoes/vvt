@@ -54,9 +54,9 @@ main = do
              pipe <- createSMTPipe (solver opts) (solverArgs opts)
              let act = do
                    st0 <- createStateVars "" prog
+                   inp0 <- createInputVars "" prog
                    assert $ initialState prog st0
-                   --assert $ stateInvariant prog st0
-                   bmc prog (incremental opts) (bmcDepth opts) 0 st0 []
+                   bmc prog (incremental opts) (bmcDepth opts) 0 st0 inp0 []
              res <- if debug opts
                     then (withSMTBackend ({-emulateDataTypes $-} namedDebugBackend "bmc" $ pipe) act)
                     else (withSMTBackend ({-emulateDataTypes-} pipe) act)
@@ -69,7 +69,7 @@ main = do
                 putStrLn $ "Bug found:"
                 mapM_ putStrLn pbug)
   where
-    bmc prog inc l n st sts
+    bmc prog inc l n st inp sts
       | n>=l = do
           if inc
             then assert $ not' $ snd $ head sts
@@ -80,8 +80,8 @@ main = do
                  mapM (\(st,_) -> unliftArgs st getValue
                       ) sts
             else return Nothing
-    bmc prog inc l n st sts = do
-      inp <- createInputVars "" prog
+    bmc prog inc l n st inp sts = do
+      assert $ stateInvariant prog inp st
       (assumps,gts1) <- declareAssumptions prog st inp Map.empty
       mapM_ assert assumps
       (asserts,gts2) <- declareAssertions prog st inp gts1
@@ -101,6 +101,7 @@ main = do
        Just bug -> return $ Just bug
        Nothing -> do
          (nxt,gts3) <- declareNextState prog st inp Nothing gts2
-         bmc prog inc l (n+1) nxt ((st,app and' asserts):sts)
+         ninp <- createInputVars "" prog
+         bmc prog inc l (n+1) nxt ninp ((st,app and' asserts):sts)
 
                

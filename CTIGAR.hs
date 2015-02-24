@@ -217,7 +217,7 @@ runIC3 cfg act = do
         Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
         Just stats -> addTiming (interpolationTime stats) (interpolationNum stats)
                       (ic3InterpolationBackend cfg)
-  cons <- consecutionNew consBackend
+  cons <- consecutionNew ({-addDebugging "cons"-} consBackend)
           (do
               cur <- TR.createStateVars "" mdl
               inp <- TR.createInputVars "" mdl
@@ -228,15 +228,18 @@ runIC3 cfg act = do
               (assumps1,real3) <- TR.declareAssumptions mdl cur inp real2
               mapM_ assert assumps1
               nxtInp <- TR.createInputVars "nxt." mdl
-              (asserts2,_) <- TR.declareAssertions mdl nxt nxtInp (TR.startingProgress mdl)
-              mapM assert asserts1
+              (asserts2,real1') <- TR.declareAssertions mdl nxt nxtInp (TR.startingProgress mdl)
+              (assumps2,real2') <- TR.declareAssumptions mdl nxt nxtInp real1'
+              assert (TR.stateInvariant mdl nxtInp nxt)
+              mapM_ assert assumps2
+              mapM_ assert asserts1
               return $ ConsecutionVars { consecutionInput = inp
                                        , consecutionNxtInput = nxtInp
                                        , consecutionState = cur
                                        , consecutionNxtState = nxt
                                        , consecutionNxtAsserts = asserts2 })
           (TR.initialState mdl)
-  lifting <- createSMTPool liftingBackend $ do
+  lifting <- createSMTPool ({-addDebugging "lift"-} liftingBackend) $ do
     setOption (ProduceUnsatCores True)
     cur <- TR.createStateVars "" mdl
     inp <- TR.createInputVars "inp." mdl
@@ -246,10 +249,15 @@ runIC3 cfg act = do
     mapM_ assert assumps
     inp' <- TR.createInputVars "inp.nxt." mdl
     (asserts,real1') <- TR.declareAssertions mdl nxt inp' (TR.startingProgress mdl)
+    (assumps2,real2') <- TR.declareAssumptions mdl nxt inp' real1'
+    assert (TR.stateInvariant mdl inp' nxt)
+    mapM_ assert assumps2
     return $ LiftingState cur inp nxt inp' asserts
   initiation <- createSMTPool initiationBackend $ do
     cur <- TR.createStateVars "" mdl
+    inp <- TR.createInputVars "inp." mdl
     assert $ TR.initialState mdl cur
+    assert $ TR.stateInvariant mdl inp cur
     return cur
   interpolation <- createSMTPool interpBackend' $ do
     setLogic "QF_LIA"
@@ -703,6 +711,8 @@ baseCases st = do
   comment "Assumptions:"
   (assumps0,real0) <- TR.declareAssumptions st cur0 inp0 (TR.startingProgress st)
   mapM_ assert assumps0
+  comment "Invariant:"
+  assert $ TR.stateInvariant st inp0 cur0
   comment "Declare assertions:"
   (asserts0,real1) <- TR.declareAssertions st cur0 inp0 real0
   comment "Declare next state:"
@@ -711,6 +721,8 @@ baseCases st = do
   inp1 <- TR.createInputVars "nxt" st
   comment "Assumptions 2:"
   (assumps1,real0) <- TR.declareAssumptions st cur1 inp1 (TR.startingProgress st)
+  comment "Invariant 2:"
+  assert $ TR.stateInvariant st inp1 cur1
   mapM_ assert assumps1
   comment "Declare assertions 2:"
   (asserts1,_) <- TR.declareAssertions st cur1 inp1 real0
@@ -835,7 +847,10 @@ check st opts = do
       return $ (stateLifted rst):rest
     constructTrace real st [] errs = do
       inps <- TR.createInputVars "" real
-      (ass,_) <- TR.declareAssertions real st inps (TR.startingProgress real)
+      (assumps,real0) <- TR.declareAssumptions real st inps (TR.startingProgress real)
+      (ass,_) <- TR.declareAssertions real st inps real0
+      comment "Assumptions"
+      mapM_ assert assumps
       comment "Assertions"
       assert $ app or' (fmap not' (ass++errs))
       return []

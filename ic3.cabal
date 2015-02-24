@@ -21,3 +21,6 @@ Executable vvt-pp
 Executable vvt-bmc
   Main-Is:              bin/BMC.hs
   Build-Depends:        smtlib2,smtlib2-debug,smtlib2-emulated-datatypes
+
+Executable vvt-enc
+  Main-Is:              bin/Encode.hs

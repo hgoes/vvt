@@ -457,7 +457,7 @@ declareExpr prog state inps gates expr = do
           Just (s,def) -> do
             (ndef,ngates) <- declareExpr prog state inps gates (castUntypedExpr def)
             ndef' <- defConstNamed (T.unpack name) ndef
-            return (ndef',ngates)
+            return (ndef',Map.insert name (UntypedExpr ndef') ngates)
     declareExpr' gates e = return (e,gates)
           
 programToLisp :: LispProgram -> L.Lisp
@@ -472,6 +472,7 @@ programToLisp prog = L.List ([L.Symbol "program"]++
         NormalAccess -> L.Symbol name
         SizeAccess -> L.Symbol (T.append (T.pack "size-") name)
         EntriesAccess -> L.Symbol (T.append (T.pack "entries-") name)
+      Nothing -> error $ "Cannot derelegate object "++show obj
     annLst = renderAnnotation (programAnnotation prog)
     defLst = [L.List $ [L.Symbol "state"]++stateLst
              ,L.List $ [L.Symbol "input"]++inputLst
