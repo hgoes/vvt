@@ -91,7 +91,7 @@ getFunctionName ci = do
   where
     getFunctionName' (castDown -> Just (f::Ptr Function))
       = getNameString f
-    getFunctionName' (castDown -> Just c) = do
+    getFunctionName' (castDown -> Just (c::Ptr ConstantExpr)) = do
       tp <- constantExprGetOpcode c
       case tp of
         CastOp BitCast -> do

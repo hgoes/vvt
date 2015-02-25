@@ -14,6 +14,7 @@ import Language.SMTLib2.Internals hiding (Value)
 
 import LLVM.FFI
 import Foreign.Ptr (Ptr,nullPtr)
+import Foreign.Storable (peek)
 import Data.Monoid
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -23,7 +24,7 @@ import Data.Typeable
 import "mtl" Control.Monad.State (StateT,runStateT,get,put,lift,liftIO,MonadIO)
 import Data.Foldable
 import Data.Traversable
-import Prelude hiding (foldl,sequence,mapM,mapM_)
+import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
 
 data DefinitionState inp = AlwaysDefined (inp -> SMTExpr Bool)
                          | SometimesDefined (inp -> SMTExpr Bool)
@@ -49,7 +50,7 @@ data EdgeCondition inp = EdgeCondition { edgeActivation :: inp -> SMTExpr Bool
                                                      (InstructionValue inp)
                                        }
 
-data Event inp = WriteEvent { target :: Map MemoryLoc (inp -> SMTExpr Bool)
+data Event inp = WriteEvent { target :: Map MemoryPtr (inp -> SMTExpr Bool)
                             , writeContent :: InstructionValue inp }
 
 data Realization inp = Realization { edges :: Map (Maybe (Ptr CallInst),Ptr BasicBlock,Int)
@@ -488,9 +489,12 @@ realizeDefInstruction thread i@(castDown -> Just select) edge real0 = do
 realizeDefInstruction thread i@(castDown -> Just (phi::Ptr PHINode)) edge real0
   = getInstructionValue thread i edge real0
 realizeDefInstruction thread i@(castDown -> Just alloc) edge real0
-  = return (InstructionValue { symbolicType = TpPtr (Map.singleton (Left alloc) ())
-                             , symbolicValue = \_ -> ValPtr (Map.singleton (Left alloc) (constant True))
+  = return (InstructionValue { symbolicType = TpPtr (Map.singleton ptr ())
+                             , symbolicValue = \_ -> ValPtr (Map.singleton ptr (constant True))
                              , alternative = Nothing },real0)
+  where
+    ptr = MemoryPtr { memoryLoc = Left alloc
+                    , staticOffset = [] }
 realizeDefInstruction thread i@(castDown -> Just (trunc::Ptr TruncInst)) edge real0 = do
   val <- getOperand trunc 0
   (rval,real1) <- realizeValue thread val edge real0
@@ -508,6 +512,34 @@ realizeDefInstruction thread i@(castDown -> Just (trunc::Ptr TruncInst)) edge re
                                         , symbolicValue = \inp -> ValBool ((valInt $ symbolicValue rval inp).==.1)
                                         , alternative = Nothing },real1)
     else return (rval,real1)
+realizeDefInstruction thread (castDown -> Just gep) edge real = do
+  ptr <- getElementPtrInstGetPointerOperand gep
+  (ptr',real1) <- realizeValue thread ptr edge real
+  num <- getNumOperands gep
+  ridx <- mapM (\i -> do
+                   idx <- getOperand gep i
+                   case castDown idx of
+                    Just cint -> do
+                      APInt _ val <- constantIntGetValue cint >>= peek
+                      return val
+               ) [1..num-1]
+  return (InstructionValue { symbolicType = case symbolicType ptr' of
+                              TpPtr trgs -> TpPtr $ Map.fromList
+                                            [ (trg { staticOffset = addIdx (staticOffset trg)
+                                                                    ridx
+                                                   },())
+                                            | trg <- Map.keys trgs ]
+                           , symbolicValue = \inp -> case symbolicValue ptr' inp of
+                              ValPtr trgs -> ValPtr $ Map.fromList
+                                             [ (trg { staticOffset = addIdx (staticOffset trg)
+                                                                     ridx
+                                                    },cond)
+                                             | (trg,cond) <- Map.toList trgs ]
+                           , alternative = Nothing },real1)
+  where
+    addIdx [] (0:idx) = idx
+    addIdx [x] (y:ys) = (x+y):ys
+    addIdx (x:xs) ys = x:addIdx xs ys
 realizeDefInstruction _ i _ _ = do
   str <- valueToString i
   error $ "Unknown instruction: "++str
@@ -526,8 +558,11 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs
   where
     allEvents = Map.intersection (events real) (observedEvents edge)
     startVal inp@(ps,_) = let ValPtr trgs = f inp
-                              condMp = Map.intersectionWith (\c val -> (c,val))
-                                       trgs (memory ps)
+                              condMp = Map.mapWithKey
+                                       (\trg cond
+                                         -> (cond,offsetValue ((memory ps) Map.! (memoryLoc trg))
+                                                  (staticOffset trg))
+                                       ) trgs
                           in symITEs $ Map.elems condMp
     val inp = let ValPtr trgs = f inp
               in foldl (\cval ev -> case ev of
@@ -540,8 +575,8 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs
                          _ -> cval
                        ) (startVal inp) (fmap snd $ Map.toAscList allEvents)
     tp = case Map.keys locs of
-      l:_ -> case Map.lookup l (memoryDesc $ stateAnnotation real) of
-        Just t -> t
+      l:_ -> case Map.lookup (memoryLoc l) (memoryDesc $ stateAnnotation real) of
+        Just t -> offsetType t (staticOffset l)
 
 getInstructionValue :: Maybe (Ptr CallInst) -> Ptr Instruction
                     -> Edge (ProgramState,ProgramInput)
@@ -609,10 +644,16 @@ realizeValue thread (castDown -> Just undef) edge real = do
                                                 else const $ ValInt $ constant 0
                               , alternative = Just (IntConst 0) }
 realizeValue thread (castDown -> Just glob) edge real
-  = return (InstructionValue { symbolicType = TpPtr (Map.singleton (Right glob) ())
-                             , symbolicValue = \_ -> ValPtr (Map.singleton (Right glob) (constant True))
+  = return (InstructionValue { symbolicType = TpPtr (Map.singleton ptr ())
+                             , symbolicValue = \_ -> ValPtr (Map.singleton ptr (constant True))
                              , alternative = Nothing
                              },real)
+  where
+    ptr = MemoryPtr { memoryLoc = Right glob
+                    , staticOffset = [] }
+realizeValue thread (castDown -> Just cexpr) edge real = do
+  instr <- constantExprAsInstruction (cexpr::Ptr ConstantExpr)
+  realizeDefInstruction thread instr edge real
 realizeValue thread val edge real = do
   str <- valueToString val
   error $ "Cannot realize value: "++str
@@ -625,10 +666,7 @@ translateType _ (castDown -> Just itp) = do
     _ -> return TpInt
 translateType real (castDown -> Just ptp) = do
   subType <- sequentialTypeGetElementType (ptp::Ptr PointerType) >>= translateType real
-  return $ TpPtr $ Map.mapMaybe (\tp -> if sameType tp subType
-                                        then Just ()
-                                        else Nothing
-                                ) (memoryDesc $ stateAnnotation real)
+  return $ TpPtr $ allPtrsOfType subType (memoryDesc $ stateAnnotation real)
 translateType real (castDown -> Just struct) = do
   name <- structTypeGetName struct >>= stringRefData
   case name of
@@ -670,10 +708,7 @@ typeBasedReachability mem
                      Left alloc -> getType alloc
                      Right global -> getType global
                    rtp <- sequentialTypeGetElementType tp >>= translateType0
-                   return $ TpPtr $ Map.mapMaybe
-                     (\tp' -> if sameType rtp tp'
-                              then Just ()
-                              else Nothing) mem
+                   return $ TpPtr $ allPtrsOfType rtp mem
                  _ -> return tp) mem
 
 threadBasedReachability :: Map (Ptr CallInst) ()
@@ -860,11 +895,15 @@ outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInp
 outputMem real inp
   = foldl (\mem ev -> case ev of
             WriteEvent trgs cont
-              -> Map.differenceWith
-                 (\cur trg -> Just $ symITE (trg inp)
-                              (symbolicValue cont inp)
-                              cur)
-                 mem trgs
+              -> Map.foldlWithKey
+                 (\mem trg cond
+                  -> Map.adjust
+                     (\val -> manipulateValue (\old -> symITE (cond inp)
+                                                       (symbolicValue cont inp)
+                                                       old)
+                              val (staticOffset trg))
+                     (memoryLoc trg) mem
+                 ) mem trgs
           ) mem0 (events real)
   where
     mem0 = memory (fst inp)
@@ -899,3 +938,16 @@ getConstant (castDown -> Just cstruct) = do
 getConstant c = do
   str <- valueToString c
   error $ "getConstant: "++str
+
+allPtrsOfType :: SymType -> Map MemoryLoc SymType -> Map MemoryPtr ()
+allPtrsOfType tp mem
+  = Map.fromList [ (MemoryPtr loc (reverse idx),())
+                 | (loc,tp') <- Map.toList mem
+                 , idx <- allPtrsOfType' tp' [] ]
+  where
+    allPtrsOfType' (TpStruct ts) idx
+      = concat $ zipWith (\t n -> allPtrsOfType' t (n:idx)
+                         ) ts [0..]
+    allPtrsOfType' tp' idx = if sameType tp tp'
+                             then [idx]
+                             else []

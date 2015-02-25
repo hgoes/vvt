@@ -19,7 +19,7 @@ import LLVM.FFI
 import Data.Foldable
 import Data.Traversable
 import Foreign.Ptr (Ptr)
-import Prelude hiding (mapM,mapM_,foldl,sequence)
+import Prelude hiding (mapM,mapM_,foldl,sequence,concat)
 import Data.Typeable
 
 toLispProgram :: Realization (ProgramState,ProgramInput)
@@ -289,6 +289,7 @@ toLispType (TpPtr dest) = [ (Fix BoolSort,Map.empty)
                           | dest <- Map.keys dest ]
 toLispType (TpThreadId ths) = [ (Fix BoolSort,Map.empty)
                               | th <- Map.keys ths ]
+toLispType (TpStruct tps) = concat $ fmap toLispType tps
 
 blockName :: (Ptr BasicBlock,Int) -> IO T.Text
 blockName (blk,sblk) = do
@@ -414,24 +415,33 @@ makeProgramInput threadNames real = do
 
 
 makeVar :: T.Text -> L.LispVarCat -> SymType -> SymVal
-makeVar name cat TpBool = ValBool $ InternalObj (L.LispVar name cat L.NormalAccess) ()
-makeVar name cat TpInt = ValInt $ InternalObj (L.LispVar name cat L.NormalAccess) ()
-makeVar name cat (TpPtr locs)
-  = ValPtr $ snd $ Map.mapAccum
-    (\n _ -> (n+1,InternalObj (L.LispVar
-                               (if n==0
-                                then name
-                                else T.append name (T.pack $ "$"++show n))
-                               cat L.NormalAccess) ())
-    ) 0 locs
-makeVar name cat (TpThreadId ths)
-  = ValThreadId $ snd $ Map.mapAccum
-    (\n _ -> (n+1,InternalObj (L.LispVar
-                               (if n==0
-                                then name
-                                else T.append name (T.pack $ "$"++show n))
-                               cat L.NormalAccess) ())
-    ) 0 ths
+makeVar name cat tp = snd $ makeVar' name 0 cat tp
+
+makeVar' :: T.Text -> Int -> L.LispVarCat -> SymType -> (Int,SymVal)
+makeVar' name n cat TpBool = (n+1,ValBool $ InternalObj (L.LispVar (makeName name n) cat L.NormalAccess) ())
+makeVar' name n cat TpInt = (n+1,ValInt $ InternalObj (L.LispVar (makeName name n) cat L.NormalAccess) ())
+makeVar' name n cat (TpPtr locs)
+  = (n',ValPtr nlocs)
+  where
+    (n',nlocs) = Map.mapAccum
+                 (\n _ -> (n+1,InternalObj (L.LispVar (makeName name n)
+                                            cat L.NormalAccess) ())
+                 ) n locs
+makeVar' name n cat (TpThreadId ths)
+  = (n',ValThreadId nths)
+  where
+    (n',nths) = Map.mapAccum
+                (\n _ -> (n+1,InternalObj (L.LispVar
+                                           (makeName name n)
+                                           cat L.NormalAccess) ())
+                ) n ths
+makeVar' name n cat (TpStruct fs) = (n',ValStruct nfs)
+  where
+    (n',nfs) = mapAccumL (\n -> makeVar' name n cat) n fs
+
+makeName :: T.Text -> Int -> T.Text
+makeName name 0 = name
+makeName name n = T.append name (T.pack $ "$"++show n)
 
 toLispExprs :: GateTranslation -> SymVal -> [(Int,SMTExpr Untyped)]
 toLispExprs trans (ValBool x) = [(0,UntypedExpr $ toLispExpr trans x)]
@@ -442,3 +452,10 @@ toLispExprs trans (ValPtr trgs)
 toLispExprs trans (ValThreadId ths)
   = [ (n,UntypedExpr $ toLispExpr trans th)
     | (n,th) <- zip [0..] (Map.elems ths) ]
+toLispExprs trans (ValStruct fs)
+  = fields 0 fs
+  where
+    fields _ [] = []
+    fields off (f:fs) = let res = toLispExprs trans f
+                        in [ (n+off,e) | (n,e) <- res ]++
+                           fields (off+length res) fs

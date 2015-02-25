@@ -10,23 +10,27 @@ import qualified Data.Map as Map
 import LLVM.FFI
 import Foreign.Ptr (Ptr)
 import Data.Typeable
-import Data.List (mapAccumL)
+import Data.List (mapAccumL,genericIndex)
 
 data SymVal = ValBool { valBool :: SMTExpr Bool }
             | ValInt { valInt :: SMTExpr Integer }
-            | ValPtr { valPtr :: Map MemoryLoc (SMTExpr Bool) }
+            | ValPtr { valPtr :: Map MemoryPtr (SMTExpr Bool) }
             | ValThreadId { valThreadId :: Map (Ptr CallInst) (SMTExpr Bool) }
             | ValStruct { valStruct :: [SymVal] }
             deriving (Eq,Ord,Show,Typeable)
 
 data SymType = TpBool
              | TpInt
-             | TpPtr { tpPtr :: Map MemoryLoc () }
+             | TpPtr { tpPtr :: Map MemoryPtr () }
              | TpThreadId { tpThreadId :: Map (Ptr CallInst) () }
              | TpStruct { tpStruct :: [SymType] }
              deriving (Eq,Ord,Show,Typeable)
 
 type MemoryLoc = Either (Ptr AllocaInst) (Ptr GlobalVariable)
+
+data MemoryPtr = MemoryPtr { memoryLoc :: MemoryLoc
+                           , staticOffset :: [Integer]
+                           } deriving (Eq,Ord,Show,Typeable)
 
 sameType :: SymType -> SymType -> Bool
 sameType TpBool TpBool = True
@@ -96,6 +100,23 @@ addSymGate gts (TpStruct tps) f name
                                   in ((ngts,n+1),val)
                               ) (gts,0) tps
 
+offsetValue :: SymVal -> [Integer] -> SymVal
+offsetValue (ValStruct xs) (n:ns) = offsetValue (xs `genericIndex` n) ns
+offsetValue val [] = val
+offsetValue v idx = error $ "offsetValue: Cannot offset value "++show v++" with "++show idx
+
+offsetType :: SymType -> [Integer] -> SymType
+offsetType (TpStruct tps) (n:ns) = offsetType (tps `genericIndex` n) ns
+offsetType tp [] = tp
+
+manipulateValue :: (SymVal -> SymVal) -> SymVal -> [Integer] -> SymVal
+manipulateValue f (ValStruct xs) (n:ns)
+  = ValStruct $ changeAt n f xs
+  where
+    changeAt 0 f (x:xs) = f x:xs
+    changeAt n f (x:xs) = x:changeAt (n-1) f xs
+manipulateValue f val [] = f val
+
 instance Args SymVal where
   type ArgAnnotation SymVal = SymType
   foldExprs f s ~(ValBool e) TpBool = do
@@ -159,7 +180,7 @@ instance Args SymVal where
     return (ValStruct vals,rest)
   getTypes _ TpBool = [ProxyArg (undefined::Bool) ()]
   getTypes _ TpInt = [ProxyArg (undefined::Integer) ()]
-  getTypes _ (TpPtr trgs) = getTypes (undefined::Map (Either (Ptr AllocaInst) (Ptr GlobalVariable)) (SMTExpr Bool)) trgs
+  getTypes _ (TpPtr trgs) = getTypes (undefined::Map MemoryPtr (SMTExpr Bool)) trgs
   getTypes _ (TpThreadId ths) = getTypes (undefined::Map (Ptr CallInst) (SMTExpr Bool)) ths
   getTypes u (TpStruct tps) = concat $ fmap (getTypes u) tps
   fromArgs (ValBool e) = [UntypedExpr e]
