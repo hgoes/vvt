@@ -6,13 +6,14 @@ Build-Type:     Simple
 Executable hctigar
   Main-Is:              Main.hs
   Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
-                        smtlib2,smtlib2-debug,smtlib2-timing,
-                        array,resource-pool,mtl,bytestring,attoparsec<0.11,atto-lisp,text,time,linear,data-fix
+                        smtlib2,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,
+                        array,resource-pool,mtl,bytestring,attoparsec<0.11,
+                        atto-lisp,text,time,linear,data-fix,constraints
   GHC-Options:          -threaded -fwarn-unused-imports
 
-Executable vvt-karr
-  Main-Is:              bin/Karr.hs
-  Build-Depends:        base,vector,smtlib2
+--Executable vvt-karr
+--  Main-Is:              bin/Karr.hs
+--  Build-Depends:        base,vector,smtlib2
 
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs

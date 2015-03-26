@@ -3,13 +3,13 @@ module Options where
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 
-data Options = Options { optBackendCons :: String
-                       , optBackendLifting :: String
-                       , optBackendDomain :: String
-                       , optBackendBase :: String
-                       , optBackendInit :: String
-                       , optBackendInterp :: String
+data Options = Options { optBackend :: Map BackendType String
+                       , optDebugBackend :: Set BackendType
                        , optEncoding :: Encoding
                        , optOptimizeTR :: Bool
                        , optFunction :: String
@@ -28,13 +28,38 @@ data Encoding = Monolithic
               | Lisp
               | Threaded
 
+data BackendType = ConsecutionBackend
+                 | Lifting
+                 | Domain
+                 | Base
+                 | Initiation
+                 | Interpolation
+                 deriving (Eq,Ord)
+
+instance Show BackendType where
+  show ConsecutionBackend = "cons"
+  show Lifting = "lifting"
+  show Domain = "domain"
+  show Initiation = "init"
+  show Interpolation = "interp"
+
+instance Read BackendType where
+  readsPrec _ ('c':'o':'n':'s':rest) = [(ConsecutionBackend,rest)]
+  readsPrec _ ('l':'i':'f':'t':'i':'n':'g':rest) = [(Lifting,rest)]
+  readsPrec _ ('d':'o':'m':'a':'i':'n':rest) = [(Domain,rest)]
+  readsPrec _ ('i':'n':'i':'t':rest) = [(Initiation,rest)]
+  readsPrec _ ('i':'n':'t':'e':'r':'p':rest) = [(Interpolation,rest)]
+  readsPrec _ _ = []
+
 defaultOptions :: Options
-defaultOptions = Options { optBackendCons = z3
-                         , optBackendLifting = z3
-                         , optBackendDomain = z3
-                         , optBackendBase = z3
-                         , optBackendInit = z3
-                         , optBackendInterp = mathsat
+defaultOptions = Options { optBackend = Map.fromList
+                                        [(ConsecutionBackend,z3)
+                                        ,(Lifting,z3)
+                                        ,(Domain,z3)
+                                        ,(Base,z3)
+                                        ,(Initiation,z3)
+                                        ,(Interpolation,mathsat)]
+                         , optDebugBackend = Set.empty
                          , optOptimizeTR = False
                          , optEncoding = Monolithic
                          , optFunction = "main"
@@ -66,24 +91,16 @@ allOpts
                                "threaded" -> Threaded
                             }) "name")
      "Choose an encoding for the transition relation:\n  monolithic - Translate the whole program graph into one step (default)\n  blockwise - Each LLVM block is its own step\n  trgen - Use the original CTIGAR encoding"
-    ,Option [] ["backend-cons"]
-     (ReqArg (\b opt -> opt { optBackendCons = b }) "cmd")
-     "The SMT solver used for consecution calls [default: z3]"
-    ,Option [] ["backend-lifting"]
-     (ReqArg (\b opt -> opt { optBackendLifting = b }) "cmd")
-     "The SMT solver used for lifting calls [default: z3]"
-    ,Option [] ["backend-domain"]
-     (ReqArg (\b opt -> opt { optBackendDomain = b }) "cmd")
-     "The SMT solver used for abstraction calls [default: z3]"
-    ,Option [] ["backend-base"]
-     (ReqArg (\b opt -> opt { optBackendBase = b }) "cmd")
-     "The SMT solver used for base case feasibility [default: z3]"
-    ,Option [] ["backend-init"]
-     (ReqArg (\b opt -> opt { optBackendInit = b }) "cmd")
-     "The SMT solver used for initiation checks [default: z3]"
-    ,Option [] ["backend-interp"]
-     (ReqArg (\b opt -> opt { optBackendInterp = b }) "cmd")
-     "The SMT solver used for interpolation [default: mathsat]"
+    ,Option [] ["backend"]
+     (ReqArg (\b opt -> case readsPrec 0 b of
+               [(backend,':':solver)] -> opt { optBackend = Map.insert backend solver
+                                                            (optBackend opt) }) "<backend>:solver")
+     "The SMT solver used for the specified backend."
+    ,Option [] ["debug-backend"]
+     (ReqArg (\b opt -> case readsPrec 0 b of
+               [(backend,[])] -> opt { optDebugBackend = Set.insert backend (optDebugBackend opt)
+                                     }) "<backend>")
+     "Output the communication with the specified backend solver."
     ,Option ['t'] ["timeout"]
      (ReqArg (\t opt -> opt { optTimeout = Just $ parseTime t }) "time")
      "Abort the solver after a specified timeout"
@@ -141,6 +158,8 @@ showHelp = do
     usageInfo
     (unlines ["USAGE: hctigar <file>"
              ,"       where <file> is an LLVM bitcode file."
+             ,""
+             ,"  <backend> can be \"cons\", \"lifting\", \"domain\", \"init\" or \"interp\"."
              ]
     ) allOpts
   exitWith ExitSuccess

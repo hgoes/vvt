@@ -12,6 +12,7 @@ import qualified Data.Map as Map
 
 data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , entryPoints :: Map (Ptr BasicBlock,Int) ()
+                             , threadArg :: Maybe (Ptr Argument,Ptr Type)
                              , spawnQuantity :: Quantity
                              }
 
@@ -29,6 +30,7 @@ getProgramInfo mod mainFun = do
   applyLocs mainLocs
     (ProgramInfo { mainThread = ThreadInfo { blockOrder = order
                                            , entryPoints = entries
+                                           , threadArg = Nothing
                                            , spawnQuantity = Finite 1 }
                  , threads = Map.empty
                  , allocations = Map.empty })
@@ -44,9 +46,11 @@ getProgramInfo mod mainFun = do
          Nothing -> do
            (entries,order) <- getSlicing fun
            nlocs <- getThreadSpawns' mod fun
+           arg <- getThreadArgument fun
            applyLocs (locs++(fmap (\l -> l { quantity = (quantity l)*n }) nlocs))
              (pi { threads = Map.insert inst (ThreadInfo { blockOrder = order
                                                          , entryPoints = entries
+                                                         , threadArg = arg
                                                          , spawnQuantity = n })
                              (threads pi) })
     applyLocs ((AllocationLocation { allocInstruction = inst

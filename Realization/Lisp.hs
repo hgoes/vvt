@@ -1,38 +1,42 @@
-{-# LANGUAGE OverloadedStrings,DeriveDataTypeable,RankNTypes,TypeFamilies,ViewPatterns,
-             ScopedTypeVariables,GADTs#-}
+{-# LANGUAGE DeriveDataTypeable,OverloadedStrings,RankNTypes,ScopedTypeVariables,
+             ViewPatterns,GADTs,TypeFamilies #-}
 module Realization.Lisp where
 
 import Realization
-import PartialArgs
+import Realization.Lisp.Value
+--import PartialArgs
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals
 import Language.SMTLib2.Internals.Instances
 import Language.SMTLib2.Pipe
+import Data.Unit
+
 import Data.Map (Map)
 import qualified Data.Map as Map
-
-import qualified Data.AttoLisp as L
-import Data.Attoparsec
 import qualified Data.Text as T
-import qualified Data.ByteString as BS
-import System.IO (Handle)
+import qualified Data.AttoLisp as L
 import Data.Typeable
 import Data.Fix
-import Prelude hiding (sequence,mapM)
-import Data.Traversable
-import Control.Monad.State (runStateT,get,put,lift)
-import Data.List (genericLength,intercalate)
 import Data.Monoid
-import Data.Maybe (mapMaybe)
+import qualified Data.ByteString as BS
+import System.IO (Handle)
+import Data.Attoparsec
+import Data.Traversable
+import Prelude hiding (mapM,sequence)
+import Control.Monad.State (runStateT,get,put,lift)
+import Data.List (genericIndex)
+import Control.Monad (mplus)
+import Control.Exception
+import Debug.Trace
 
 data LispProgram
   = LispProgram { programAnnotation :: Annotation
                 , programDataTypes :: DataTypeInfo
-                , programState :: Map T.Text (Sort,Annotation)
-                , programInput :: Map T.Text (Sort,Annotation)
-                , programGates :: Map T.Text (Sort,SMTExpr Untyped)
-                , programNext :: Map T.Text (SMTExpr Untyped)
+                , programState :: Map T.Text (LispType,Annotation)
+                , programInput :: Map T.Text (LispType,Annotation)
+                , programGates :: Map T.Text (LispType,LispVar)
+                , programNext :: Map T.Text LispVar
                 , programProperty :: [SMTExpr Bool]
                 , programInitial :: [SMTExpr Bool]
                 , programInvariant :: [SMTExpr Bool]
@@ -42,45 +46,28 @@ data LispProgram
 
 type Annotation = Map T.Text L.Lisp
 
-data LispVar = LispVar T.Text LispVarCat LispVarAccess
-             deriving (Eq,Ord,Show,Typeable)
-
 data LispVarCat = Input | State | Gate deriving (Eq,Ord,Show,Typeable)
 
-data LispVarAccess = NormalAccess | SizeAccess | EntriesAccess deriving (Eq,Ord,Show,Typeable)
+data LispVar = NamedVar T.Text LispVarCat LispType
+             | LispStore LispVar [Integer] [SMTExpr Integer] (SMTExpr Untyped)
+             | LispConstr LispValue
+             | LispITE (SMTExpr Bool) LispVar LispVar
+             deriving (Eq,Ord,Show,Typeable)
 
-data LispExpr a where
-  NormalExpr :: SMTValue a => SMTExpr a -> LispExpr a
-  ArrayExpr :: SMTValue a => SMTExpr Integer -> SMTExpr (SMTArray (SMTExpr Integer) a) -> LispExpr (CArray a)
-  deriving Typeable
+data LispVarAccess = LispVarAccess LispVar [Integer] [SMTExpr Integer]
+                   | LispSizeAccess LispVar [SMTExpr Integer]
+                   | LispSizeArrAccess LispVar Integer
+                   | LispEq LispVar LispVar
+                   deriving (Eq,Ord,Show,Typeable)
 
-data LispType a where
-  NormalType :: SMTValue a => SMTAnnotation a -> LispType a
-  ArrayType :: SMTValue a => SMTAnnotation a -> LispType (CArray a)
-  deriving Typeable
+data LispException = LispException LispAction SomeException deriving Typeable
 
-data LispValue a where
-  NormalValue :: SMTValue t => t -> LispValue t
-  ArrayValue :: SMTValue t => [t] -> LispValue (CArray t)
-
-data LispPValue a where
-  NormalPValue :: SMTValue t => Maybe t -> LispPValue t
-  ArrayPValue :: SMTValue t => Bool -> [Maybe t] -> LispPValue (CArray t)
-  deriving (Typeable)
-
-data AnyLispExpr = forall a. SMTValue a => AnyLispExpr { anyLispExpr :: LispExpr a }
-                   deriving (Typeable)
-
-data AnyLispType = forall a. SMTValue a => AnyLispType (LispType a)
-                   deriving (Typeable)
-
-data AnyLispValue = forall a. SMTValue a => AnyLispValue (LispValue a)
-                    deriving (Typeable)
-
-data AnyLispPValue = forall a. SMTValue a => AnyLispPValue (LispPValue a)
-                     deriving (Typeable)
-
-data CArray a = CArray { cArrayEntries :: [a] } deriving (Eq,Ord,Show,Typeable)
+data LispAction = TranslateGate T.Text
+                | DeclareNextState T.Text
+                | CreateInput T.Text
+                | CreateInvariant
+                | Parsing L.Lisp
+                deriving Typeable
 
 readLispFile :: Handle -> IO L.Lisp
 readLispFile h = do
@@ -97,7 +84,7 @@ parseLispProgram descr = case descr of
   L.List (L.Symbol "program":elems)
     -> let (ann,elems') = parseAnnotation elems Map.empty
            mp = Map.fromList [ (key,defs) | L.List (L.Symbol key:defs) <- elems ]
-           dts = addDataTypeStructure tcCArray emptyDataTypeInfo
+           dts = emptyDataTypeInfo
            state = case Map.lookup "state" mp of
                     Just sts -> parseVarMap sts
                     Nothing -> Map.empty
@@ -107,9 +94,12 @@ parseLispProgram descr = case descr of
            gates = case Map.lookup "gates" mp of
              Just gts -> let gts' = fmap (\gt -> case gt of
                                            L.List [L.Symbol name,sort,def]
-                                             -> (name,case lispToSort sort of
-                                                       Nothing -> error $ "Failed to parse sort "++show sort
-                                                       Just srt -> (srt,parseLispExpr state inp gates dts srt def UntypedExpr))
+                                             -> (name,case parseLispType sort of
+                                                       Just srt -> case parseLispTopVar state inp gates def of
+                                                         Just var -> (srt,var)
+                                                         Nothing -> error $ "Failed to parse gate definition: "++show def
+                                                       Nothing -> error $ "Failed to parse sort: "++show sort
+                                                )
                                            _ -> error $ "Failed to parse gate: "++show gt
                                          ) gts
                          in Map.fromList gts'
@@ -117,51 +107,35 @@ parseLispProgram descr = case descr of
            next = case Map.lookup "next" mp of
              Just nxts -> let nxts' = fmap (\nxt -> case nxt of
                                              L.List [L.Symbol name,def]
-                                               -> let (rname,acc) = case T.stripPrefix "size-" name of
-                                                                     Just name -> (name,SizeAccess)
-                                                                     Nothing -> case T.stripPrefix "entries-" name of
-                                                                       Just name -> (name,EntriesAccess)
-                                                                       Nothing -> (name,NormalAccess)
-                                                  in case Map.lookup rname state of
-                                                      Just (sort,_)
-                                                        -> let rsort = case sort of
-                                                                 Fix (NamedSort "CArray" [s]) -> case acc of
-                                                                   SizeAccess -> Fix IntSort
-                                                                   EntriesAccess -> Fix $ ArraySort [Fix IntSort] s
-                                                                 _ -> sort
-                                                           in (name,parseLispExpr state inp gates dts rsort def
-                                                                    (\(expr::SMTExpr a) -> case cast expr of
-                                                                                            Just expr' -> UntypedExpr (expr'::SMTExpr a))
-                                                              )
+                                               -> case parseLispTopVar state inp gates def of
+                                                   Just var -> (name,var)
                                              _ -> error $ "Failed to parse next expression: "++show nxt
                                            ) nxts
                           in Map.fromList nxts'
            prop = case Map.lookup "property" mp of
              Nothing -> []
-             Just xs -> fmap (\x -> parseLispExpr state inp gates dts (Fix BoolSort) x (\y -> case cast y of
-                                                                                                       Just y' -> y')
+             Just xs -> fmap (\x -> case parseLispExpr' state inp gates cast x of
+                               Just (Just y) -> y
                              ) xs
            init = case Map.lookup "initial" mp of
              Nothing -> []
-             Just xs -> fmap (\x -> parseLispExpr state Map.empty Map.empty dts
-                                    (Fix BoolSort) x (\y -> case cast y of
-                                                             Just y' -> y')
+             Just xs -> fmap (\x -> case parseLispExpr' state Map.empty Map.empty cast x of
+                               Just (Just y) -> y
                              ) xs
            invar = case Map.lookup "invariant" mp of
              Nothing -> []
-             Just xs -> fmap (\x -> parseLispExpr state inp Map.empty dts
-                                    (Fix BoolSort) x (\y -> case cast y of
-                                                             Just y' -> y')
+             Just xs -> fmap (\x -> case parseLispExpr' state inp Map.empty cast x of
+                               Just (Just y) -> y
                              ) xs
            assume = case Map.lookup "assumption" mp of
              Nothing -> []
-             Just xs -> fmap (\x -> parseLispExpr state inp gates dts (Fix BoolSort) x (\y -> case cast y of
-                                                                                                       Just y' -> y')
+             Just xs -> fmap (\x -> case parseLispExpr' state inp gates cast x of
+                               Just (Just y) -> y
                              ) xs
            preds = case Map.lookup "predicate" mp of
              Nothing -> []
-             Just xs -> fmap (\x -> parseLispExpr state Map.empty Map.empty dts (Fix BoolSort) x (\y -> case cast y of
-                                                                                                         Just y' -> y')
+             Just xs -> fmap (\x -> case parseLispExpr' state Map.empty Map.empty cast x of
+                               Just (Just y) -> y
                              ) xs
        in LispProgram { programAnnotation = ann
                       , programDataTypes = dts
@@ -180,7 +154,7 @@ parseLispProgram descr = case descr of
                       fmap (\st -> case st of
                                     L.List def -> case parseAnnotation def Map.empty of
                                       (ann,[L.Symbol name,sort])
-                                        -> case lispToSort sort of
+                                        -> case parseLispType sort of
                                             Nothing -> error $ "Failed to parse sort "++show sort
                                             Just srt -> (name,(srt,ann))
                            ) lst
@@ -192,6 +166,47 @@ parseLispProgram descr = case descr of
         [] -> error $ "Key "++show name++" is missing a value"
       _ -> let (res,unparsed) = parseAnnotation xs cur
            in (res,x:unparsed)
+
+programToLisp :: LispProgram -> L.Lisp
+programToLisp prog = L.List ([L.Symbol "program"]++
+                             annLst++
+                             defLst)
+  where
+    renderAnnotation mp = concat [ [L.Symbol $ T.cons ':' key,entr]
+                                 | (key,entr) <- Map.toList mp ]
+    annLst = renderAnnotation (programAnnotation prog)
+    defLst = [L.List $ [L.Symbol "state"]++stateLst
+             ,L.List $ [L.Symbol "input"]++inputLst
+             ,L.List $ [L.Symbol "gates"]++gatesLst
+             ,L.List $ [L.Symbol "next"]++nextLst
+             ,L.List $ [L.Symbol "property"]++propLst
+             ,L.List $ [L.Symbol "initial"]++initLst
+             ,L.List $ [L.Symbol "invariant"]++invarLst
+             ,L.List $ [L.Symbol "assumption"]++assumpLst
+             ,L.List $ [L.Symbol "predicate"]++predLst]
+    stateLst = [ L.List $ [L.Symbol name
+                          ,printLispType sort]++renderAnnotation ann
+               | (name,(sort,ann)) <- Map.toList (programState prog) ]
+    inputLst = [ L.List $ [L.Symbol name
+                          ,printLispType sort]++renderAnnotation ann
+               | (name,(sort,ann)) <- Map.toList (programInput prog) ]
+    gatesLst = [ L.List [L.Symbol name
+                        ,printLispType sort
+                        ,printLispVar (programDataTypes prog) gate]
+               | (name,(sort,gate)) <- Map.toList (programGates prog) ]
+    nextLst = [ L.List [L.Symbol name
+                       ,printLispVar (programDataTypes prog) def]
+              | (name,def) <- Map.toList (programNext prog) ]
+    propLst = fmap (printLispExpr (programDataTypes prog)
+                   ) (programProperty prog)
+    initLst = fmap (printLispExpr (programDataTypes prog)
+                   ) (programInitial prog)
+    invarLst = fmap (printLispExpr (programDataTypes prog)
+                    ) (programInvariant prog)
+    assumpLst = fmap (printLispExpr (programDataTypes prog)
+                     ) (programAssumption prog)
+    predLst = fmap (printLispExpr (programDataTypes prog)
+                   ) (programPredicates prog)
 
 exactlyOne :: SMTFunction [SMTExpr Bool] Bool
 exactlyOne = SMTBuiltIn "exactly-one" ()
@@ -207,51 +222,307 @@ exactlyOneParser
                              , deriveRetSort = \_ -> Just (Fix BoolSort)
                              , parseOverloaded = \_ _ app -> Just (app exactlyOne) }
 
-parseLispExpr :: Map T.Text (Sort,Annotation) -> Map T.Text (Sort,Annotation)
-              -> Map T.Text (Sort,SMTExpr Untyped) -> DataTypeInfo -> Sort -> L.Lisp
-              -> (forall a. SMTType a => SMTExpr a -> b) -> b
-parseLispExpr state inps gates dts sort expr app
-  = case lispToExpr (commonFunctions `mappend` exactlyOneParser)
-         (\txt -> let (name,acc) = case T.stripPrefix "size-" txt of
-                        Nothing -> case T.stripPrefix "entries-" txt of
-                          Nothing -> (txt,NormalAccess)
-                          Just name' -> (name',EntriesAccess)
-                        Just name' -> (name',SizeAccess)
-                  in case Map.lookup name state of
-                   Just (sort',_) -> withLispSort dts sort' acc $
-                                     \u ann -> Just (InternalObj (LispVar name State acc)
-                                                     (ProxyArg u ann))
-                   Nothing -> case Map.lookup name inps of
-                     Just (sort',_) -> withLispSort dts sort' acc $
-                                       \u ann -> Just (InternalObj (LispVar name Input acc)
-                                                       (ProxyArg u ann))
-                     Nothing -> case Map.lookup txt gates of
-                       Just (sort',_) -> withLispSort dts sort' acc $
-                                         \u ann -> Just (InternalObj (LispVar name Gate acc)
-                                                         (ProxyArg u ann))
-                       Nothing -> Nothing)
-         dts app
-         (Just sort) 0 expr of
-     Just expr' -> expr'
-     Nothing -> error $ "Failed to parse expression "++show expr
+parseLispType :: L.Lisp -> Maybe LispType
+parseLispType (L.List [L.Symbol "array",
+                       L.Number n,
+                       tp]) = do
+  rtp <- parseLispStructType tp
+  return $ LispType (round n) rtp
+parseLispType tp = do
+  rtp <- parseLispStructType tp
+  return $ LispType 0 rtp
 
-relativize :: SMTType a => Map T.Text AnyLispExpr
-           -> Map T.Text (SMTExpr UntypedValue)
-           -> Map T.Text (SMTExpr UntypedValue)
+parseLispStructType :: L.Lisp -> Maybe (LispStruct Sort)
+parseLispStructType (L.List (L.Symbol "struct":tps)) = do
+  rtps <- mapM parseLispStructType tps
+  return $ Struct rtps
+parseLispStructType tp = do
+  rtp <- lispToSort tp
+  return $ Singleton rtp
+
+printLispType :: LispType -> L.Lisp
+printLispType (LispType n tp) = case n of
+  0 -> tp'
+  _ -> L.List [L.Symbol "array",
+               L.Number (fromIntegral n),
+               tp']
+  where
+    tp' = printLispStructType tp
+    printLispStructType (Singleton sort) = sortToLisp sort
+    printLispStructType (Struct tps) = L.List (L.Symbol "struct":fmap printLispStructType tps)
+
+parseLispVarCat :: Map T.Text (LispType,Annotation)
+                -> Map T.Text (LispType,Annotation)
+                -> Map T.Text (LispType,LispVar)
+                -> L.Lisp
+                -> Maybe (T.Text,LispVarCat,LispType)
+parseLispVarCat state inps gts (L.Symbol name)
+  = case Map.lookup name state of
+     Just (tp,_) -> return (name,State,tp)
+     Nothing -> case Map.lookup name inps of
+       Just (tp,_) -> return (name,Input,tp)
+       Nothing -> case Map.lookup name gts of
+         Just (tp,_) -> return (name,Gate,tp)
+         Nothing -> Nothing
+parseLispVarCat _ _ _ _ = Nothing
+
+parseLispTopVar :: Map T.Text (LispType,Annotation)
+                -> Map T.Text (LispType,Annotation)
+                -> Map T.Text (LispType,LispVar)
+                -> L.Lisp
+                -> Maybe LispVar
+parseLispTopVar state inps gts lisp
+  = parseLispVar state inps gts lisp
+    `mplus`
+    (do
+        res <- parseLispExpr' state inps gts
+               (\(expr::SMTExpr t)
+                -> let sort = getSort (undefined::t) (extractAnnotation expr)
+                   in withIndexableSort (undefined::SMTExpr Integer) sort $
+                      \(_::u) -> case cast expr of
+                                  Just res -> Val (res::SMTExpr u)) lisp
+        return (LispConstr $ LispValue (Size []) (Singleton res)))
+
+parseLispVar :: Map T.Text (LispType,Annotation)
+             -> Map T.Text (LispType,Annotation)
+             -> Map T.Text (LispType,LispVar)
+             -> L.Lisp
+             -> Maybe LispVar
+parseLispVar state inps gts (L.List (L.List (L.Symbol "_":L.Symbol "store":stat):
+                                     expr:val:dyns)) = do
+  expr' <- parseLispVar state inps gts expr
+  stat' <- mapM (L.parseMaybe L.parseLisp) stat
+  val' <- parseLispExpr' state inps gts UntypedExpr val
+  dyns' <- mapM (parseLispExpr' state inps gts (\e -> case cast e of
+                                                 Just e' -> e')
+                ) dyns
+  return $ LispStore expr' stat' dyns' val'
+parseLispVar state inps gts (L.List [L.List [L.Symbol "_",L.Symbol "ite"]
+                                    ,cond,ifT,ifF]) = do
+  cond' <- parseLispExpr' state inps gts (\e -> case cast e of
+                                                 Just e' -> e') cond
+  ifT' <- parseLispVar state inps gts ifT
+  ifF' <- parseLispVar state inps gts ifF
+  return (LispITE cond' ifT' ifF')
+parseLispVar state inps gts lisp
+  = (do
+        (name,cat,tp) <- parseLispVarCat state inps gts lisp
+        return $ NamedVar name cat tp)
+    `mplus`
+    (do
+        val <- parseLispValue state inps gts lisp
+        return $ LispConstr val)
+
+lispVarType :: LispVar -> LispType
+lispVarType (NamedVar _ _ tp) = tp
+lispVarType (LispStore v _ _ _) = lispVarType v
+lispVarType (LispConstr val) = extractArgAnnotation val
+lispVarType (LispITE _ ifT _) = lispVarType ifT
+
+parseLispVarAccess :: Map T.Text (LispType,Annotation)
+                   -> Map T.Text (LispType,Annotation)
+                   -> Map T.Text (LispType,LispVar)
+                   -> L.Lisp
+                   -> Maybe LispVarAccess
+parseLispVarAccess state inps gts (L.List (L.List (L.Symbol "_":L.Symbol "select":stat):
+                                           expr:dyns)) = do
+  stat' <- mapM (L.parseMaybe L.parseLisp) stat
+  expr' <- parseLispVar state inps gts expr
+  dyns' <- mapM (parseLispExpr' state inps gts (\e -> case cast e of
+                                                       Just e' -> e')
+                ) dyns
+  return $ LispVarAccess expr' stat' dyns'
+parseLispVarAccess state inps gts (L.List (L.List [L.Symbol "_",L.Symbol "size"]:
+                                           expr:dyns)) = do
+  expr' <- parseLispVar state inps gts expr
+  dyns' <- mapM (parseLispExpr' state inps gts (\e -> case cast e of
+                                                       Just e' -> e')
+                ) dyns
+  return $ LispSizeAccess expr' dyns'
+parseLispVarAccess state inps gts (L.List [L.List [L.Symbol "_",
+                                                   L.Symbol "size-arrr",
+                                                   n],
+                                           expr]) = do
+  n' <- L.parseMaybe L.parseLisp n
+  expr' <- parseLispVar state inps gts expr
+  return $ LispSizeArrAccess expr' n'
+parseLispVarAccess state inps gts (L.List [L.List [L.Symbol "_",
+                                                   L.Symbol "eq"],
+                                           var1,var2]) = do
+  expr1 <- parseLispTopVar state inps gts var1
+  expr2 <- parseLispTopVar state inps gts var2
+  return $ LispEq expr1 expr2
+parseLispVarAccess state inps gts lisp = do
+  expr <- parseLispVar state inps gts lisp
+  return $ LispVarAccess expr [] []
+
+lispVarAccessType :: LispVarAccess -> Sort
+lispVarAccessType (LispVarAccess expr stat _) = indexType (lispVarType expr) stat
+lispVarAccessType (LispSizeAccess _ _) = Fix IntSort
+lispVarAccessType (LispSizeArrAccess _ n)
+  = foldl (\tp _ -> Fix (ArraySort [Fix IntSort] tp)) (Fix IntSort) [1..n]
+lispVarAccessType (LispEq _ _) = Fix BoolSort
+
+parseLispValue :: Map T.Text (LispType,Annotation)
+               -> Map T.Text (LispType,Annotation)
+               -> Map T.Text (LispType,LispVar)
+               -> L.Lisp
+               -> Maybe LispValue
+parseLispValue state inps gates (L.List [L.Symbol "value"
+                                        ,L.List sizes
+                                        ,struct]) = do
+  rsizes <- mapM (\(i,lsp) -> parseSize i lsp) (zip [0..] sizes)
+  rstruct <- parseStruct struct
+  return (LispValue (Size rsizes) rstruct)
+  where
+    parseSize i lsp = withLeveledArray (undefined::Integer) (undefined::SMTExpr Integer) i $
+                      \(_::t) -> case parseLispExpr' state inps gates cast lsp of
+                                  Just (Just e) -> Just (SizeElement (e::SMTExpr t))
+                                  _ -> Nothing
+    parseStruct (L.List (L.Symbol "struct":xs)) = do
+      xs' <- mapM parseStruct xs
+      return $ Struct xs'
+    parseStruct lsp = parseLispExpr' state inps gates
+                      (\(expr::SMTExpr t)
+                       -> let ann = extractAnnotation expr
+                              sort = getSort (undefined::t) ann
+                              (lvl,rsort) = derefSort 0 sort
+                          in withIndexableSort (undefined::SMTExpr Integer) rsort $
+                             \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
+                                    \(_::u) -> case cast expr of
+                                                Just e -> Singleton (Val (e::SMTExpr u))
+                      ) lsp
+parseLispValue _ _ _ _ = Nothing
+
+derefSort :: Integer -> Sort -> (Integer,Sort)
+derefSort lvl (Fix (ArraySort _ el)) = derefSort (lvl+1) el
+derefSort lvl sort = (lvl,sort)
+
+parseLispExpr' :: Map T.Text (LispType,Annotation)
+               -> Map T.Text (LispType,Annotation)
+               -> Map T.Text (LispType,LispVar)
+               -> (forall a. SMTType a => SMTExpr a -> b)
+               -> L.Lisp
+               -> Maybe b
+parseLispExpr' state inps gates app
+  = parseLispExpr state inps gates (commonFunctions `mappend` exactlyOneParser)
+    (const Nothing)
+    emptyDataTypeInfo
+    app
+    Nothing
+    0
+
+parseLispExpr :: Map T.Text (LispType,Annotation)
+              -> Map T.Text (LispType,Annotation)
+              -> Map T.Text (LispType,LispVar)
+              -> FunctionParser
+              -> (T.Text -> Maybe (SMTExpr Untyped))
+              -> DataTypeInfo
+              -> (forall a. SMTType a => SMTExpr a -> b)
+              -> Maybe Sort
+              -> Integer
+              -> L.Lisp -> Maybe b
+parseLispExpr state inps gates funs bound dts app sort lvl lisp
+  = while (Parsing lisp) $
+    case parseLispVarAccess state inps gates lisp of
+     Just acc -> let sort = lispVarAccessType acc
+                 in withSort dts sort $
+                    \(_::t) ann -> Just $ app (InternalObj acc ann :: SMTExpr t)
+     Nothing -> lispToExprWith (parseLispExpr state inps gates) funs bound dts app sort lvl lisp
+
+printLispVar :: DataTypeInfo -> LispVar -> L.Lisp
+printLispVar dts (NamedVar name _ _) = L.Symbol name
+printLispVar dts (LispStore var stat dyn val)
+  = L.List (L.List (L.Symbol "_":
+                    L.Symbol "store":
+                    fmap (\i -> L.Number $ fromIntegral i) stat):
+            printLispExpr dts val:
+            fmap (printLispExpr dts) dyn)
+printLispVar dts (LispITE cond ifT ifF)
+  = L.List [L.List [L.Symbol "_"
+                   ,L.Symbol "ite"]
+           ,printLispExpr dts cond
+           ,printLispVar dts ifT
+           ,printLispVar dts ifF]
+printLispVar dts (LispConstr val) = printLispValue dts val
+
+printLispValue :: DataTypeInfo -> LispValue -> L.Lisp
+printLispValue dts (LispValue (Size []) (Singleton (Val res))) = printLispExpr dts res
+printLispValue dts (LispValue (Size sz) struct)
+  = L.List [L.Symbol "value",
+            L.List $ fmap (\(SizeElement el) -> printLispExpr dts el) sz,
+            printLispStruct struct]
+  where
+    printLispStruct (Singleton (Val el)) = printLispExpr dts el
+    printLispStruct (Struct xs) = L.List (L.Symbol "struct":
+                                          fmap printLispStruct xs)
+
+printLispExpr :: DataTypeInfo -> SMTExpr a -> L.Lisp
+printLispExpr dts expr = exprToLispWith derel expr (error "printLispExpr error") dts
+  where
+    derel :: (Typeable b,Show b) => b -> L.Lisp
+    derel (cast -> Just acc) = printLispVarAccess dts acc
+    derel obj = error $ "Cannot derel "++show obj
+
+printLispVarAccess :: DataTypeInfo -> LispVarAccess -> L.Lisp
+printLispVarAccess dts (LispVarAccess var [] [])
+  = printLispVar dts var
+printLispVarAccess dts (LispVarAccess var stat dyn)
+  = L.List (L.List (L.Symbol "_":L.Symbol "select":
+                    fmap (\i -> L.Number $ fromIntegral i) stat):
+            printLispVar dts var:
+            fmap (printLispExpr dts) dyn)
+printLispVarAccess dts (LispSizeAccess var dyn)
+  = L.List (L.List [L.Symbol "_",L.Symbol "size"]:
+            printLispVar dts var:
+            fmap (printLispExpr dts) dyn)
+printLispVarAccess dts (LispSizeArrAccess var n)
+  = L.List [L.List [L.Symbol "_",L.Symbol "size-arr",L.Number $ fromIntegral n]
+           ,printLispVar dts var]
+printLispVarAccess dts (LispEq var1 var2)
+  = L.List [L.List [L.Symbol "_",L.Symbol "eq"]
+           ,printLispVar dts var1
+           ,printLispVar dts var2]
+
+relativize :: SMTType a
+           => Map T.Text LispValue
+           -> Map T.Text LispValue
+           -> Map T.Text LispValue
            -> SMTExpr a
            -> SMTExpr a
-relativize state inps gates (InternalObj (cast -> Just (LispVar name cat acc)) ann)
-  = case cat of
-     State -> case Map.lookup name state of
-       Just (AnyLispExpr (NormalExpr e)) -> case cast e of
-         Just e' -> e'
-       Just (AnyLispExpr (ArrayExpr sz arr)) -> case acc of
-         SizeAccess -> case cast sz of
-           Just sz' -> sz'
-         EntriesAccess -> case cast arr of
-           Just arr' -> arr'
-     Input -> castUntypedExprValue $ inps Map.! name
-     Gate -> castUntypedExprValue $ gates Map.! name
+relativize state inps gates (InternalObj (cast -> Just acc) ann)
+  = relativizeVarAccess acc
+  where
+    relativizeVarAccess (LispVarAccess var stat dyn)
+      = fst $ accessValue (\val -> case cast val of
+                            Just val' -> (val',val)
+                          ) stat dyn (relativizeVar state inps gates var)
+    relativizeVarAccess (LispSizeAccess var dyn)
+      = case cast $ fst $ accessSize (\i -> (i,i)) dyn (relativizeVar state inps gates var) of
+         Just expr -> expr
+    relativizeVarAccess (LispSizeArrAccess var n)
+      = fst $ accessSizeArr (\i -> case cast i of
+                              Just i' -> (i',i)) n (relativizeVar state inps gates var)
+    relativizeVarAccess (LispEq var1 var2)
+      = let tp = lispVarType var1
+            lst = foldTypeWithIndex (\lst rev (_::t)
+                                     -> let e1,e2 :: SMTExpr t
+                                            e1 = relativize state inps gates $
+                                                 InternalObj
+                                                 (case rev of
+                                                   ElementSpec idx -> LispVarAccess var1 idx []
+                                                   SizeSpec idx -> LispSizeArrAccess var1 idx)
+                                                 unit
+                                            e2 = relativize state inps gates $
+                                                 InternalObj
+                                                 (case rev of
+                                                   ElementSpec idx -> LispVarAccess var2 idx []
+                                                   SizeSpec idx -> LispSizeArrAccess var2 idx)
+                                                 unit
+                                        in (e1 .==. e2):lst
+                                    ) [] tp
+        in case cast (app and' lst) of
+            Just res -> res
 relativize state inps gates (App (SMTBuiltIn "exactly-one" _) xs)
   = case cast xs of
      Just xs' -> case cast (app or' (oneOf [] $ fmap (relativize state inps gates) xs')) of
@@ -267,171 +538,112 @@ relativize state inps gates (UntypedExpr e) = UntypedExpr $ relativize state inp
 relativize state inps gates (UntypedExprValue e) = UntypedExprValue $ relativize state inps gates e
 relativize state inps gates e = e
 
-instance TransitionRelation LispProgram where
-  type State LispProgram = Map T.Text AnyLispExpr
-  type Input LispProgram = Map T.Text (SMTExpr UntypedValue)
-  type RevState LispProgram = Map Integer (T.Text,LispVarAccess)
-  type PredicateExtractor LispProgram = ()
-  type RealizationProgress LispProgram = Map T.Text (SMTExpr Untyped)
-  createStateVars pre prog
-    = sequence $ Map.mapWithKey
-      (\name (sort,_)
-       -> case sort of
-           Fix (NamedSort "CArray" [s])
-             -> withSort (programDataTypes prog) s $
-                \u ann -> case (asValueType u ann $
-                                \(_::t) ann' -> do
-                                  sz <- varNamedAnn (pre++"size-"++T.unpack name) ()
-                                  arr <- varNamedAnn (pre++"entries-"++T.unpack name) ((),ann')
-                                  return (AnyLispExpr (ArrayExpr sz arr
-                                                       ::LispExpr (CArray t)))) of
-                           Just r -> r
-           _ -> withSort (programDataTypes prog) sort $
-                \u ann -> case (asValueType u ann $
-                                \(_::t) ann'
-                                -> do
-                                  v <- varNamedAnn (pre++T.unpack name) ann'
-                                  return (AnyLispExpr (NormalExpr (v::SMTExpr t)))) of
-                           Just r -> r
-      ) (programState prog)
-  createInputVars pre prog
-    = sequence $ Map.mapWithKey
-      (\name (sort,_)
-       -> case withSort (programDataTypes prog) sort $
-               \u ann -> asValueType u ann $
-                         \(_::t) ann' -> (do
-                                             v <- varNamedAnn (pre++T.unpack name) ann'
-                                             return (UntypedExprValue (v::SMTExpr t))) of
-           Just r -> r
-      ) (programInput prog)
-  initialState prog st = let expr = case programInitial prog of
-                                     [e] -> e
-                                     [] -> constant True
-                                     xs -> app and' xs
-                         in relativize st Map.empty Map.empty expr
-  stateInvariant prog inp st = let expr = case programInvariant prog of
-                                           [e] -> e
-                                           [] -> constant True
-                                           xs -> app and' xs
-                               in relativize st inp Map.empty expr
-  startingProgress _ = Map.empty
-  declareNextState prog st inp grp gates
-    = runStateT (sequence $ Map.mapWithKey
-                 (\name (sort,_)
-                   -> case sort of
-                       Fix (NamedSort "CArray" [s])
-                         -> withSort (programDataTypes prog) s $
-                            \u ann -> case (asValueType u ann $
-                                            \(_::t) ann' -> do
-                                              gts0 <- get
-                                              let szName = T.append (T.pack "size-") name
-                                                  arrName = T.append (T.pack "entries-") name
-                                                  szExpr = case Map.lookup szName (programNext prog) of
-                                                    Just e -> castUntypedExpr e
-                                                  arrExpr = case Map.lookup arrName (programNext prog) of
-                                                    Just e -> castUntypedExpr e
-                                              (szExpr',gts1) <- lift $ declareExpr prog st inp gts0 szExpr
-                                              szExpr'' <- lift $ defConstNamed (T.unpack szName) szExpr'
-                                              (arrExpr',gts2) <- lift $ declareExpr prog st inp gts1 arrExpr
-                                              arrExpr'' <- lift $ defConstNamed (T.unpack arrName) arrExpr'
-                                              put gts2
-                                              return (AnyLispExpr (ArrayExpr szExpr'' arrExpr''
-                                                                   ::LispExpr (CArray t)))) of
-                                       Just r -> r
-                       _ -> do
-                         cgates <- get
-                         (expr',ngates) <- lift $ entype
-                                           (\(e::SMTExpr a) -> case asValueType (undefined::a) (extractAnnotation e)
-                                                                    (\(_::b) ann' -> case cast e of
-                                                                      Just e' -> do
-                                                                        (e1,ngts) <- declareExpr prog st inp cgates (e'::SMTExpr b)
-                                                                        e2 <- defConstNamed (T.unpack name) e1
-                                                                        return (AnyLispExpr $ NormalExpr e2,ngts)) of
-                                                                Just r -> r
-                                           ) (case Map.lookup name (programNext prog) of
-                                               Just e -> e)
-                         put ngates
-                         return expr'
-                 ) (programState prog)
-                ) gates
-  declareAssertions prog st inp gates
-    = runStateT (mapM (\expr -> do
-                          cgates <- get
-                          (expr',ngates) <- lift $ declareExpr prog st inp cgates expr
-                          put ngates
-                          return expr'
-                      ) (programProperty prog)
-                ) gates
-  declareAssumptions prog st inp gates
-    = runStateT (mapM (\expr -> do
-                          cgates <- get
-                          (expr',ngates) <- lift $ declareExpr prog st inp cgates expr
-                          put ngates
-                          return expr'
-                      ) (programAssumption prog)
-                ) gates
-  renderPartialState prog st
-    = return $ unlines $
-      mapMaybe (\(name,AnyLispPValue val) -> case val of
-                 NormalPValue Nothing -> Nothing
-                 NormalPValue (Just v) -> Just $ (T.unpack name)++"="++show v
-                 ArrayPValue False _ -> Nothing
-                 ArrayPValue True lst -> Just $ (T.unpack name)++"=["++
-                                         intercalate "," (fmap (\el -> case el of
-                                                                 Nothing -> "_"
-                                                                 Just v -> show v
-                                                               ) lst)
-               ) (Map.toList st)
-  defaultPredicateExtractor _ = return ()
-  extractPredicates _ _ _ _ = return ((),[])
-  annotationState prog
-    = fmap (\(s,_) -> case s of
-             Fix (NamedSort "CArray" [s])
-               -> withSort (programDataTypes prog) s $
-                  \u ann -> case asValueType u ann
-                                 (\(_::t) ann' -> AnyLispType (ArrayType ann'::LispType (CArray t))) of
-                             Just r -> r
-             _ -> withSort (programDataTypes prog) s $
-                  \u ann -> case asValueType u ann
-                                 (\(_::t) ann' -> AnyLispType (NormalType ann'::LispType t)) of
-                             Just r -> r
-           ) (programState prog)
-  annotationInput prog = fmap (\(s,_) -> withSort (programDataTypes prog) s $
-                                         \u ann -> case asValueType u ann ProxyArgValue of
-                                                    Just r -> r
-                              ) (programInput prog)
-  createRevState pre prog = do
-    st <- createStateVars pre prog
-    return (st,Map.fromList $ concat $
-               fmap (\(name,AnyLispExpr e) -> case e of
-                      NormalExpr (Var i _) -> [(i,(name,NormalAccess))]
-                      ArrayExpr (Var sz _) (Var arr _) -> [(sz,(name,SizeAccess))
-                                                          ,(arr,(name,EntriesAccess))]
-                    ) (Map.toList st))
-  relativizeExpr prog rev expr st
-    = snd $ foldExpr (\_ e -> case e of
-                               Var i ann -> case Map.lookup i rev of
-                                 Just (name,acc) -> case Map.lookup name st of
-                                   Just (AnyLispExpr e) -> case e of
-                                     NormalExpr e' -> ((),case cast e' of
-                                                           Just e'' -> e'')
-                                     ArrayExpr sz arr -> case acc of
-                                       SizeAccess -> ((),case cast sz of
-                                                          Just sz' -> sz')
-                                       EntriesAccess -> ((),case cast arr of
-                                                             Just arr' -> arr')
-                               _ -> ((),e)
-                     ) () expr
-  suggestedPredicates prog = [(False,\st -> relativize st Map.empty Map.empty expr)
-                             | expr <- programPredicates prog ]
+relativizeVar :: Map T.Text LispValue
+              -> Map T.Text LispValue
+              -> Map T.Text LispValue
+              -> LispVar
+              -> LispValue
+relativizeVar state _ _ (NamedVar name State _) = case Map.lookup name state of
+  Just r -> r
+  Nothing -> error $ "Failed to find state variable: "++show name
+relativizeVar _ inps _  (NamedVar name Input _) = case Map.lookup name inps of
+  Just r -> r
+  Nothing -> error $ "Failed to find input variable: "++show name
+relativizeVar _ _ gates (NamedVar name Gate  _) = case Map.lookup name gates of
+  Just r -> r
+  Nothing -> error $ "Failed to find gate variable: "++show name
+relativizeVar state inps gates (LispStore var stat dyn val)
+  = snd $ accessValue (const ((),castUntypedExpr val)) stat dyn
+    (relativizeVar state inps gates var)
+relativizeVar state inps gates (LispITE cond ifT ifF)
+  = argITE (relativize state inps gates cond)
+    (relativizeVar state inps gates ifT)
+    (relativizeVar state inps gates ifF)
+relativizeVar state inps gates (LispConstr (LispValue (Size szs) els))
+  = LispValue (Size nszs) nels
+  where
+    nszs = fmap (\(SizeElement e) -> SizeElement $ relativize state inps gates e
+                ) szs
+    nels = relativizeStruct els
+    relativizeStruct (Singleton (Val e)) = Singleton (Val $ relativize state inps gates e)
+    relativizeStruct (Struct es) = Struct $ fmap relativizeStruct es
+
+declareVar :: Monad m => LispProgram
+              -> Map T.Text LispValue
+              -> Map T.Text LispValue
+              -> Map T.Text LispValue
+              -> LispVar
+              -> SMT' m (LispValue,Map T.Text LispValue)
+declareVar prog state inps gates (NamedVar name cat _) = case cat of
+  State -> case Map.lookup name state of
+    Just res -> return (res,gates)
+    Nothing -> error $ "Failed to find state variable while declaring "++show name
+  Input -> case Map.lookup name inps of
+    Just res -> return (res,gates)
+    Nothing -> error $ "Failed to find input variable while declaring "++show name
+  Gate -> case Map.lookup name gates of
+    Just res -> return (res,gates)
+    Nothing -> case Map.lookup name (programGates prog) of
+      Just (tp,nvar) -> while (TranslateGate name) $ do
+        (val1,gates1) <- declareVar prog state inps gates nvar
+        val2 <- defineValue (T.unpack name) val1
+        return (val2,Map.insert name val2 gates1)
+      Nothing -> error $ "Failed to find gate variable while declaring "++show name
+declareVar prog state inps gates (LispStore var stat dyn sval) = do
+  (val,ngates) <- declareVar prog state inps gates var
+  let res = snd $ accessValue (const ((),castUntypedExpr sval)) stat dyn val
+  declareValue prog state inps ngates res
+declareVar prog state inps gates (LispITE cond ifT ifF) = do
+  (cond',gates1) <- declareExpr prog state inps gates cond
+  (ifT',gates2) <- declareVar prog state inps gates1 ifT
+  (ifF',gates3) <- declareVar prog state inps gates2 ifF
+  declareValue prog state inps gates3 (argITE cond' ifT' ifF')
+declareVar prog state inps gates (LispConstr val)
+  = declareValue prog state inps gates val
+
+defineValue :: Monad m => String -> LispValue -> SMT' m LispValue
+defineValue name value = do
+  (_,nvalue) <- foldExprs (\_ expr ann -> do
+                              nexpr <- defConstNamed name expr
+                              return ((),nexpr)
+                          ) () value (extractArgAnnotation value)
+  return nvalue
+
+declareValue :: Monad m => LispProgram
+             -> Map T.Text LispValue
+             -> Map T.Text LispValue
+             -> Map T.Text LispValue
+             -> LispValue
+             -> SMT' m (LispValue,Map T.Text LispValue)
+declareValue prog state inps gates (LispValue (Size szs) els) = do
+  (nszs,gates1) <- declareSize gates szs
+  (nels,gates2) <- declareStruct gates els
+  return (LispValue (Size nszs) nels,gates2)
+  where
+    declareSize gates [] = return ([],gates)
+    declareSize gates (SizeElement e:es) = do
+      (ne,gates1) <- declareExpr prog state inps gates e
+      (nes,gates2) <- declareSize gates1 es
+      return (SizeElement ne:nes,gates2)
+    declareStruct gates (Singleton (Val e)) = do
+      (ne,ngates) <- declareExpr prog state inps gates e
+      return (Singleton (Val ne),ngates)
+    declareStruct gates (Struct els) = do
+      (nels,ngates) <- declareStructs gates els
+      return (Struct nels,ngates)
+    declareStructs gates [] = return ([],gates)
+    declareStructs gates (e:es) = do
+      (ne,gates1) <- declareStruct gates e
+      (nes,gates2) <- declareStructs gates1 es
+      return (ne:nes,gates2)
 
 declareExpr :: (Monad m,SMTType a)
                => LispProgram
-               -> Map T.Text AnyLispExpr
-               -> Map T.Text (SMTExpr UntypedValue)
-               -> Map T.Text (SMTExpr Untyped)
+               -> Map T.Text LispValue
+               -> Map T.Text LispValue
+               -> Map T.Text LispValue
                -> SMTExpr a
-               -> SMT' m (SMTExpr a,Map T.Text (SMTExpr Untyped))
+               -> SMT' m (SMTExpr a,Map T.Text LispValue)
 declareExpr prog state inps gates expr = do
   (ngates,[res]) <- foldExprM (\cgates e -> do
                                   (res,ngates) <- declareExpr' cgates e
@@ -439,370 +651,139 @@ declareExpr prog state inps gates expr = do
                               ) gates expr
   return (res,ngates)
   where
-    declareExpr' :: (Monad m,SMTType a) => Map T.Text (SMTExpr Untyped) -> SMTExpr a -> SMT' m (SMTExpr a,Map T.Text (SMTExpr Untyped))
-    declareExpr' gates (InternalObj (cast -> Just (LispVar name cat acc)) _) = case cat of
-      State -> case Map.lookup name state of
-        Just (AnyLispExpr (NormalExpr e))
-          -> return (case cast e of
-                      Just e' -> e',gates)
-        Just (AnyLispExpr (ArrayExpr sz arr)) -> case acc of
-          SizeAccess -> case cast sz of
-            Just e -> return (e,gates)
-          EntriesAccess -> case cast arr of
-            Just e -> return (e,gates)
-      Input -> return (castUntypedExprValue $ inps  Map.! name,gates)
-      Gate -> case Map.lookup name gates of
-        Just expr -> return (castUntypedExpr expr,gates)
-        Nothing -> case Map.lookup name (programGates prog) of
-          Just (s,def) -> do
-            (ndef,ngates) <- declareExpr prog state inps gates (castUntypedExpr def)
-            ndef' <- defConstNamed (T.unpack name) ndef
-            return (ndef',Map.insert name (UntypedExpr ndef') ngates)
-    declareExpr' gates e = return (e,gates)
-          
-programToLisp :: LispProgram -> L.Lisp
-programToLisp prog = L.List ([L.Symbol "program"]++
-                             annLst++
-                             defLst)
-  where
-    renderAnnotation mp = concat [ [L.Symbol $ T.cons ':' key,entr]
-                                 | (key,entr) <- Map.toList mp ]
-    derel obj = case cast obj of
-      Just (LispVar name _ acc) -> case acc of
-        NormalAccess -> L.Symbol name
-        SizeAccess -> L.Symbol (T.append (T.pack "size-") name)
-        EntriesAccess -> L.Symbol (T.append (T.pack "entries-") name)
-      Nothing -> error $ "Cannot derelegate object "++show obj
-    annLst = renderAnnotation (programAnnotation prog)
-    defLst = [L.List $ [L.Symbol "state"]++stateLst
-             ,L.List $ [L.Symbol "input"]++inputLst
-             ,L.List $ [L.Symbol "gates"]++gatesLst
-             ,L.List $ [L.Symbol "next"]++nextLst
-             ,L.List $ [L.Symbol "property"]++propLst
-             ,L.List $ [L.Symbol "initial"]++initLst
-             ,L.List $ [L.Symbol "invariant"]++invarLst
-             ,L.List $ [L.Symbol "assumption"]++assumpLst
-             ,L.List $ [L.Symbol "predicate"]++predLst]
-    stateLst = [ L.List $ [L.Symbol name
-                          ,sortToLisp sort]++renderAnnotation ann
-               | (name,(sort,ann)) <- Map.toList (programState prog) ]
-    inputLst = [ L.List $ [L.Symbol name
-                          ,sortToLisp sort]++renderAnnotation ann
-               | (name,(sort,ann)) <- Map.toList (programInput prog) ]
-    gatesLst = [ L.List [L.Symbol name
-                        ,sortToLisp sort
-                        ,exprToLispWith derel
-                         gate (error "Internal error") (programDataTypes prog)]
-               | (name,(sort,gate)) <- Map.toList (programGates prog) ]
-    nextLst = [ L.List [L.Symbol name
-                       ,exprToLispWith derel def (error "Internal error") (programDataTypes prog)]
-              | (name,def) <- Map.toList (programNext prog) ]
-    propLst = [ exprToLispWith derel prop (error "Internal error") (programDataTypes prog)
-              | prop <- programProperty prog ]
-    initLst = [ exprToLispWith derel prop (error "Internal error") (programDataTypes prog)
-              | prop <- programInitial prog ]
-    invarLst = [ exprToLispWith derel prop (error "Internal error") (programDataTypes prog)
-               | prop <- programInvariant prog ]
-    assumpLst = [ exprToLispWith derel prop (error "Internal error") (programDataTypes prog)
-                | prop <- programAssumption prog ]
-    predLst = [ exprToLispWith derel prop (error "Internal error") (programDataTypes prog)
-              | prop <- programPredicates prog ]
+    declareExpr' :: (Monad m,SMTType t) => Map T.Text LispValue -> SMTExpr t
+                 -> SMT' m (SMTExpr t,Map T.Text LispValue)
+    declareExpr' gates (InternalObj (cast -> Just acc) _) = declareAccess gates acc
+    declareExpr' gates expr = return (expr,gates)
 
-addPredicate :: LispProgram -> SMTExpr Bool -> LispProgram
-addPredicate prog pred
-  = if elem pred (programPredicates prog)
-    then prog
-    else prog { programPredicates = pred:programPredicates prog }
+    declareAccess :: (Monad m,SMTType t)
+                  => Map T.Text LispValue -> LispVarAccess
+                  -> SMT' m (SMTExpr t,Map T.Text LispValue)
+    declareAccess gates (LispVarAccess var stat dyn) = do
+      (val,ngates) <- declareVar prog state inps gates var
+      let (res,_) = accessValue (\e -> case cast e of
+                                  Just e' -> (e',e)) stat dyn val
+      return (res,ngates)
+    declareAccess gates (LispSizeAccess var dyn) = do
+      (val,ngates) <- declareVar prog state inps gates var
+      let (res,_) = accessSize (\i -> (i,i)) dyn val
+      case cast res of
+       Just res' -> return (res',ngates)
+    declareAccess gates (LispSizeArrAccess var n) = do
+      (val,ngates) <- declareVar prog state inps gates var
+      let (res,_) = accessSizeArr (\i -> case cast i of
+                                    Just i' -> (i',i)) n val
+      return (res,ngates)
+    declareAccess gates (LispEq var1 var2) = do
+      (val1,gates1) <- declareVar prog state inps gates var1
+      (val2,gates2) <- declareVar prog state inps gates1 var2
+      case cast (argEq val1 val2) of
+       Just res -> return res
 
-instance SMTType a => SMTType (CArray a) where
-  type SMTAnnotation (CArray a) = SMTAnnotation a
-  getSort (_::CArray a) ann = Fix (NamedSort "CArray" [getSort (undefined::a) ann])
-  asDataType (_::CArray a) ann = Just ("CArray",tcCArray)
-  asValueType (arr::CArray a) ann f = asValueType (undefined::a) ann $
-                                      \(_::b) ann' -> case cast arr of
-                                      Just arr' -> f (arr'::CArray b) ann'
-  getProxyArgs (_::CArray a) ann = [ProxyArg (undefined::a) ann]
-  annotationFromSort (_::CArray a) (Fix (NamedSort "CArray" [s]))
-    = annotationFromSort (undefined::a) s
-  defaultExpr ann = App (SMTConstructor (constructorCArray ann)) (defaultExpr (),App (SMTConstArray ()) (defaultExpr ann))
-
-tcCArray :: TypeCollection
-tcCArray = TypeCollection 1 [dtCArray]
-
-dtCArray :: DataType
-dtCArray = DataType { dataTypeName = "CArray"
-                    , dataTypeConstructors = [conCArray]
-                    , dataTypeGetUndefined = \tps f -> case tps of
-                                                        [ProxyArg (_::t) ann]
-                                                          -> f (undefined::CArray t) ann
-                    }
-
-conCArray :: Constr
-conCArray = Constr { conName = "CArray"
-                   , conFields = [fieldSize,fieldEntries]
-                   , construct = \tps vals f
-                                 -> error "Cannot create instance of CArray"
-                   , conUndefinedArgs = \tps f -> case tps of
-                                                   [tp] -> withProxyArg tp $
-                                                           \(_::t) ann -> f (undefined::(SMTExpr Integer,SMTExpr (SMTArray (SMTExpr Integer) t))) ((),((),ann))
-                   , conTest = \_ _ -> True
-                   }
-
-fieldSize :: DataField
-fieldSize = DataField { fieldName = "size"
-                      , fieldSort = Fix $ NormalSort IntSort
-                      , fieldGet = \tps arg f
-                                   -> case tps of
-                                       [ProxyArg (_::t) ann]
-                                         -> case cast arg of
-                                             Just (arr::CArray t)
-                                               -> f (genericLength $ cArrayEntries arr
-                                                     :: Integer) ()
-                      }
-
-fieldEntries :: DataField
-fieldEntries = DataField { fieldName = "entries"
-                         , fieldSort = Fix $ NormalSort (ArraySort
-                                                         [Fix $ NormalSort IntSort]
-                                                         (Fix $ ArgumentSort 0))
-                         , fieldGet = \tps arr f -> case tps of
-                         [ProxyArg (_::t) ann] -> f (error "Cannot extract entries field from CArray"::SMTArray (SMTExpr Integer) t) ((),ann)
-                         }
-
-constructorCArray :: SMTType a => SMTAnnotation a -> Constructor (SMTExpr Integer,SMTExpr (SMTArray (SMTExpr Integer) a)) (CArray a)
-constructorCArray ann
-  = withUndef $ \u -> Constructor [ProxyArg u ann] dtCArray conCArray
-  where
-    withUndef :: (t -> Constructor (SMTExpr Integer,SMTExpr (SMTArray (SMTExpr Integer) t)) (CArray t))
-                 -> Constructor (SMTExpr Integer,SMTExpr (SMTArray (SMTExpr Integer) t)) (CArray t)
-    withUndef f = f undefined
-
-carraySize :: SMTType t => SMTAnnotation t -> Field (CArray t) Integer
-carraySize ann = withUndef $ \u -> Field [ProxyArg u ann] dtCArray conCArray fieldSize
-  where
-    withUndef :: (t -> Field (CArray t) Integer) -> Field (CArray t) Integer
-    withUndef f = f undefined
-
-carrayEntries :: SMTType t => SMTAnnotation t -> Field (CArray t) (SMTArray (SMTExpr Integer) t)
-carrayEntries ann = withUndef $ \u -> Field [ProxyArg u ann] dtCArray conCArray fieldEntries
-  where
-    withUndef :: (t -> Field (CArray t) (SMTArray (SMTExpr Integer) t))
-                 -> Field (CArray t) (SMTArray (SMTExpr Integer) t)
-    withUndef f = f undefined
-
-withLispSort :: DataTypeInfo -> Sort -> LispVarAccess
-             -> (forall t. SMTType t => t -> SMTAnnotation t -> r)
-             -> r
-withLispSort dts (Fix (NamedSort "CArray" [s])) NormalAccess f
-  = withSort dts s $
-    \(u::t) ann -> f (undefined::CArray t) ann
-withLispSort dts (Fix (NamedSort "CArray" [s])) SizeAccess f
-  = f (undefined::Integer) ()
-withLispSort dts (Fix (NamedSort "CArray" [s])) EntriesAccess f
-  = withSort dts s $
-    \(u::t) ann -> f  (undefined::SMTArray (SMTExpr Integer) t) ((),ann)
-withLispSort dts s NormalAccess f
-  = withSort dts s f 
-
-instance SMTValue a => SMTValue (CArray a) where
-  unmangle = ComplexUnmangling $
-             \f s (expr::SMTExpr (CArray a)) ann -> do
-               let unmEntries f expr ann s [] = return ([],s)
-                   unmEntries f expr ann s (i:is) = do
-                     (i',s1) <- f s (App SMTSelect
-                                     (App (SMTFieldSel (Field [ProxyArg (undefined::a) ann]
-                                                        dtCArray conCArray fieldEntries))
-                                      expr,Const (i::Integer) ())) ann
-                     (is',s2) <- unmEntries f expr ann s1 is
-                     return (i':is',s2)
-               (sz,s1) <- f s (App (SMTFieldSel (Field [ProxyArg (undefined::a) ann]
-                                                 dtCArray conCArray fieldSize))
-                               expr) ()
-               (entrs,s2) <- unmEntries f expr ann s1 [0..sz-1]
-               return (Just (CArray entrs),s2)
-  mangle = ComplexMangling $
-           \(CArray entrs) ann
-           -> let arr = foldl (\arr (idx,entr)
-                               -> App SMTStore (arr,Const idx (),Const entr ann)
-                              ) (App (SMTConstArray ()) (defaultExpr ann))
-                        (zip [0..] entrs)
-              in App (SMTConstructor $ constructorCArray ann) (Const (genericLength entrs) (),arr)
-
-instance SMTType t => Show (LispType t) where
-  showsPrec p (_::LispType t) = showsPrec p (typeOf (undefined::t))
-
-instance SMTType t => Eq (LispType t) where
-  (NormalType ann1) == (NormalType ann2) = ann1==ann2
-  (ArrayType ann1) == (ArrayType ann2) = ann1==ann2
-  _ == _ = False
-
-instance SMTType t => Ord (LispType t) where
-  compare (NormalType ann1) (NormalType ann2) = compare ann1 ann2
-  compare (NormalType _) _ = LT
-  compare (ArrayType ann1) (ArrayType ann2) = compare ann1 ann2
-
-instance Show (LispExpr t) where
-  showsPrec p (NormalExpr e) = showsPrec p e
-  showsPrec p (ArrayExpr idx e) = showsPrec p (idx,e)
-
-instance Eq (LispExpr t) where
-  (NormalExpr e1) == (NormalExpr e2) = e1==e2
-  (ArrayExpr i1 e1) == (ArrayExpr i2 e2) = i1==i2 && e1==e2
-  _ == _ = False
-
-instance Ord (LispExpr t) where
-  compare (NormalExpr e1) (NormalExpr e2) = compareExprs e1 e2
-  compare (NormalExpr _) _ = LT
-  compare (ArrayExpr i1 e1) (ArrayExpr i2 e2) = case compareExprs i1 i2 of
-    EQ -> compareExprs e1 e2
-    r -> r
-
-instance SMTType a => Args (LispExpr a) where
-  type ArgAnnotation (LispExpr a) = LispType a
-  foldExprs f s (NormalExpr e) (NormalType ann) = do
-    (ns,e') <- f s e ann
-    return (ns,NormalExpr e')
-  foldExprs f s (ArrayExpr idx arr) (ArrayType ann) = do
-    (s1,idx') <- f s idx ()
-    (s2,arr') <- f s1 arr ((),ann)
-    return (s2,ArrayExpr idx' arr')
-  foldsExprs f s lst (NormalType ann) = do
-    (ns,exprs,expr) <- foldsExprs f s (fmap (\(NormalExpr x,b) -> (x,b)
-                                            ) lst) ann
-    return (ns,fmap NormalExpr exprs,NormalExpr expr)
-  foldsExprs f s lst (ArrayType ann) = do
-    (ns,exprs,(sz,arr)) <- foldsExprs f s (fmap (\(ArrayExpr sz arr,b) -> ((sz,arr),b)
-                                                ) lst) ((),((),ann))
-    return (ns,fmap (\(sz,arr) -> ArrayExpr sz arr) exprs,ArrayExpr sz arr)
-  extractArgAnnotation (NormalExpr e)
-    = NormalType (extractAnnotation e)
-  extractArgAnnotation (ArrayExpr _ e)
-    = ArrayType (snd $ extractAnnotation e)
-  toArgs (NormalType _) (x:xs) = Just (NormalExpr (castUntypedExpr x),xs)
-  toArgs (ArrayType _) (x:y:xs)
-    = Just (ArrayExpr (castUntypedExpr x) (castUntypedExpr y),xs)
-  toArgs _ _ = Nothing
-  fromArgs (NormalExpr e) = [UntypedExpr e]
-  fromArgs (ArrayExpr idx arr) = [UntypedExpr idx,UntypedExpr arr]
-  getTypes _ (NormalType ann::LispType t) = [ProxyArg (undefined::t) ann]
-  getTypes _ tp@(ArrayType ann)
-    = [ProxyArg (undefined::Integer) ()
-      ,ProxyArg (getUndef tp) ((),ann)]
+instance TransitionRelation LispProgram where
+  type State LispProgram = Map T.Text LispValue
+  type Input LispProgram = Map T.Text LispValue
+  type RevState LispProgram = Map Integer (T.Text,LispRev)
+  type PredicateExtractor LispProgram = ()
+  type RealizationProgress LispProgram = Map T.Text LispValue
+  createStateVars pre prog
+    = sequence $ Map.mapWithKey
+      (\name (tp,_) -> argVarsAnnNamed (pre++(T.unpack name)) tp
+      ) (programState prog)
+  createInputVars pre prog
+    = sequence $ Map.mapWithKey
+      (\name (tp,_) -> while (CreateInput name) $ argVarsAnnNamed (pre++(T.unpack name)) tp
+      ) (programInput prog)
+  initialState prog st = while CreateInvariant $ relativize st Map.empty Map.empty expr
     where
-      getUndef :: LispType (CArray t) -> SMTArray (SMTExpr Integer) t
-      getUndef _ = undefined
-  getArgAnnotation _ _ = error "Cannot get arg annotation for lisp expression."
-
-instance SMTValue a => LiftArgs (LispExpr a) where
-  type Unpacked (LispExpr a) = LispValue a
-  liftArgs (NormalValue v) (NormalType ann)
-    = NormalExpr $ liftArgs v ann
-  liftArgs (ArrayValue lst) (ArrayType ann)
-    = ArrayExpr (liftArgs (genericLength lst) ())
-      (foldl (\carr (i,el)
-              -> App SMTStore (carr,Const i (),liftArgs el ann)
-             ) (App (SMTConstArray ()) (defaultExpr ann))
-       (zip [0..] lst))
-  unliftArgs (NormalExpr v) unl = do
-    rv <- unliftArgs v unl
-    return (NormalValue rv)
-  unliftArgs (ArrayExpr sz arr) unl = do
-    rsz <- unliftArgs sz unl
-    lst <- mapM (\i -> unliftArgs (App SMTSelect (arr,Const i ())) unl
-                ) [0..rsz-1]
-    return (ArrayValue lst)
-
-instance SMTValue a => PartialArgs (LispExpr a) where
-  type PartialValue (LispExpr a) = LispPValue a
-  maskValue _ (NormalPValue v) (x:xs)
-    = (NormalPValue $ if x then v else Nothing,xs)
-  maskValue _ (ArrayPValue b lst) (x:xs)
-    = (ArrayPValue (if x then b else False) lst',xs')
+      expr = case programInitial prog of
+        [e] -> e
+        [] -> constant True
+        xs -> app and' xs
+  stateInvariant prog inp st = relativize st inp Map.empty expr
     where
-      (lst',xs') = mask' lst xs
-      mask' [] xs = ([],xs)
-      mask' (x:xs) (y:ys) = let (xs',ys') = mask' xs ys
-                                x' = if y
-                                     then x
-                                     else Nothing
-                            in (x':xs',ys')
-  unmaskValue _ (NormalValue v) = NormalPValue (Just v)
-  unmaskValue _ (ArrayValue vs) = ArrayPValue True (fmap Just vs)
-  assignPartial (NormalExpr e) (NormalPValue val)
-    = [case val of
-        Just d -> Just $ e .==. (Const d (extractAnnotation e))
-        Nothing -> Nothing]
-  assignPartial (ArrayExpr sz arr) (ArrayPValue b lst)
-    = (if b then Just (sz .==. (Const (genericLength lst) ()))
-       else Nothing):
-      [ case el of
-         Just el' -> Just $ (App SMTSelect (arr,Const i ())) .==. (Const el' ann)
-         Nothing -> Nothing
-      | (i,el) <- zip [0..] lst ]
+      expr = case programInvariant prog of
+              [e] -> e
+              [] -> constant True
+              xs -> app and' xs
+  startingProgress _ = Map.empty
+  declareNextState prog st inp grp gates
+    = runStateT (Map.traverseWithKey
+                 (\name val -> while (DeclareNextState name) $ do
+                     gates <- get
+                     (nval,ngates) <- lift $ declareVar prog st inp gates val
+                     put ngates
+                     nval' <- lift $ defineValue (T.unpack name) nval
+                     return nval') (programNext prog)) gates
+  declareAssertions prog st inp gates
+    = runStateT (mapM (\expr -> do
+                          gates <- get
+                          (expr',ngates) <- lift $ declareExpr prog st inp gates expr
+                          put ngates
+                          return expr'
+                      ) (programProperty prog)
+                ) gates
+  declareAssumptions prog st inp gates
+    = runStateT (mapM (\expr -> do
+                          gates <- get
+                          (expr',ngates) <- lift $ declareExpr prog st inp gates expr
+                          put ngates
+                          return expr'
+                      ) (programAssumption prog)
+                ) gates
+  renderPartialState prog st = return (show st)
+  defaultPredicateExtractor _ = return ()
+  extractPredicates _ _ _ _ = return ((),[])
+  annotationState prog = fmap fst (programState prog)
+  annotationInput prog = fmap fst (programInput prog)
+  createRevState pre prog = do
+    st <- createStateVars pre prog
+    return (st,Map.fromList $
+               [ (var,(name,idx))
+               | (name,val) <- Map.toList st
+               , (var,idx) <- revVal val ])
     where
-      ((),ann) = extractAnnotation arr
+      revVal (LispValue (Size sz) val)
+        = [ (getSizeIdx el,SizeSpec i)
+          | (i,el) <- zip [0..] sz ]++
+          [ (var,ElementSpec idx) | (var,idx) <- revStruct val ]
+      revStruct (Struct vals) = [ (var,i:idx)
+                                | (i,val) <- zip [0..] vals
+                                , (var,idx) <- revStruct val ]
+      revStruct (Singleton e) = [(getVarIdx e,[])]
 
-instance Show AnyLispExpr where
-  showsPrec p (AnyLispExpr e) = showsPrec p e
+      getSizeIdx :: SizeElement -> Integer
+      getSizeIdx (SizeElement (Var i _)) = i
 
-instance Show AnyLispType where
-  showsPrec p (AnyLispType e) = showsPrec p e
+      getVarIdx :: LispVal -> Integer
+      getVarIdx (Val (Var i _)) = i
+  relativizeExpr prog rev expr st
+    = snd $ foldExpr (\_ e -> case e of
+                       Var i ann -> case Map.lookup i rev of
+                         Just (name,idx) -> case Map.lookup name st of
+                           Just (LispValue (Size sz) val) -> case idx of
+                             SizeSpec i -> case sz `genericIndex` i of
+                               SizeElement el -> case cast el of
+                                                  Just el' -> ((),el')
+                             ElementSpec is -> ((),getStruct val is)
+                       _ -> ((),e)
+                     ) () expr
+      where
+        getStruct (Singleton (Val e)) [] = case cast e of
+          Just e' -> e'
+        getStruct (Struct vals) (i:is) = getStruct (vals `genericIndex` i) is
 
-instance Eq AnyLispType where
-  (AnyLispType tp1) == (AnyLispType tp2) = case cast tp2 of
-    Just tp2' -> tp1 == tp2'
-    Nothing -> False
+while :: LispAction -> a -> a
+while act = mapException (LispException act)
 
-instance Ord AnyLispType where
-  compare (AnyLispType (tp1::LispType t1)) (AnyLispType (tp2::LispType t2)) = case cast tp2 of
-    Just tp2' -> compare tp1 tp2'
-    Nothing -> compare (typeOf (undefined::t1)) (typeOf (undefined::t2))
+instance Show LispAction where
+  show (TranslateGate name) = "While translating gate "++T.unpack name++": "
+  show (DeclareNextState name) = "While declaring next state for "++T.unpack name++": "
+  show (CreateInput name) = "While creating input variable "++T.unpack name++": "
+  show CreateInvariant = "While creating invariant: "
+  show (Parsing lisp) = "While parsing "++show lisp++": "
 
-instance Eq AnyLispExpr where
-  (AnyLispExpr e1) == (AnyLispExpr e2) = case cast e2 of
-    Just e2' -> e1==e2'
-    Nothing -> False
+instance Show LispException where
+  show (LispException act err) = show act++show err
 
-instance Ord AnyLispExpr where
-  compare (AnyLispExpr (tp1::LispExpr t1)) (AnyLispExpr (tp2::LispExpr t2)) = case cast tp2 of
-    Just tp2' -> compare tp1 tp2'
-    Nothing -> compare (typeOf (undefined::t1)) (typeOf (undefined::t2))
-
-instance Args AnyLispExpr where
-  type ArgAnnotation AnyLispExpr = AnyLispType
-  foldExprs f s e (AnyLispType tp) = do
-    (ns,ne) <- foldExprs f s (case e of
-                               AnyLispExpr e' -> case cast e' of
-                                 Just e'' -> e'') tp
-    return (ns,AnyLispExpr ne)
-  foldsExprs f s lst (AnyLispType (tp::LispType t)) = do
-    (ns,exprs,expr) <- foldsExprs f s (fmap (\(AnyLispExpr e,b) -> (case cast e of
-                                                                     Just e' -> e'::LispExpr t,b)
-                                            ) lst) tp
-    return (ns,fmap AnyLispExpr exprs,AnyLispExpr expr)
-  extractArgAnnotation (AnyLispExpr e) = AnyLispType (extractArgAnnotation e)
-  toArgs (AnyLispType tp) xs = do
-    (e,xs') <- toArgs tp xs
-    return (AnyLispExpr e,xs')
-  fromArgs (AnyLispExpr e) = fromArgs e
-  getTypes _ (AnyLispType (tp::LispType t)) = getTypes (undefined::LispExpr t) tp
-  getArgAnnotation _ _ = error "Cannot get arg annotation for lisp expression."
-
-instance LiftArgs AnyLispExpr where
-  type Unpacked AnyLispExpr = AnyLispValue
-  liftArgs (AnyLispValue v) (AnyLispType tp) = case cast tp of
-    Just tp' -> AnyLispExpr (liftArgs v tp')
-  unliftArgs (AnyLispExpr e) unl = do
-    re <- unliftArgs e unl
-    return (AnyLispValue re)
-
-instance PartialArgs AnyLispExpr where
-  type PartialValue AnyLispExpr = AnyLispPValue
-  maskValue _ (AnyLispPValue (pv::LispPValue t)) xs
-    = (AnyLispPValue npv,xs')
-    where
-      (npv,xs') = maskValue (undefined::LispExpr t) pv xs
-  unmaskValue _ (AnyLispValue (v::LispValue t))
-    = AnyLispPValue (unmaskValue (undefined::LispExpr t) v)
-  assignPartial (AnyLispExpr e) (AnyLispPValue v) = case cast v of
-    Just v' -> assignPartial e v'
+instance Exception LispException

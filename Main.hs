@@ -7,9 +7,8 @@ import Realization.Monolithic
 import qualified Realization.BlockWise as BlockWise
 import qualified Realization.TRGen as TRGen
 import qualified Realization.Lisp as LispP
-import qualified Realization.LispKarr as LispP
+--import qualified Realization.LispKarr as LispP
 import qualified Realization.Threaded as Threaded
-import qualified Realization.Threaded.Translation as Threaded
 import Options
 import CTIGAR (check)
 import PartialArgs
@@ -74,8 +73,6 @@ getTransitionRelation file opts f = do
    Threaded -> do
      (mod,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      real <- Threaded.realizeProgram mod fun
-     lisp <- Threaded.toLispProgram real
-     print $ LispP.programToLisp lisp
      error "Threaded..."
    BlockWise -> do
      (_,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
@@ -87,7 +84,7 @@ getTransitionRelation file opts f = do
    Lisp -> do
      program <- fmap LispP.parseLispProgram $
                 withFile file ReadMode LispP.readLispFile
-     nprogram <- if optKarr opts
-                 then LispP.addKarrPredicates program
-                 else return program
-     f nprogram
+     --nprogram <- if optKarr opts
+     --            then LispP.addKarrPredicates program
+     --            else return program
+     f program

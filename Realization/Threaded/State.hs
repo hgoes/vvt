@@ -4,29 +4,33 @@ module Realization.Threaded.State where
 import Realization.Threaded.Value
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
+import Language.SMTLib2.Internals hiding (Value)
 import LLVM.FFI
 import Foreign.Ptr (Ptr)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Typeable
+import Text.Show
+import System.IO.Unsafe
 
 data ThreadState = ThreadState { latchBlocks :: Map (Ptr BasicBlock,Int) (SMTExpr Bool)
                                , latchValues :: Map (Ptr Instruction) SymVal
+                               , threadArgument :: Maybe (Ptr Argument,SymVal)
                                } deriving (Typeable,Eq,Ord,Show)
 
 data ThreadStateDesc = ThreadStateDesc { latchBlockDesc :: Map (Ptr BasicBlock,Int) ()
                                        , latchValueDesc :: Map (Ptr Instruction) SymType
+                                       , threadArgumentDesc :: Maybe (Ptr Argument,SymType)
                                        } deriving (Typeable,Eq,Ord,Show)
 
 data ProgramState = ProgramState { mainState :: ThreadState
                                  , threadState :: Map (Ptr CallInst) (SMTExpr Bool,ThreadState)
-                                 , memory :: Map MemoryLoc SymVal
+                                 , memory :: Map MemoryLoc AllocVal
                                  } deriving (Typeable,Eq,Ord,Show)
 
 data ProgramStateDesc = ProgramStateDesc { mainStateDesc :: ThreadStateDesc
                                          , threadStateDesc :: Map (Ptr CallInst) ThreadStateDesc
-                                         , memoryDesc :: Map MemoryLoc SymType
+                                         , memoryDesc :: Map MemoryLoc AllocType
                                          } deriving (Typeable,Eq,Ord,Show)
 
 data ThreadInput = ThreadInput { step :: SMTExpr Bool
@@ -59,6 +63,10 @@ updateThreadInputDesc (Just thread) f pi
 getThreadState :: Maybe (Ptr CallInst) -> ProgramState -> ThreadState
 getThreadState Nothing st = mainState st
 getThreadState (Just th) st = snd $ (threadState st) Map.! th
+
+getThreadStateDesc :: Maybe (Ptr CallInst) -> ProgramStateDesc -> ThreadStateDesc
+getThreadStateDesc Nothing ps = mainStateDesc ps
+getThreadStateDesc (Just th) st = (threadStateDesc st) Map.! th
 
 getThreadInput :: Maybe (Ptr CallInst) -> ProgramInput -> ThreadInput
 getThreadInput Nothing inp = mainInput inp
@@ -119,27 +127,51 @@ instance Args ThreadState where
   foldExprs f s ts ann = do
     (s1,blk) <- foldExprs f s (latchBlocks ts) (latchBlockDesc ann)
     (s2,instrs) <- foldExprs f s1 (latchValues ts) (latchValueDesc ann)
-    return (s2,ThreadState blk instrs)
+    (s3,arg) <- case threadArgumentDesc ann of
+      Nothing -> return (s2,Nothing)
+      Just (val,tp) -> do
+        (ns,res) <- foldExprs f s2 (case threadArgument ts of
+                                     Just l -> snd l) tp
+        return (ns,Just (val,res))
+    return (s3,ThreadState blk instrs arg)
   foldsExprs f s lst ann = do
     (s1,blks,blk) <- foldsExprs f s [ (latchBlocks ts,b) | (ts,b) <- lst ]
                      (latchBlockDesc ann)
     (s2,instrs,instr) <- foldsExprs f s1 [ (latchValues ts,b) | (ts,b) <- lst ]
                          (latchValueDesc ann)
-    return (s2,zipWith ThreadState blks instrs,ThreadState blk instr)
+    (s3,args,arg) <- case threadArgumentDesc ann of
+      Nothing -> return (s2,fmap (const Nothing) lst,Nothing)
+      Just (val,tp) -> do
+        (ns,args,arg) <- foldsExprs f s2 [ (case threadArgument ts of
+                                             Just v -> snd v,b) | (ts,b) <- lst ] tp
+        return (ns,fmap (\v -> Just (val,v)) args,Just (val,arg))
+    return (s3,zipWith3 ThreadState blks instrs args,ThreadState blk instr arg)
   extractArgAnnotation ts = ThreadStateDesc
                             (extractArgAnnotation (latchBlocks ts))
                             (extractArgAnnotation (latchValues ts))
+                            (case threadArgument ts of
+                              Nothing -> Nothing
+                              Just (val,v) -> Just (val,extractArgAnnotation v))
   toArgs ann exprs = do
     (blk,es1) <- toArgs (latchBlockDesc ann) exprs
     (instr,es2) <- toArgs (latchValueDesc ann) es1
-    return (ThreadState blk instr,es2)
+    (arg,es3) <- case threadArgumentDesc ann of
+      Nothing -> return (Nothing,es2)
+      Just (val,tp) -> do
+        (v,nes) <- toArgs tp es2
+        return (Just (val,v),nes)
+    return (ThreadState blk instr arg,es3)
   fromArgs ts = fromArgs (latchBlocks ts) ++
-                fromArgs (latchValues ts)
+                fromArgs (latchValues ts) ++
+                (case threadArgument ts of
+                  Nothing -> []
+                  Just (_,v) -> fromArgs v)
   getTypes ts ann = getTypes (latchBlocks ts) (latchBlockDesc ann) ++
-                    getTypes (latchValues ts) (latchValueDesc ann)
-  getArgAnnotation ts sorts = let (blkAnn,s1) = getArgAnnotation (latchBlocks ts) sorts
-                                  (iAnn,s2) = getArgAnnotation (latchValues ts) s1
-                              in (ThreadStateDesc blkAnn iAnn,s2)
+                    getTypes (latchValues ts) (latchValueDesc ann) ++
+                    (case threadArgumentDesc ann of
+                      Nothing -> []
+                      Just (_,tp) -> getTypes (case threadArgument ts of
+                                                Just (_,v) -> v) tp)
 
 instance Args ProgramState where
   type ArgAnnotation ProgramState = ProgramStateDesc
@@ -177,3 +209,113 @@ instance Args ProgramState where
                               (ts,s2) = getArgAnnotation (threadState ps) s1
                               (allocs,s3) = getArgAnnotation (memory ps) s2
                           in (ProgramStateDesc ms (fmap snd ts) allocs,s3)
+
+showMemoryDesc :: Map MemoryLoc AllocType -> ShowS
+showMemoryDesc desc
+  = showListWith (\(loc,tp) -> showMemoryLoc loc .
+                               showString " ~> " .
+                               showsPrec 0 tp
+                 ) (Map.toList desc)
+
+data RevVar = LatchBlock (Maybe (Ptr CallInst)) (Ptr BasicBlock) Int
+            | LatchValue (Maybe (Ptr CallInst)) (Ptr Instruction) RevValue
+            | ThreadArgument (Maybe (Ptr CallInst)) (Ptr Argument) RevValue
+            | ThreadActivation (Ptr CallInst)
+            | MemoryValue MemoryLoc RevAlloc
+            deriving (Typeable,Eq,Ord)
+
+data RevValue = RevInt
+              | RevBool
+              | PtrCond MemoryPtr
+              | PtrIdx MemoryPtr Int
+              | ThreadIdCond (Ptr CallInst)
+              deriving (Typeable,Eq,Ord)
+
+data RevAlloc = RevStatic Integer [Integer] RevValue
+              | RevDynamic [Integer] RevValue
+              | RevSize
+              deriving (Typeable,Eq,Ord)
+
+instance Show RevVar where
+  show (LatchBlock th blk sblk) = unsafePerformIO $ do
+    blkName <- getNameString blk
+    return $ "latch("++(case th of
+                         Nothing -> "main-"
+                         Just _ -> "thread-")++blkName++
+      (if sblk==0
+       then ""
+       else "."++show sblk)++")"
+  show (LatchValue th inst rev) = unsafePerformIO $ do
+    iName <- getNameString inst
+    return $ "latchv("++(case th of
+                          Nothing -> "main-"
+                          Just _ -> "thread-")++iName++" ~> "++show rev++")"
+  show (ThreadArgument th arg rev) = unsafePerformIO $ do
+    argName <- getNameString arg
+    return $ "arg("++argName++" ~> "++show rev++")"
+  show (ThreadActivation th) = "thread-act()"
+  show (MemoryValue loc rev) = "mem("++showMemoryLoc loc ""++" ~> "++show rev++")"
+
+instance Show RevValue where
+  show RevInt = "int"
+  show RevBool = "bool"
+  show (PtrCond loc) = "ptrcond"
+  show (PtrIdx loc i) = "ptridx"
+  show (ThreadIdCond th) = "threadid"
+
+instance Show RevAlloc where
+  show (RevStatic top idx val)
+    = "static"++(if top==0 then "" else "@"++show top)++
+      (if null idx then "" else show idx)++"{"++show val++"}"
+  show (RevDynamic idx val)
+    = "dynamic"++(if null idx then "" else show idx)++"{"++show val++"}"
+  show RevSize = "size"
+
+debugInputs :: ProgramStateDesc
+            -> ProgramInputDesc
+            -> (ProgramState,ProgramInput)
+debugInputs psd isd = (ps,is)
+  where
+    ps = ProgramState { mainState = ms
+                      , threadState = ts
+                      , memory = mem
+                      }
+    is = ProgramInput {
+                      }
+    ms = debugThreadState Nothing (mainStateDesc psd)
+    ts = Map.mapWithKey (\th tsd -> (InternalObj (ThreadActivation th) (),
+                                     debugThreadState (Just th) tsd)
+                        ) (threadStateDesc psd)
+    mem = Map.mapWithKey debugAllocVal (memoryDesc psd)
+    debugThreadState th tsd
+      = ThreadState { latchBlocks = lb
+                    , latchValues = lv
+                    , threadArgument = ta
+                    }
+      where
+        lb = Map.mapWithKey (\(blk,sblk) _ -> InternalObj (LatchBlock th blk sblk) ()
+                            ) (latchBlockDesc tsd)
+        lv = Map.mapWithKey (\instr tp -> debugValue (LatchValue th instr) tp
+                            ) (latchValueDesc tsd)
+        ta = case threadArgumentDesc tsd of
+          Nothing -> Nothing
+          Just (arg,tp) -> Just (arg,debugValue (ThreadArgument th arg) tp)
+    debugValue f TpBool = ValBool (InternalObj (f RevBool) ())
+    debugValue f TpInt  = ValInt  (InternalObj (f RevInt) ())
+    debugValue f (TpPtr trgs stp)
+      = ValPtr { valPtr = Map.mapWithKey (\loc _ -> (InternalObj (f (PtrCond loc)) (),
+                                                     [ InternalObj (f (PtrIdx loc n)) ()
+                                                     | (n,_) <- zip [0..] [ () | DynamicAccess <- offsetPattern loc ] ])
+                                         ) trgs
+               , valPtrType = stp }
+    debugValue f (TpThreadId ths)
+      = ValThreadId (Map.mapWithKey (\th _ -> InternalObj (f (ThreadIdCond th)) ()
+                                    ) ths)
+    debugStruct f idx (Singleton tp) = Singleton (debugValue (f idx) tp)
+    debugStruct f idx (Struct tps) = Struct [ debugStruct f (idx++[n]) tp
+                                            | (n,tp) <- zip [0..] tps ]
+    debugAllocVal loc (TpStatic n tp)
+      = ValStatic [ debugStruct (\idx rev -> MemoryValue loc (RevStatic i idx rev)
+                                ) [] tp | i <- [0..n-1]]
+    --debugAllocVal loc (TpDynamic tp)
+    --  = ValDynamic 

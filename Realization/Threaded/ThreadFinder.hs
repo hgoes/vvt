@@ -72,6 +72,39 @@ getThreadSpawns fun loopInfo = do
                                        }):rest
         Nothing -> analyzeInstructions is blk blks
 
+getThreadArgument :: Ptr Function -> IO (Maybe (Ptr Argument,Ptr Type))
+getThreadArgument fun = do
+  args <- functionGetArgumentList fun >>= ipListToList
+  case args of
+   [] -> return Nothing
+   arg:_ -> do
+     tp <- isUsed arg
+     case tp of
+      Nothing -> return Nothing
+      Just tp -> return (Just (arg,tp))
+  where
+    isUsed :: Ptr Argument -> IO (Maybe (Ptr Type))
+    isUsed val = do
+      begin <- valueUseBegin val
+      end <- valueUseEnd val
+      hasUse <- valueUseIteratorNEq begin end
+      if hasUse
+        then do
+        use <- valueUseIteratorDeref begin
+        user <- useGetUser use
+        case castDown user of
+         Just bitcast -> do
+           tp <- getType (bitcast :: Ptr BitCastInst)
+           case castDown tp of
+            Just ptp -> do
+              rtp <- sequentialTypeGetElementType (ptp :: Ptr PointerType)
+              return (Just rtp)
+            Nothing -> error "Bitcast is not a pointer."
+         Nothing -> do
+           str <- valueToString user
+           error $ "User is not a bitcast: "++str
+        else return Nothing
+
 instance Num Quantity where
   (+) Infinite _ = Infinite
   (+) _ Infinite = Infinite
@@ -79,6 +112,8 @@ instance Num Quantity where
   (-) Infinite _ = Infinite
   (-) _ Infinite = Infinite
   (-) (Finite n) (Finite m) = Finite (n-m)
+  (*) (Finite n) (Finite m) = Finite (n*m)
+  (*) _ _ = Infinite
   abs Infinite = Infinite
   abs (Finite n) = Finite (abs n)
   signum Infinite = Infinite

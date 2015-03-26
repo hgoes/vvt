@@ -18,8 +18,10 @@ import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
 import Language.SMTLib2.DatatypeEmulator
+import Language.SMTLib2.ModulusEmulator
 
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import qualified Data.Vector as Vec
 import qualified Data.IntSet as IntSet
 import Data.IORef
@@ -171,12 +173,30 @@ splitLast (x:xs) = let (rest,last) = splitLast xs
 mkIC3Config :: mdl -> Options -> IC3Config mdl
 mkIC3Config mdl opts
   = IC3Cfg { ic3Model = mdl
-           , ic3ConsecutionBackend = mkPipe (optBackendCons opts)
-           , ic3LiftingBackend = mkPipe (optBackendLifting opts)
-           , ic3DomainBackend = mkPipe (optBackendDomain opts)
-           , ic3BaseBackend = mkPipe (optBackendBase opts)
-           , ic3InitBackend = mkPipe (optBackendInit opts)
-           , ic3InterpolationBackend = mkPipe (optBackendInterp opts)
+           , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
+                                     (if Set.member ConsecutionBackend (optDebugBackend opts)
+                                      then Just "cons"
+                                      else Nothing)
+           , ic3LiftingBackend = mkPipe (optBackend opts Map.! Lifting)
+                                 (if Set.member Lifting (optDebugBackend opts)
+                                  then Just "lift"
+                                  else Nothing)
+           , ic3DomainBackend = mkPipe (optBackend opts Map.! Domain)
+                                (if Set.member Domain (optDebugBackend opts)
+                                 then Just "domain"
+                                 else Nothing)
+           , ic3BaseBackend = mkPipe (optBackend opts Map.! Base)
+                              (if Set.member Base (optDebugBackend opts)
+                               then Just "base"
+                               else Nothing)
+           , ic3InitBackend = mkPipe (optBackend opts Map.! Initiation)
+                              (if Set.member Initiation (optDebugBackend opts)
+                               then Just "init"
+                               else Nothing)
+           , ic3InterpolationBackend = mkPipe (optBackend opts Map.! Interpolation)
+                                       (if Set.member Interpolation (optDebugBackend opts)
+                                        then Just "interp"
+                                        else Nothing)
            , ic3DebugLevel = optVerbosity opts
            , ic3MaxSpurious = 0
            , ic3MicAttempts = 1 `shiftL` 20
@@ -186,8 +206,12 @@ mkIC3Config mdl opts
            , ic3CollectStats = optStats opts
            }
   where
-    mkPipe cmd = let prog:args = words cmd
-                 in fmap AnyBackend $ createSMTPipe prog args
+    mkPipe cmd debug = let prog:args = words cmd
+                       in case debug of
+                           Nothing -> fmap AnyBackend $ createSMTPipe prog args
+                           Just name -> do
+                             pipe <- createSMTPipe prog args
+                             return (AnyBackend $ namedDebugBackend name pipe)
 
 runIC3 :: TR.TransitionRelation mdl => IC3Config mdl -> IC3 mdl a -> IO a
 runIC3 cfg act = do
@@ -217,6 +241,7 @@ runIC3 cfg act = do
         Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
         Just stats -> addTiming (interpolationTime stats) (interpolationNum stats)
                       (ic3InterpolationBackend cfg)
+      interpBackend'' = addModulusEmulation interpBackend'
   cons <- consecutionNew ({-addDebugging "cons"-} consBackend)
           (do
               cur <- TR.createStateVars "" mdl
@@ -259,7 +284,7 @@ runIC3 cfg act = do
     assert $ TR.initialState mdl cur
     assert $ TR.stateInvariant mdl inp cur
     return cur
-  interpolation <- createSMTPool interpBackend' $ do
+  interpolation <- createSMTPool interpBackend'' $ do
     setLogic "QF_LIA"
     setOption (ProduceInterpolants True)
     ante <- interpolationGroup
@@ -788,7 +813,7 @@ check :: TR.TransitionRelation mdl
          => mdl -> Options
          -> IO (Either [Unpacked (TR.State mdl,TR.Input mdl)] [AbstractState (TR.State mdl)])
 check st opts = do
-  let prog:args = words (optBackendBase opts)
+  let prog:args = words (optBackend opts Map.! Base)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
   case tr of
@@ -1408,3 +1433,8 @@ addDebugging :: String -> IO (AnyBackend IO) -> IO (AnyBackend IO)
 addDebugging name act = do
   AnyBackend b <- act
   return $ AnyBackend $ namedDebugBackend name b
+
+addModulusEmulation :: IO (AnyBackend IO) -> IO (ModulusEmulator (AnyBackend IO))
+addModulusEmulation act = do
+  b <- act
+  return $ modulusEmulator True b
