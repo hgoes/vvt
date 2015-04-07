@@ -170,6 +170,7 @@ instance Eq Size where
 instance Ord Size where
   compare (Size xs) (Size ys) = compare' xs ys
     where
+      compare' :: [SizeElement] -> [SizeElement] -> Ordering
       compare' [] [] = EQ
       compare' (SizeElement x:xs) (SizeElement y:ys) = case compareExprs x y of
         EQ -> compare' xs ys
@@ -235,6 +236,7 @@ instance Args Size where
     (sz,rest) <- toArgs' 0 n els
     return (Size sz,rest)
     where
+      toArgs' :: Integer -> Integer -> [SMTExpr Untyped] -> Maybe ([SizeElement],[SMTExpr Untyped])
       toArgs' _ 0 els = return ([],els)
       toArgs' i n (e:es) = withLeveledArray (undefined::Integer) (undefined::SMTExpr Integer) i $
                            \(_::t) -> do
@@ -402,6 +404,7 @@ instance LiftArgs LispValue where
                                 ) (0,[ zeroArr (undefined::SMTExpr Integer) (undefined::Integer)
                                        n SizeElement | n <- [1..lvl-1] ]) vals
           in sz:szs
+      assemble :: Integer -> Integer -> [SizeElement] -> [SizeElement] -> [SizeElement]
       assemble p i (SizeElement arr:arrs) (SizeElement sz:szs)
         = withLeveledArray (undefined::Integer) (undefined::SMTExpr Integer) i $
           \(_::t) -> case cast sz of
@@ -489,6 +492,7 @@ instance PartialArgs LispValue where
     where
       assign (Singleton (Val val)) (Singleton part) = assign' val part
       assign (Struct vals) (Struct parts) = concat $ zipWith assign vals parts
+      assign' :: (SMTType t,Indexable t (SMTExpr Integer)) => SMTExpr t -> LispPValue -> [Maybe (SMTExpr Bool)]
       assign' _ LispPEmpty = [Nothing]
       assign' val (LispPValue x) = case cast (constant x) of
         Just x' -> [Just (val .==. x')]

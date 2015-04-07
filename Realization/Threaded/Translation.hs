@@ -97,6 +97,7 @@ toLispProgram real = do
                        -> translateGate n gate gts
                       ) gts arr
                   ) (GateTranslation Map.empty Map.empty Map.empty) (gateMp real)
+      gates :: Map T.Text (L.LispType,L.LispVar)
       gates = Map.foldlWithKey
               (\gts tp (_,AnyGateArray arr)
                -> Map.foldlWithKey

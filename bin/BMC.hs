@@ -2,6 +2,7 @@ module Main where
 
 import Realization
 import Realization.Lisp
+import Realization.Lisp.Value
 import System.IO
 import System.Console.GetOpt
 import System.Environment
@@ -10,8 +11,10 @@ import Language.SMTLib2
 import Language.SMTLib2.Debug
 import Language.SMTLib2.DatatypeEmulator
 import PartialArgs
+import Data.Map (Map)
 import qualified Data.Map as Map
 import Control.Monad.Trans (liftIO)
+import qualified Data.Text as T
 
 data Options = Options { showHelp :: Bool
                        , solver :: String
@@ -69,6 +72,10 @@ main = do
                 putStrLn $ "Bug found:"
                 mapM_ putStrLn pbug)
   where
+    bmc :: LispProgram -> Bool -> Integer -> Integer
+        -> Map T.Text LispValue -> Map T.Text LispValue
+        -> [(Map T.Text LispValue,SMTExpr Bool)]
+        -> SMT (Maybe [Map T.Text (LispStruct LispUValue)])
     bmc prog inc l n st inp sts
       | n>=l = do
           if inc

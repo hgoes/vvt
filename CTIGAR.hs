@@ -1066,6 +1066,7 @@ interpolate j s = do
     removeToReal (App SMTToReal e) = Just e
     removeToReal _ = Nothing
 
+    negateInterpolant :: SMTExpr Bool -> SMTExpr Bool
     negateInterpolant (App SMTNot e) = pushNegation e
     negateInterpolant (App (SMTLogic And) es) = App (SMTLogic Or) (fmap negateInterpolant es)
     negateInterpolant (App (SMTLogic Or) es) = App (SMTLogic And) (fmap negateInterpolant es)
@@ -1078,6 +1079,7 @@ interpolate j s = do
         in App (SMTOrd nop) arg
     negateInterpolant e = App SMTNot e
 
+    pushNegation :: SMTExpr Bool -> SMTExpr Bool
     pushNegation (App SMTNot e) = negateInterpolant e
     pushNegation (App (SMTLogic op) es) = App (SMTLogic op) (fmap pushNegation es)
     pushNegation e = e

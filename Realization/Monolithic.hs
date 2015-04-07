@@ -265,6 +265,7 @@ realizeValue ana real (castDown -> Just undef) = do
   tp <- getType (undef::Ptr UndefValue)
   defaultValue tp
   where
+    defaultValue :: Ptr Type -> IO (RealizedValue LLVMInput)
     defaultValue (castDown -> Just itp) = do
       bw <- getBitWidth itp
       if bw==1

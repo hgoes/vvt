@@ -723,6 +723,7 @@ realizeValue thread (castDown -> Just undef) edge real = do
   res <- defaultValue tp
   return (res,real)
   where
+    defaultValue :: Ptr Type -> IO (InstructionValue (ProgramState,ProgramInput))
     defaultValue (castDown -> Just itp) = do
       bw <- getBitWidth itp
       return InstructionValue { symbolicType = if bw==1 then TpBool else TpInt
@@ -928,6 +929,7 @@ getSubBlockInstructions blk sub = do
   instrs <- getInstList blk >>= ipListToList
   dropInstrs sub instrs
   where
+    dropInstrs :: Int -> [Ptr Instruction] -> IO [Ptr Instruction]
     dropInstrs 0 is = return is
     dropInstrs n (i:is) = case castDown i of
       Just call -> do
