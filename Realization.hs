@@ -29,6 +29,7 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
   annotationState :: t -> ArgAnnotation (State t)
   annotationInput :: t -> ArgAnnotation (Input t)
   renderPartialState :: MonadIO m => t -> PartialValue (State t) -> m String
+  renderPartialInput :: MonadIO m => t -> PartialValue (Input t) -> m String
   -- | Returns a list of suggested predicates and a boolean indicating whether they are guaranteed to be unique
   suggestedPredicates :: t -> [(Bool,State t -> SMTExpr Bool)]
   suggestedPredicates _ = []

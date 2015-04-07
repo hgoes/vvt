@@ -191,11 +191,11 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
          arg <- getOperand call 3
          (arg',nreal) <- realizeValue thread arg edge real1
          return (Just arg',nreal)
-     return (Just edge { observedEvents = Map.insert (Map.size (events real1)) ()
+     return (Just edge { observedEvents = Map.insert (Map.size (events real2)) ()
                                           (observedEvents edge)
                        , edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
              act,
-             real1 { events = Map.insert (Map.size (events real1))
+             real2 { events = Map.insert (Map.size (events real2))
                               (WriteEvent { target = Map.mapWithKey
                                                      (\loc _ inp
                                                       -> let (cond,idx) = (valPtr $ symbolicValue thId' inp) Map.! loc
@@ -205,14 +205,14 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                                             , symbolicValue = \_ -> ValThreadId $ Map.singleton call (constant True)
                                                                             , alternative = Nothing }
                                           , eventOrigin = castUp call
-                                          }) (events real1)
-                   , spawnEvents = Map.insertWith (++) call [(act,arg)] (spawnEvents real1)
+                                          }) (events real2)
+                   , spawnEvents = Map.insertWith (++) call [(act,arg)] (spawnEvents real2)
                    , instructions = Map.insert (thread,i)
                                     (InstructionValue { symbolicType = TpInt
                                                       , symbolicValue = \_ -> ValInt (constant 0)
                                                       , alternative = Just (IntConst 0)
                                                       })
-                                    (instructions real1) })
+                                    (instructions real2) })
    "pthread_join" -> do
      thId <- getOperand call 0
      (thId',real1) <- realizeValue thread thId edge real0
@@ -623,30 +623,30 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
       = let ValPtr trgs _ = f inp
             condMp = Map.mapWithKey (\trg (cond,dyn)
                                      -> let idx = idxList (offsetPattern trg) dyn
-                                            (res,_) = accessAlloc argITEs
+                                            (res,_) = accessAlloc symITEs
                                                       (\val -> (val,val))
                                                       idx
                                                       ((memory ps) Map.! (memoryLoc trg))
                                         in (res,cond)
                                     ) trgs
-        in argITEs $ Map.elems condMp
+        in symITEs $ Map.elems condMp
     val inp = let ValPtr trgs _ = f inp
               in foldl (\cval ev -> case ev of
                          WriteEvent trg cont _
-                           -> foldl (\cval cond
-                                     -> symITE cond (symbolicValue cont inp) cval
-                                    ) cval
-                              [ app and' (cond1:cond2:match)
-                              | (ptr1,(cond1,idx1)) <- Map.toList trgs
-                              , (ptr2,info2) <- Map.toList trg
-                              , memoryLoc ptr1 == memoryLoc ptr2
-                              , let (cond2,idx2) = info2 inp
-                              , match <- case patternMatch
-                                              (offsetPattern ptr1)
-                                              (offsetPattern ptr2)
-                                              idx1 idx2 of
-                                          Nothing -> []
-                                          Just conds -> [conds] ]
+                           -> case [ app and' (cond1:cond2:match)
+                                   | (ptr1,(cond1,idx1)) <- Map.toList trgs
+                                   , (ptr2,info2) <- Map.toList trg
+                                   , memoryLoc ptr1 == memoryLoc ptr2
+                                   , let (cond2,idx2) = info2 inp
+                                   , match <- case patternMatch
+                                                   (offsetPattern ptr1)
+                                                   (offsetPattern ptr2)
+                                                   idx1 idx2 of
+                                               Nothing -> []
+                                               Just conds -> [conds] ] of
+                               [] -> cval
+                               [cond] -> symITE cond (symbolicValue cont inp) cval
+                               conds -> symITE (app or' conds) (symbolicValue cont inp) cval
                          _ -> cval
                        ) (startVal inp) (fmap snd $ Map.toAscList allEvents)
     {-tp = case Map.keys locs of
@@ -901,7 +901,10 @@ realizeBlock thread blk sblk info real = do
                                      ) gates1
   let instrs1 = Map.union (instructions real) edgePhiGates
       edge1 = edge { edgeValues = Map.union (fmap (\_ -> if isEntryBlock
-                                                         then SometimesDefined (\inp -> not' $ latchCond inp)
+                                                         then SometimesDefined (\inp -> app or'
+                                                                                        [ edgeActivation cond inp
+                                                                                        | cond <- edgeConditions edge ]
+                                                                               )
                                                          else AlwaysDefined (const act)
                                                   ) edgePhiGates
                                             ) (edgeValues edge)
@@ -985,12 +988,25 @@ outputValues real = mp2
               ) mp (latchValueDesc thSt)
           ) mp1 (threadStateDesc $ stateAnnotation real)
     finEdge = foldl mappend (foldl mappend mempty (edges real)) (yieldEdges real)
+    phis0 = foldl (\mp cond
+                   -> Map.union mp
+                      (Map.mapWithKey (\(th,instr) _ inp@(st,_)
+                                       -> let ts = getThreadState th st
+                                              old = (latchValues ts) Map.! instr
+                                              def = symbolicValue ((instructions real) Map.! (th,instr)) inp
+                                          in case (edgeValues finEdge) Map.! (th,instr) of
+                                              AlwaysDefined _ -> def
+                                              SometimesDefined act
+                                                -> symITE (act inp) def old
+                                              NeverDefined -> old
+                                      ) (edgePhis cond))
+                  ) Map.empty (edgeConditions finEdge)
     phis = foldl (\mp cond
                   -> Map.unionWith
                      (\v1 v2 inp -> symITE (edgeActivation cond inp)
                                     (v1 inp) (v2 inp))
                      (fmap symbolicValue (edgePhis cond)) mp
-                 ) Map.empty (edgeConditions finEdge)
+                 ) phis0 (edgeConditions finEdge)
     getExpr thread instr inp = symITE stepCond body old
       where
         stepCond = step $ getThreadInput thread (snd inp)
@@ -1014,7 +1030,7 @@ outputMem real inp
                          idx = idxList (offsetPattern trg) dyn
                      in Map.adjust
                         (\val -> snd $ accessAlloc (const ())
-                                 (\old -> ((),argITE cond' (symbolicValue cont inp) old))
+                                 (\old -> ((),symITE cond' (symbolicValue cont inp) old))
                                  idx val)
                         (memoryLoc trg) mem
                  ) mem trgs

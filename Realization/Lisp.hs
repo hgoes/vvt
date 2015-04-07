@@ -732,6 +732,7 @@ instance TransitionRelation LispProgram where
                       ) (programAssumption prog)
                 ) gates
   renderPartialState prog st = return (show st)
+  renderPartialInput prog inp = return (show inp)
   defaultPredicateExtractor _ = return ()
   extractPredicates _ _ _ _ = return ((),[])
   annotationState prog = fmap fst (programState prog)

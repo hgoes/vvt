@@ -17,6 +17,7 @@ import Prelude hiding (mapM)
 import Data.Traversable
 import Data.Foldable
 import System.IO.Unsafe
+import Debug.Trace
 
 data Struct a = Singleton { singleton :: a }
               | Struct { struct :: [Struct a] }
@@ -241,10 +242,10 @@ accessAlloc comb f (Right i:is) (ValStatic s)
   where
     lst = zipWith (\j x -> (i .==. (constant j),x,accessStruct symITE comb f is x)
                   ) [0..] s
-accessAlloc comb f [] (ValStatic (x:xs))
+{-accessAlloc comb f [] (ValStatic (x:xs))
   = (res,ValStatic (nx:xs))
   where
-    (res,nx) = accessStruct symITE comb f [] x
+    (res,nx) = accessStruct symITE comb f [] x-}
 accessAlloc comb f (i:is) (ValDynamic arrs sz)
   = (res,ValDynamic narrs sz)
   where
@@ -372,7 +373,7 @@ addArgGate gts ann (f::inp -> outp) name = (arg,ngts)
         in ((n+1,ngts),UntypedExpr expr)
 
 argITE :: Args arg => SMTExpr Bool -> arg -> arg -> arg
-argITE cond x y = res
+argITE cond x y = trace ("argITE("++show x++","++show y++") ~> "++show res) res
   where
     x' = fromArgs x
     y' = fromArgs y
@@ -432,6 +433,15 @@ patternMatch (DynamicAccess:xs) (DynamicAccess:ys) (ix:ixs) (iy:iys) = do
   rest <- patternMatch xs ys ixs iys
   return $ (ix .==. iy):rest
 patternMatch _ _ _ _ = Nothing
+
+allocITE :: SMTExpr Bool -> AllocVal -> AllocVal -> AllocVal
+allocITE cond (ValStatic xs) (ValStatic ys)
+  = ValStatic (ites xs ys)
+  where
+    ites [] [] = []
+    ites (x:xs) (y:ys) = (structITE symITE cond x y):ites xs ys
+allocITE cond (ValDynamic x sx) (ValDynamic y sy)
+  = ValDynamic (structITE arrITE cond x y) (ite cond sx sy)
 
 instance Args SymVal where
   type ArgAnnotation SymVal = SymType

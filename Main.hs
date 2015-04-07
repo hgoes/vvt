@@ -8,7 +8,7 @@ import qualified Realization.BlockWise as BlockWise
 import qualified Realization.TRGen as TRGen
 import qualified Realization.Lisp as LispP
 --import qualified Realization.LispKarr as LispP
-import qualified Realization.Threaded as Threaded
+--import qualified Realization.Threaded as Threaded
 import Options
 import CTIGAR (check)
 import PartialArgs
@@ -46,12 +46,20 @@ main = do
       Right fp -> putStrLn "No bug found."
       Left tr' -> do
         putStrLn "Bug found:"
-        mapM_ (\(step,_) -> renderPartialState st
-                            (unmaskValue (getUndefState st) step) >>= putStrLn
+        mapM_ (\(step,inp) -> do
+                  putStr "State: "
+                  renderPartialState st
+                    (unmaskValue (getUndefState st) step) >>= putStrLn
+                  putStr "Input: "
+                  renderPartialInput st
+                    (unmaskValue (getUndefInput st) inp) >>= putStrLn
               ) tr'
 
 getUndefState :: TransitionRelation tr => tr -> State tr
 getUndefState _ = undefined
+
+getUndefInput :: TransitionRelation tr => tr -> Input tr
+getUndefInput _ = undefined
 
 getTransitionRelation :: String -> Options
                          -> (forall mdl. TransitionRelation mdl => mdl -> IO a) -> IO a
@@ -70,10 +78,10 @@ getTransitionRelation file opts f = do
      (_,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- getModel ropts fun
      f st
-   Threaded -> do
+   {-Threaded -> do
      (mod,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      real <- Threaded.realizeProgram mod fun
-     error "Threaded..."
+     error "Threaded..."-}
    BlockWise -> do
      (_,fun) <- getProgram (optDumpModule opts) (optOptimizeTR opts) (optFunction opts) file
      st <- BlockWise.realizeFunction fun
