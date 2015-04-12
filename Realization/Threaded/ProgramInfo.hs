@@ -16,11 +16,13 @@ data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , spawnQuantity :: Quantity
                              }
 
-data AllocInfo = AllocInfo { allocQuantity :: Quantity }
+data AllocInfo = AllocInfo { allocQuantity :: Quantity
+                           , allocType :: Ptr Type
+                           , allocSize :: Maybe (Ptr Value) }
 
 data ProgramInfo = ProgramInfo { mainThread :: ThreadInfo
                                , threads :: Map (Ptr CallInst) ThreadInfo
-                               , allocations :: Map (Ptr AllocaInst) AllocInfo
+                               , allocations :: Map (Ptr Instruction) AllocInfo
                                }
 
 getProgramInfo :: Ptr Module -> Ptr Function -> IO ProgramInfo
@@ -54,6 +56,8 @@ getProgramInfo mod mainFun = do
                                                          , spawnQuantity = n })
                              (threads pi) })
     applyLocs ((AllocationLocation { allocInstruction = inst
-                                   , quantity = n }):locs) pi
-      = applyLocs locs (pi { allocations = Map.insert inst (AllocInfo n)
+                                   , quantity = n
+                                   , allocType' = tp
+                                   , allocSize' = sz }):locs) pi
+      = applyLocs locs (pi { allocations = Map.insert inst (AllocInfo n tp sz)
                                            (allocations pi) })

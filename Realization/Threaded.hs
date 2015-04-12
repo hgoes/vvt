@@ -77,6 +77,7 @@ data Realization inp = Realization { edges :: Map (Maybe (Ptr CallInst),Ptr Basi
                                    , memoryInit :: Map (Ptr GlobalVariable) AllocVal
                                    , mainBlock :: Ptr BasicBlock
                                    , threadBlocks :: Map (Ptr CallInst) (Ptr BasicBlock)
+                                   , programInfo :: ProgramInfo
                                    }
 
 realizeProgram :: Ptr Module -> Ptr Function -> IO (Realization (ProgramState,ProgramInput))
@@ -96,14 +97,17 @@ realizeProgram mod fun = do
                      ) Map.empty globals
   allocSig <- sequence $ Map.mapWithKey
               (\alloc info -> do
-                  ptrTp <- getType alloc
-                  tp <- sequentialTypeGetElementType ptrTp >>= translateType0
-                  return $ case allocQuantity info of
-                    Finite n -> TpStatic n tp
-                    Infinite -> TpDynamic tp
+                  tp <- translateType0 (allocType info)
+                  case allocSize info of
+                   Nothing -> return $ case allocQuantity info of
+                     Finite n -> TpStatic n tp
+                     Infinite -> TpDynamic tp
+                   Just sz -> case allocQuantity info of
+                     Finite 1 -> return $ TpDynamic tp
+                     _ -> error $ "Dynamic allocations in a loop not yet supported."
               ) (allocations info)
   let allocSig' = Map.mapKeysMonotonic Left allocSig
-  sigs <- typeBasedReachability (Map.union globSig allocSig')
+      sigs = typeBasedReachability (Map.union globSig allocSig')
   let th0 tinfo = do
         arg <- case threadArg tinfo of
           Nothing -> return Nothing
@@ -122,7 +126,7 @@ realizeProgram mod fun = do
                  Just threadFun -> getEntryBlock threadFun
             ) (threads info)
   mainDesc <- th0 (mainThread info)
-  thDesc <- mapM th0 (threads info)
+  thDesc <- fmap (typeBasedArgumentReachability sigs) $ mapM th0 (threads info)
   let sigs' = threadBasedReachability (fmap (const ()) (threads info)) sigs
       real0 = Realization { edges = Map.empty
                           , yieldEdges = Map.empty
@@ -141,8 +145,13 @@ realizeProgram mod fun = do
                           , memoryInit = globInit
                           , mainBlock = mainBlk
                           , threadBlocks = thBlks
+                          , programInfo = info
                           }
   --putStrLn $ "Memory description: "++showMemoryDesc sigs' ""
+  --putStrLn $ "Thread description: "++show (fmap (\ts -> do
+  --                                                  (_,tp) <- threadArgumentDesc ts
+  --                                                  return tp)
+  --                                         thDesc)
   real1 <- realizeThread info Nothing (mainThread info) real0
   foldlM (\creal (call,th) -> realizeThread info (Just call) th creal
          ) real1 (Map.toList (threads info))
@@ -335,9 +344,11 @@ realizeInstruction thread blk sblk act i@(castDown -> Just load) edge real0 = do
   name <- getNameString load
   ptr <- loadInstGetPointerOperand load
   (ptr',real1) <- realizeValue thread ptr edge real0
+  --putStrLn $ "Realizing load of "++name++" "++show (symbolicType ptr')
   let val = memoryRead ptr' edge real1
       (val',ngates) = addSymGate (gateMp real1) (symbolicType val)
                       (symbolicValue val) (Just name)
+  --putStrLn $ "done: "++show (symbolicValue val (debugInputs (stateAnnotation real1) (inputAnnotation real1)))
   {-do
     iStr <- valueToString load
     mp' <- mapM (\(nr,ev) -> do
@@ -471,6 +482,24 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                                        (\ti -> ti { nondetTypes = Map.insert i tp
                                                                   (nondetTypes ti) })
                                        (inputAnnotation real0) })
+   "malloc" -> case Map.lookup i (allocations $ programInfo real0) of
+     Just info -> do
+       tp <- translateType real0 (allocType info)
+       return (InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
+                                , symbolicValue = \_ -> ValPtr (Map.singleton ptrLoc (constant True,[])) tp
+                                , alternative = Nothing
+                                },real0)
+   "calloc" -> case Map.lookup i (allocations $ programInfo real0) of
+     Just info -> do
+       tp <- translateType real0 (allocType info)
+       return (InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
+                                , symbolicValue = \_ -> ValPtr (Map.singleton ptrLoc (constant True,[])) tp
+                                , alternative = Nothing
+                                },real0)
+   _ -> error $ "Unknown function call: "++fname
+  where
+    ptrLoc = MemoryPtr { memoryLoc = Left i
+                       , offsetPattern = [StaticAccess 0] }
 realizeDefInstruction thread i@(castDown -> Just icmp) edge real0 = do
   op <- getICmpOp icmp
   lhs <- getOperand icmp 0
@@ -542,13 +571,13 @@ realizeDefInstruction thread i@(castDown -> Just select) edge real0 = do
 realizeDefInstruction thread i@(castDown -> Just (phi::Ptr PHINode)) edge real0
   = getInstructionValue thread i edge real0
 realizeDefInstruction thread i@(castDown -> Just alloc) edge real0 = do
-  tp <- getType alloc >>= sequentialTypeGetElementType >>= translateType real0
+  tp <- getType (alloc :: Ptr AllocaInst) >>= sequentialTypeGetElementType >>= translateType real0
   return (InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
                            , symbolicValue = \_ -> ValPtr (Map.singleton ptrLoc
                                                            (constant True,[])) tp
                            , alternative = Nothing },real0)
   where
-    ptrLoc = MemoryPtr { memoryLoc = Left alloc
+    ptrLoc = MemoryPtr { memoryLoc = Left i
                        , offsetPattern = [StaticAccess 0] }
 realizeDefInstruction thread i@(castDown -> Just (trunc::Ptr TruncInst)) edge real0 = do
   val <- getOperand trunc 0
@@ -585,12 +614,15 @@ realizeDefInstruction thread (castDown -> Just gep) edge real = do
       (trgs,tp) = case symbolicType ptr' of
         TpPtr trgs tp -> (trgs,tp)
       ntp = offsetStruct (tail $ derefPattern rpat []) tp
-  return (InstructionValue { symbolicType = TpPtr (Map.fromList
-                                                   [ (trg { offsetPattern = derefPattern rpat
-                                                                            (offsetPattern trg)
-                                                          },())
-                                                   | trg <- Map.keys trgs ])
-                                            ntp
+      res_tp = TpPtr (Map.fromList
+                      [ (trg { offsetPattern = derefPattern rpat
+                                               (offsetPattern trg)
+                             },())
+                      | trg <- Map.keys trgs ])
+               ntp
+  name <- getNameString gep
+  --putStrLn $ "GEP@"++name++": "++show (symbolicType ptr')++" ~> "++show res_tp
+  return (InstructionValue { symbolicType = res_tp
                            , symbolicValue = \inp -> case symbolicValue ptr' inp of
                               ValPtr trgs _ -> ValPtr (derefPointer (ridx inp) trgs) ntp
                            , alternative = Nothing },real2)
@@ -629,7 +661,9 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
                                                       ((memory ps) Map.! (memoryLoc trg))
                                         in (res,cond)
                                     ) trgs
-        in symITEs $ Map.elems condMp
+        in case Map.elems condMp of
+            [] -> error $ "Pointer has zero targets."
+            xs -> symITEs xs
     val inp = let ValPtr trgs _ = f inp
               in foldl (\cval ev -> case ev of
                          WriteEvent trg cont _
@@ -815,15 +849,20 @@ translateType0 tp = do
   typeDump tp
   error "Cannot translate type"
 
-typeBasedReachability :: Map MemoryLoc AllocType -> IO (Map MemoryLoc AllocType)
+typeBasedReachability :: Map MemoryLoc AllocType -> Map MemoryLoc AllocType
 typeBasedReachability mem
-  = sequence $ Map.mapWithKey
-    (\loc tp -> mapMTypes
-                (\tp -> case tp of
-                  TpPtr _ stp -> return $ TpPtr (allPtrsOfType stp mem) stp
-                  _ -> return tp
-                ) tp
+  = Map.mapWithKey
+    (\loc tp -> mapTypes (mapPointer (\stp _ -> allPtrsOfType stp mem)) tp
     ) mem  
+
+typeBasedArgumentReachability :: Map MemoryLoc AllocType
+                              -> Map (Ptr CallInst) ThreadStateDesc
+                              -> Map (Ptr CallInst) ThreadStateDesc
+typeBasedArgumentReachability mem
+  = fmap (\ts -> case threadArgumentDesc ts of
+           Just (arg,tp)
+             -> ts { threadArgumentDesc = Just (arg,mapPointer (\stp _ -> allPtrsOfType stp mem) tp) }
+           _ -> ts)
 
 threadBasedReachability :: Map (Ptr CallInst) ()
                         -> Map MemoryLoc AllocType

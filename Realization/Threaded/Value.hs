@@ -53,7 +53,7 @@ data AllocType = TpStatic Integer (Struct SymType)
                | TpDynamic (Struct SymType)
                deriving (Eq,Ord,Show,Typeable)
 
-type MemoryLoc = Either (Ptr AllocaInst) (Ptr GlobalVariable)
+type MemoryLoc = Either (Ptr Instruction) (Ptr GlobalVariable)
 
 data MemoryPtr = MemoryPtr { memoryLoc :: MemoryLoc
                            , offsetPattern :: [AccessPattern]
@@ -62,6 +62,14 @@ data MemoryPtr = MemoryPtr { memoryLoc :: MemoryLoc
 data AccessPattern = StaticAccess Integer
                    | DynamicAccess
                    deriving (Eq,Ord,Typeable)
+
+defaultIf :: SMTExpr Bool -> SymVal -> SymVal
+defaultIf cond (ValBool v) = ValBool (ite cond (constant False) v)
+defaultIf cond (ValInt v) = ValInt (ite cond (constant 0) v)
+defaultIf cond (ValPtr ptr tp) = ValPtr (fmap (\(c,idx) -> (constant False,
+                                                            fmap (const $ constant 0) idx)
+                                              ) ptr) tp
+defaultIf cond (ValThreadId mp) = ValThreadId $ fmap (const $ constant False) mp
 
 idxList :: [AccessPattern] -> [SMTExpr Integer] -> [Either Integer (SMTExpr Integer)]
 idxList [] [] = []
@@ -138,6 +146,7 @@ symITE cond (ValPtr x tp) (ValPtr y _)
 symITE cond (ValThreadId x) (ValThreadId y)
   = ValThreadId (Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
                  (fmap (.&&. cond)) (fmap (.&&. (not' cond))) x y)
+symITE cond v1 v2 = error $ "Cannot ITE differently typed values "++show v1++" and "++show v2
 
 symITEs :: [(SymVal,SMTExpr Bool)] -> SymVal
 symITEs [(val,_)] = val
@@ -249,7 +258,8 @@ accessAlloc comb f (Right i:is) (ValStatic s)
 accessAlloc comb f (i:is) (ValDynamic arrs sz)
   = (res,ValDynamic narrs sz)
   where
-    (res,narrs) = accessStruct arrITE comb (accessArray f i') is arrs
+    nf val = f (defaultIf (i' .>=. sz) val)
+    (res,narrs) = accessStruct arrITE comb (accessArray nf i') is arrs
     i' = case i of
       Left i -> constant i
       Right i -> i
@@ -415,6 +425,14 @@ mapTypes f (TpDynamic tp) = TpDynamic (fmap f tp)
 mapMTypes :: Monad m => (SymType -> m SymType) -> AllocType -> m AllocType
 mapMTypes f (TpStatic n tp) = mapM f tp >>= return.TpStatic n
 mapMTypes f (TpDynamic tp) = mapM f tp >>= return.TpDynamic 
+
+mapPointer :: (Struct SymType -> Map MemoryPtr () -> Map MemoryPtr ())
+           -> SymType -> SymType
+mapPointer f (TpPtr trgs tp)
+  = let ntrgs = f tp trgs
+        ntp = fmap (mapPointer f) tp
+    in TpPtr ntrgs ntp
+mapPointer _ tp = tp
 
 patternMatch :: [AccessPattern] -> [AccessPattern]
              -> [SMTExpr Integer] -> [SMTExpr Integer]

@@ -22,7 +22,8 @@ class (SMTType t,SMTValue (ResultType t),Unit (SMTAnnotation t))
       => Indexable t i where
   type ResultType t
   canIndex :: t -> Bool
-  index :: (forall p. (Indexable p i,ResultType p ~ ResultType t) => SMTExpr p -> (a,SMTExpr p)) -> SMTExpr t -> i -> (a,SMTExpr t)
+  index :: (forall p. (Indexable p i,ResultType p ~ ResultType t) => SMTExpr p -> (a,SMTExpr p))
+        -> SMTExpr t -> i -> (a,SMTExpr t)
   deref :: i -> SMTExpr t -> SMTExpr (ResultType t)
   reref :: i -> SMTExpr (ResultType t) -> SMTExpr t
   recIndexable :: t -> i -> Dict (Indexable (ResultType t) i,
@@ -92,9 +93,9 @@ intType :: LispType
 intType = LispType 0 (Singleton (Fix IntSort))
 
 indexType :: LispType -> [Integer] -> Sort
-indexType (LispType _ tp) = indexType' tp
+indexType (LispType n tp) = indexType' tp
   where
-    indexType' (Singleton s) [] = s
+    indexType' (Singleton s) [] = foldl (\cs _ -> Fix (ArraySort [Fix IntSort] cs)) s [1..n]
     indexType' (Struct tps) (i:is) = indexType' (tps `genericIndex` i) is
 
 argITE :: Args arg => SMTExpr Bool -> arg -> arg -> arg
@@ -127,8 +128,8 @@ accessValue f fields idx v@(LispValue sz val)
     derefVal :: Indexable t (SMTExpr Integer)
                 => (forall t. SMTType t => SMTExpr t -> (a,SMTExpr t)) -> SMTExpr t
                 -> [SMTExpr Integer] -> (a,SMTExpr t)
-    derefVal f val [] = let (res,nval) = f (deref (undefined::SMTExpr Integer) val)
-                        in (res,reref (undefined::SMTExpr Integer) nval)
+    derefVal f val [] = f val {-let (res,nval) = f (deref (undefined::SMTExpr Integer) val)
+                        in (res,reref (undefined::SMTExpr Integer) nval)-}
     derefVal f val (i:is) = index (\e -> derefVal f e is) val i
 
 accessSize :: (SMTExpr Integer -> (a,SMTExpr Integer)) -> [SMTExpr Integer] -> LispValue
@@ -361,7 +362,7 @@ instance Args LispValue where
       stripSort sort = sort
   toArgs (LispType lvl tp) es = do
     (sz,es1) <- toArgs lvl es
-    (val,es2) <- toStruct tp es
+    (val,es2) <- toStruct tp es1
     return (LispValue sz val,es2)
     where
       toStruct (Singleton tp) (e:es)
@@ -471,13 +472,14 @@ instance PartialArgs LispValue where
   maskValue u (Singleton val) mask = (Singleton nval,nmask)
     where
       (nval,nmask) = maskVal val mask
-      maskVal (LispPArray vals) mask
+      maskVal (LispPArray vals) (_:mask)
         = let (nmask,nvals) = mapAccumL (\mask val -> let (nval,nmask) = maskVal val mask
                                                       in (nmask,nval)
                                         ) mask vals
           in (LispPArray nvals,nmask)
-      maskVal val (True:mask) = (val,mask)
-      maskVal _ (False:mask) = (LispPEmpty,mask)
+      maskVal (LispPValue val) (True:mask) = (LispPValue val,mask)
+      maskVal (LispPValue _) (False:mask) = (LispPEmpty,mask)
+      maskVal LispPEmpty (_:mask) = (LispPEmpty,mask)
   maskValue u (Struct vals) mask = (Struct nvals,nmask)
     where
       (nmask,nvals) = mapAccumL (\mask val -> let (nval,nmask) = maskValue u val mask
@@ -488,18 +490,29 @@ instance PartialArgs LispValue where
       unmask (LispUArray vals) = LispPArray (fmap unmask vals)
       unmask (LispUValue val) = LispPValue val
   unmaskValue u (Struct vals) = Struct $ fmap (unmaskValue u) vals
-  assignPartial (LispValue _ val) part = assign val part
+  assignPartial (LispValue (Size sz) val) part
+    = assign val part
     where
-      assign (Singleton (Val val)) (Singleton part) = assign' val part
+      assign (Singleton (Val val)) (Singleton part) = assign' sz val part
       assign (Struct vals) (Struct parts) = concat $ zipWith assign vals parts
-      assign' :: (SMTType t,Indexable t (SMTExpr Integer)) => SMTExpr t -> LispPValue -> [Maybe (SMTExpr Bool)]
-      assign' _ LispPEmpty = [Nothing]
-      assign' val (LispPValue x) = case cast (constant x) of
+      assign' :: (SMTType t,Indexable t (SMTExpr Integer))
+                 => [SizeElement] -> SMTExpr t -> LispPValue -> [Maybe (SMTExpr Bool)]
+      assign' _ _ LispPEmpty = [Nothing]
+      assign' [] val (LispPValue x) = case cast (constant x) of
         Just x' -> [Just (val .==. x')]
-      assign' arr (LispPArray vals) = [ res
-                                      | (i,val) <- zip [0..] vals
-                                      , res <- fst $ index (\arr' -> (assign' arr val,arr'))
-                                               arr (constant (i::Integer)) ]
+        Nothing -> error $ "Can't assign "++show val++" with "++show x
+      assign' (SizeElement e:es) arr (LispPArray vals)
+        = (Just $ (deref (undefined::SMTExpr Integer) e)
+           .==. (constant $ genericLength vals)):
+          [ res
+          | (i,val) <- zip [0..] vals
+          , res <- fst $ index
+                   (\arr' -> (assign' (fmap (\(SizeElement e)
+                                              -> fst $ index (\x -> (SizeElement x,x))
+                                                 e (constant (i::Integer))
+                                            ) es)
+                              arr' val,arr'))
+                   arr (constant (i::Integer)) ]
 
 instance Show LispUValue where
   showsPrec p (LispUValue val) = showsPrec p val

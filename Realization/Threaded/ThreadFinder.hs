@@ -13,8 +13,10 @@ data ThreadLocation = ThreadSpawnLocation { spawningInstruction :: Ptr CallInst
                                           , spawnedFunction :: Ptr Function
                                           , quantity :: Quantity
                                           }
-                    | AllocationLocation { allocInstruction :: Ptr AllocaInst
+                    | AllocationLocation { allocInstruction :: Ptr Instruction
                                          , quantity :: Quantity
+                                         , allocType' :: Ptr Type
+                                         , allocSize' :: Maybe (Ptr Value)
                                          }
                     deriving (Show,Eq,Ord)
 
@@ -60,15 +62,47 @@ getThreadSpawns fun loopInfo = do
                                                             else Infinite
                                                }):rest
                Nothing -> error "Spawning dynamic functions not supported."
+            "malloc" -> do
+              -- XXX: Ignore the size parameter for now...
+              tp <- usedType i
+              case tp of
+               Nothing -> error $ "Mallocs that aren't casted aren't supported yet."
+               Just rtp -> do
+                 loop <- loopInfoBaseGetLoopFor loopInfo blk
+                 rest <- analyzeInstructions is blk blks
+                 return $ AllocationLocation { allocInstruction = i
+                                             , quantity = if loop==nullPtr
+                                                          then Finite 1
+                                                          else Infinite
+                                             , allocType' = rtp
+                                             , allocSize' = Nothing }:rest
+            "calloc" -> do
+              -- XXX: Ignore the member size parameter for now...
+              num <- callInstGetArgOperand call 0
+              tp <- usedType i
+              case tp of
+               Nothing -> error $ "Callocs that aren't casted aren't supported yet."
+               Just rtp -> do
+                 loop <- loopInfoBaseGetLoopFor loopInfo blk
+                 rest <- analyzeInstructions is blk blks
+                 return $ AllocationLocation { allocInstruction = i
+                                             , quantity = if loop==nullPtr
+                                                          then Finite 1
+                                                          else Infinite
+                                             , allocType' = rtp
+                                             , allocSize' = Just num }:rest
             _ -> analyzeInstructions is blk blks
       Nothing -> case castDown i of
         Just alloc -> do
           loop <- loopInfoBaseGetLoopFor loopInfo blk
           rest <- analyzeInstructions is blk blks
-          return $ (AllocationLocation { allocInstruction = alloc
+          tp <- getType (alloc :: Ptr AllocaInst) >>= sequentialTypeGetElementType
+          return $ (AllocationLocation { allocInstruction = i
                                        , quantity = if loop==nullPtr
                                                     then Finite 1
                                                     else Infinite
+                                       , allocType' = tp
+                                       , allocSize' = Nothing
                                        }):rest
         Nothing -> analyzeInstructions is blk blks
 
@@ -78,32 +112,55 @@ getThreadArgument fun = do
   case args of
    [] -> return Nothing
    arg:_ -> do
-     tp <- isUsed arg
+     tp <- usedType arg
      case tp of
       Nothing -> return Nothing
       Just tp -> return (Just (arg,tp))
+
+usedType :: ValueC v => Ptr v -> IO (Maybe (Ptr Type))
+usedType val = do
+  begin <- valueUseBegin val
+  end <- valueUseEnd val
+  getUses begin end
   where
-    isUsed :: Ptr Argument -> IO (Maybe (Ptr Type))
-    isUsed val = do
-      begin <- valueUseBegin val
-      end <- valueUseEnd val
-      hasUse <- valueUseIteratorNEq begin end
-      if hasUse
-        then do
-        use <- valueUseIteratorDeref begin
-        user <- useGetUser use
+    getUses cur end = do
+      isEnd <- valueUseIteratorEq cur end
+      if isEnd
+        then return Nothing
+        else do
+        user <- valueUseIteratorDeref cur >>= useGetUser
         case castDown user of
          Just bitcast -> do
            tp <- getType (bitcast :: Ptr BitCastInst)
            case castDown tp of
             Just ptp -> do
               rtp <- sequentialTypeGetElementType (ptp :: Ptr PointerType)
-              return (Just rtp)
+              nxt <- valueUseIteratorNext cur
+              getUses' rtp nxt end
             Nothing -> error "Bitcast is not a pointer."
          Nothing -> do
-           str <- valueToString user
-           error $ "User is not a bitcast: "++str
-        else return Nothing
+           nxt <- valueUseIteratorNext cur
+           getUses nxt end
+    getUses' tp cur end = do
+      isEnd <- valueUseIteratorEq cur end
+      if isEnd
+        then return (Just tp)
+        else do
+        user <- valueUseIteratorDeref cur >>= useGetUser
+        case castDown user of
+         Just bitcast -> do
+           tp <- getType (bitcast :: Ptr BitCastInst)
+           case castDown tp of
+            Just ptp -> do
+              rtp <- sequentialTypeGetElementType (ptp :: Ptr PointerType)
+              nxt <- valueUseIteratorNext cur
+              if rtp==tp
+                then getUses' tp nxt end
+                else error "Pointer is bitcast to multiple different types."
+            Nothing -> error "Bitcast is not a pointer."
+         Nothing -> do
+           nxt <- valueUseIteratorNext cur
+           getUses' tp nxt end
 
 instance Num Quantity where
   (+) Infinite _ = Infinite

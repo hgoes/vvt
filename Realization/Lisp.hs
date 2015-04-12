@@ -662,7 +662,9 @@ declareExpr prog state inps gates expr = do
     declareAccess gates (LispVarAccess var stat dyn) = do
       (val,ngates) <- declareVar prog state inps gates var
       let (res,_) = accessValue (\e -> case cast e of
-                                  Just e' -> (e',e)) stat dyn val
+                                  Just e' -> (e',e)
+                                  Nothing -> error $ "Failed to access var "++show var++" with "++show stat++" "++show dyn++", got: "++show e
+                                ) stat dyn val
       return (res,ngates)
     declareAccess gates (LispSizeAccess var dyn) = do
       (val,ngates) <- declareVar prog state inps gates var
