@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-int assert(bool c);
+extern int assert(bool c);
 
 #ifdef __cplusplus
 }
