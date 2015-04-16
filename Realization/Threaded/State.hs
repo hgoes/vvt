@@ -62,15 +62,21 @@ updateThreadInputDesc (Just thread) f pi
 
 getThreadState :: Maybe (Ptr CallInst) -> ProgramState -> ThreadState
 getThreadState Nothing st = mainState st
-getThreadState (Just th) st = snd $ (threadState st) Map.! th
+getThreadState (Just th) st = case Map.lookup th (threadState st) of
+  Just (_,ts) -> ts
+  Nothing -> error $ "getThreadState: Couldn't get thread state for "++show th
 
 getThreadStateDesc :: Maybe (Ptr CallInst) -> ProgramStateDesc -> ThreadStateDesc
 getThreadStateDesc Nothing ps = mainStateDesc ps
-getThreadStateDesc (Just th) st = (threadStateDesc st) Map.! th
+getThreadStateDesc (Just th) st = case Map.lookup th (threadStateDesc st) of
+  Just desc -> desc
+  Nothing -> error $ "getThreadStateDesc: Couldn't get thread state description for "++show th
 
 getThreadInput :: Maybe (Ptr CallInst) -> ProgramInput -> ThreadInput
 getThreadInput Nothing inp = mainInput inp
-getThreadInput (Just th) inp = (threadInput inp) Map.! th
+getThreadInput (Just th) inp = case Map.lookup th (threadInput inp) of
+  Just inp -> inp
+  Nothing -> error $ "getThreadInput: Couldn't get input for thread "++show th
 
 instance Args ThreadInput where
   type ArgAnnotation ThreadInput = ThreadInputDesc
@@ -219,9 +225,12 @@ showMemoryDesc desc
 
 data RevVar = LatchBlock (Maybe (Ptr CallInst)) (Ptr BasicBlock) Int
             | LatchValue (Maybe (Ptr CallInst)) (Ptr Instruction) RevValue
+            | InputValue (Maybe (Ptr CallInst)) (Ptr Instruction) RevValue
             | ThreadArgument (Maybe (Ptr CallInst)) (Ptr Argument) RevValue
             | ThreadActivation (Ptr CallInst)
+            | ThreadStep (Maybe (Ptr CallInst))
             | MemoryValue MemoryLoc RevAlloc
+            | SizeValue MemoryLoc
             deriving (Typeable,Eq,Ord)
 
 data RevValue = RevInt
@@ -250,11 +259,18 @@ instance Show RevVar where
     return $ "latchv("++(case th of
                           Nothing -> "main-"
                           Just _ -> "thread-")++iName++" ~> "++show rev++")"
+  show (InputValue th inst rev) = unsafePerformIO $ do
+    iName <- getNameString inst
+    return $ "inputv("++(case th of
+                          Nothing -> "main-"
+                          Just _ -> "thread-")++iName++" ~> "++show rev++")"
   show (ThreadArgument th arg rev) = unsafePerformIO $ do
     argName <- getNameString arg
     return $ "arg("++argName++" ~> "++show rev++")"
   show (ThreadActivation th) = "thread-act()"
+  show (ThreadStep th) = "thread-step()"
   show (MemoryValue loc rev) = "mem("++showMemoryLoc loc ""++" ~> "++show rev++")"
+  show (SizeValue loc) = "size("++showMemoryLoc loc ""++")"
 
 instance Show RevValue where
   show RevInt = "int"
@@ -280,12 +296,16 @@ debugInputs psd isd = (ps,is)
                       , threadState = ts
                       , memory = mem
                       }
-    is = ProgramInput {
+    is = ProgramInput { mainInput = mi
+                      , threadInput = ti
                       }
     ms = debugThreadState Nothing (mainStateDesc psd)
     ts = Map.mapWithKey (\th tsd -> (InternalObj (ThreadActivation th) (),
                                      debugThreadState (Just th) tsd)
                         ) (threadStateDesc psd)
+    mi = debugThreadInput Nothing (mainInputDesc isd)
+    ti = Map.mapWithKey (\th tsd -> debugThreadInput (Just th) tsd
+                        ) (threadInputDesc isd)
     mem = Map.mapWithKey debugAllocVal (memoryDesc psd)
     debugThreadState th tsd
       = ThreadState { latchBlocks = lb
@@ -300,6 +320,12 @@ debugInputs psd isd = (ps,is)
         ta = case threadArgumentDesc tsd of
           Nothing -> Nothing
           Just (arg,tp) -> Just (arg,debugValue (ThreadArgument th arg) tp)
+    debugThreadInput th tsd
+      = ThreadInput { step = InternalObj (ThreadStep th) ()
+                    , nondets = Map.mapWithKey
+                                (\instr tp -> debugValue (InputValue th instr) tp
+                                ) (nondetTypes tsd)
+                    }
     debugValue f TpBool = ValBool (InternalObj (f RevBool) ())
     debugValue f TpInt  = ValInt  (InternalObj (f RevInt) ())
     debugValue f (TpPtr trgs stp)
@@ -311,11 +337,28 @@ debugInputs psd isd = (ps,is)
     debugValue f (TpThreadId ths)
       = ValThreadId (Map.mapWithKey (\th _ -> InternalObj (f (ThreadIdCond th)) ()
                                     ) ths)
-    debugStruct f idx (Singleton tp) = Singleton (debugValue (f idx) tp)
+
+    debugArr f TpBool = ArrBool (InternalObj (f RevBool) ((),()))
+    debugArr f TpInt = ArrInt (InternalObj (f RevInt) ((),()))
+    debugArr f (TpPtr trgs stp)
+      = ArrPtr { arrPtr = Map.mapWithKey (\loc _ -> (InternalObj (f (PtrCond loc)) ((),()),
+                                                     [ InternalObj (f (PtrIdx loc n)) ((),())
+                                                     | (n,_) <- zip [0..]
+                                                                [ () | DynamicAccess <- offsetPattern loc ] ])
+                                         ) trgs
+               , arrPtrType = stp }
+    debugArr f (TpThreadId ths)
+      = ArrThreadId (Map.mapWithKey (\th _ -> InternalObj (f (ThreadIdCond th)) ((),())
+                                    ) ths)
+    debugStruct f idx (Singleton tp) = Singleton (f idx tp)
     debugStruct f idx (Struct tps) = Struct [ debugStruct f (idx++[n]) tp
                                             | (n,tp) <- zip [0..] tps ]
     debugAllocVal loc (TpStatic n tp)
-      = ValStatic [ debugStruct (\idx rev -> MemoryValue loc (RevStatic i idx rev)
+      = ValStatic [ debugStruct (\idx tp -> debugValue
+                                            (\rev -> MemoryValue loc (RevStatic i idx rev)) tp
                                 ) [] tp | i <- [0..n-1]]
-    --debugAllocVal loc (TpDynamic tp)
-    --  = ValDynamic 
+    debugAllocVal loc (TpDynamic tp)
+      = ValDynamic (debugStruct (\idx tp -> debugArr
+                                            (\rev -> MemoryValue loc (RevDynamic idx rev)) tp
+                                ) [] tp)
+        (InternalObj (SizeValue loc) ())

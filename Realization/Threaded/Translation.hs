@@ -406,7 +406,8 @@ makeProgramInput threadNames real = do
   mainInstrs <- sequence $ Map.mapWithKey
                 (\instr tp -> do
                     name <- instrName instr
-                    return $ makeVar (T.append "main-" name) L.State tp
+                    return $ makeVar (L.NamedVar (T.append "main-" name) L.State
+                                      (L.LispType 0 (toLispType' (Singleton tp)))) tp
                 ) (latchValueDesc $ mainStateDesc $ stateAnnotation real)
   threads <- sequence $ Map.mapWithKey
              (\th thd -> do
@@ -426,14 +427,18 @@ makeProgramInput threadNames real = do
                            (\instr tp -> do
                                name <- instrName instr
                                let name' = T.append (T.pack $ thName++"-") name
-                               return $ makeVar name' L.State tp
+                               return $ makeVar (L.NamedVar name' L.State
+                                                 (L.LispType 0
+                                                  (toLispType' (Singleton tp)))) tp
                            ) (latchValueDesc thd)
                  arg <- case threadArgumentDesc thd of
                    Nothing -> return Nothing
                    Just (val,tp) -> do
                      name <- instrName val
                      let name' = T.append (T.pack $ thName++"-") name
-                     return (Just (val,makeVar name' L.State tp))
+                     return (Just (val,makeVar (L.NamedVar name' L.State
+                                                (L.LispType 0 (toLispType'
+                                                               (Singleton tp)))) tp))
                  return (run,ThreadState { latchBlocks = blocks
                                          , latchValues = instrs
                                          , threadArgument = arg })
@@ -446,7 +451,8 @@ makeProgramInput threadNames real = do
   mainNondet <- sequence $ Map.mapWithKey
                 (\instr tp -> do
                     name <- instrName instr
-                    return $ makeVar (T.append "main-" name) L.Input tp
+                    return $ makeVar (L.NamedVar (T.append "main-" name) L.Input
+                                      (L.LispType 0 (toLispType' (Singleton tp)))) tp
                 ) (nondetTypes $ mainInputDesc $ inputAnnotation real)
   thInps <- sequence $ Map.mapWithKey
             (\th thd -> do
@@ -454,7 +460,9 @@ makeProgramInput threadNames real = do
                 nondet <- sequence $ Map.mapWithKey
                           (\instr tp -> do
                               name <- instrName instr
-                              return $ makeVar (T.append (T.pack $ thName++"-") name) L.Input tp
+                              return $ makeVar
+                                (L.NamedVar (T.append (T.pack $ thName++"-") name) L.Input
+                                 (L.LispType 0 (toLispType' (Singleton tp)))) tp
                           ) (nondetTypes thd)
                 return ThreadInput { step = InternalObj (L.LispVarAccess
                                                          (L.NamedVar (T.pack $ "step-"++thName)
@@ -475,60 +483,52 @@ makeProgramInput threadNames real = do
                                                  , nondets = mainNondet }
                        , threadInput = thInps })
 
-makeVar :: T.Text -> L.LispVarCat -> SymType -> SymVal
+makeVar :: L.LispVar -> SymType -> SymVal
 makeVar = makeVar' []
 
-makeVar' :: [Integer] -> T.Text -> L.LispVarCat -> SymType -> SymVal
-makeVar' idx name cat TpBool
-  = ValBool $ InternalObj (L.LispVarAccess (L.NamedVar name cat L.boolType) idx []) ()
-makeVar' idx name cat TpInt
-  = ValInt $ InternalObj (L.LispVarAccess (L.NamedVar name cat L.intType) idx []) ()
-makeVar' idx name cat (TpPtr locs ptp)
+makeVar' :: [Integer] -> L.LispVar -> SymType -> SymVal
+makeVar' idx var TpBool
+  = ValBool $ InternalObj (L.LispVarAccess var idx []) ()
+makeVar' idx var TpInt
+  = ValInt $ InternalObj (L.LispVarAccess var idx []) ()
+makeVar' idx var (TpPtr locs ptp)
   = ValPtr (snd $ Map.mapAccumWithKey
             (\i loc () -> (i+1,
                            (InternalObj (L.LispVarAccess
-                                         (L.NamedVar name cat (L.LispType 0 tp))
+                                         var
                                          (idx++[i,0]) []) (),
                             [InternalObj (L.LispVarAccess
-                                          (L.NamedVar name cat (L.LispType 0 tp))
+                                          var
                                           (idx++[i,j]) []) ()
                             | (j,_) <- zip [1..] [ () | DynamicAccess <- offsetPattern loc ] ]))
             ) 0 locs) ptp
-  where
-    tp = L.Struct
-         [ L.Struct $
-           L.Singleton (Fix BoolSort):
-           [ L.Singleton (Fix IntSort)
-           | DynamicAccess <- offsetPattern loc ]
-         | loc <- Map.keys locs ]
-makeVar' idx name cat (TpThreadId ths)
+makeVar' idx var (TpThreadId ths)
   = ValThreadId $ snd $ Map.mapAccum
     (\i () -> (i+1,InternalObj (L.LispVarAccess
-                                (L.NamedVar name cat (L.LispType 0 (L.Struct
-                                                                    [ L.Singleton (Fix BoolSort)
-                                                                    | _ <- Map.elems ths ])))
+                                var
                                 (idx++[i]) []) ())) 0 ths
 
 makeAllocVar :: T.Text -> L.LispVarCat -> AllocType -> AllocVal
-makeAllocVar name cat (TpStatic n tps)
+makeAllocVar name cat tp@(TpStatic n tps)
   = ValStatic [ makeStruct [i] tps | i <- [0..n-1] ]
   where
-    makeStruct idx (Singleton tp) = Singleton (makeVar' idx name cat tp)
+    var = L.NamedVar name cat (fst $ toLispAllocType tp)
+    makeStruct idx (Singleton tp) = Singleton (makeVar' idx var tp)
     makeStruct idx (Struct tps) = Struct [ makeStruct (idx++[i]) tp
                                          | (i,tp) <- zip [0..] tps ]
-makeAllocVar name cat (TpDynamic tp)
+makeAllocVar name cat rtp@(TpDynamic tp)
   = ValDynamic (makeStruct [] tp) (InternalObj (L.LispSizeAccess
-                                                (L.NamedVar name cat tp')
+                                                var
                                                 []) ())
   where
-    tp' = L.LispType 1 (toLispType' tp)
+    var = L.NamedVar name cat (fst $ toLispAllocType rtp)
     makeStruct idx (Singleton TpBool)
       = Singleton $ ArrBool (InternalObj (L.LispVarAccess
-                                          (L.NamedVar name cat tp')
+                                          var
                                           idx []) ((),()))
     makeStruct idx (Singleton TpInt)
       = Singleton $ ArrInt (InternalObj (L.LispVarAccess
-                                         (L.NamedVar name cat tp')
+                                         var
                                          idx []) ((),()))
     makeStruct idx (Struct tps)
       = Struct [ makeStruct (idx++[i]) tp

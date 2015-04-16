@@ -17,6 +17,7 @@ import Prelude hiding (mapM)
 import Data.Traversable
 import Data.Foldable
 import System.IO.Unsafe
+import Data.Maybe (mapMaybe)
 import Debug.Trace
 
 data Struct a = Singleton { singleton :: a }
@@ -88,7 +89,8 @@ derefPointer :: [Either Integer (SMTExpr Integer)]
              -> Map MemoryPtr (SMTExpr Bool,[SMTExpr Integer])
              -> Map MemoryPtr (SMTExpr Bool,[SMTExpr Integer])
 derefPointer idx mp
-  = Map.fromList $
+  = Map.fromListWith
+    (\(c1,dyn1) (c2,dyn2) -> (c1 .||. c2,zipWith (ite c1) dyn1 dyn2))
     [ (loc { offsetPattern = pat },(cond,dyn))
     | (loc,(cond,dyns)) <- Map.toList mp
     , let (pat,dyn) = deref (offsetPattern loc) dyns idx ]
@@ -125,15 +127,18 @@ derefPointer idx mp
     toAccess [] = ([],[])
 
 
-withOffset :: (Struct b -> (a,Struct b)) -> Integer
-           -> Struct b -> (a,Struct b)
-withOffset f n (Struct xs) = (res,Struct nxs)
+withOffset :: (Struct b -> Maybe (a,Struct b)) -> Integer
+           -> Struct b -> Maybe (a,Struct b)
+withOffset f n (Struct xs) = do
+  (res,nxs) <- withStruct n xs
+  return (res,Struct nxs)
   where
-    (res,nxs) = withStruct n xs
-    withStruct 0 (x:xs) = let (res,nx) = f x
-                          in (res,nx:xs)
-    withStruct n (x:xs) = let (res,nxs) = withStruct (n-1) xs
-                          in (res,x:nxs)
+    withStruct 0 (x:xs) = do
+      (res,nx) <- f x
+      return (res,nx:xs)
+    withStruct n (x:xs) = do
+      (res,nxs) <- withStruct (n-1) xs
+      return (res,x:nxs)
 
 symITE :: SMTExpr Bool -> SymVal -> SymVal -> SymVal
 symITE cond (ValBool x) (ValBool y) = ValBool (ite cond x y)
@@ -185,84 +190,126 @@ structITEs comb xs = Struct (zipStructs (fmap (\(Struct x,c) -> (x,c)) xs))
 
 withDynOffset :: (SMTExpr Bool -> b -> b -> b)
               -> ([(a,SMTExpr Bool)] -> a)
-              -> (Struct b -> (a,Struct b))
+              -> (Struct b -> Maybe (a,Struct b))
               -> SMTExpr Integer
-              -> Struct b -> (a,Struct b)
+              -> Struct b -> Maybe (a,Struct b)
 withDynOffset ite comb f n (Struct xs)
-  = (comb $ fmap (\(c,_,(res,_)) -> (res,c)) lst,
-     Struct $ fmap (\(c,x,(_,nx))
-                    -> structITE ite c nx x
-                   ) lst)
+  = case mapMaybe (\(_,r) -> case r of
+                              Just (c,res,_) -> Just (res,c)
+                              Nothing -> Nothing
+                  ) lst of
+     [] -> Nothing
+     conds -> Just (comb conds,
+                    Struct $ fmap (\(x,r) -> case r of
+                                    Just (c,_,nx) -> structITE ite c nx x
+                                    Nothing -> x
+                                  ) lst)
   where
-    lst = zipWith (\i x -> (n .==. (constant i),x,f x)) [0..] xs
+    lst = zipWith (\i x -> (x,case f x of
+                             Just (res,nx) -> Just (n .==. (constant i),res,nx)
+                             Nothing -> Nothing)
+                  ) [0..] xs
 
 accessStruct :: (SMTExpr Bool -> b -> b -> b)
              -> ([(a,SMTExpr Bool)] -> a)
-             -> (b -> (a,b))
+             -> (b -> Maybe (a,b))
              -> [Either Integer (SMTExpr Integer)]
              -> Struct b
-             -> (a,Struct b)
-accessStruct _ _ f [] (Singleton x) = let (res,nx) = f x
-                                      in (res,Singleton nx)
+             -> Maybe (a,Struct b)
+accessStruct _ _ f [] (Singleton x) = do
+  (res,nx) <- f x
+  return (res,Singleton nx)
 accessStruct ite comb f (Left i:is) s
   = withOffset (accessStruct ite comb f is) i s
 accessStruct ite comb f (Right i:is) s
   = withDynOffset ite comb (accessStruct ite comb f is) i s
 
-accessArray :: (SymVal -> (a,SymVal)) -> SMTExpr Integer
+accessArray :: (SymVal -> Maybe (a,SymVal)) -> SMTExpr Integer
             -> SymArray
-            -> (a,SymArray)
-accessArray f idx (ArrBool arr) = let (res,ValBool nval) = f (ValBool $ select arr idx)
-                                  in (res,ArrBool $ store arr idx nval)
-accessArray f idx (ArrInt arr) = let (res,ValInt nval) = f (ValInt $ select arr idx)
-                                 in (res,ArrInt $ store arr idx nval)
-accessArray f idx (ArrPtr arr tp)
-  = let val = fmap (\(conds,idxs) -> (select conds idx,fmap (\i -> select i idx) idxs)) arr
-        (res,ValPtr nval _) = f (ValPtr val tp)
-        narr = Map.intersectionWith
-               (\(ncond,noff) (conds,offs)
-                -> (store conds idx ncond,
-                    zipWith (\noff offs -> store offs idx noff) noff offs))
-               nval arr
-    in (res,ArrPtr narr tp)
-accessArray f idx (ArrThreadId arr) = let val = fmap (\arr -> select arr idx) arr
-                                          (res,ValThreadId nval) = f (ValThreadId val)
-                                          narr = Map.intersectionWith
-                                                 (\nval arr -> store arr idx nval)
-                                                 nval arr
-                                      in (res,ArrThreadId narr)
+            -> Maybe (a,SymArray)
+accessArray f idx (ArrBool arr) = do
+  (res,ValBool nval) <- f (ValBool $ select arr idx)
+  return (res,ArrBool $ store arr idx nval)
+accessArray f idx (ArrInt arr) = do
+  (res,ValInt nval) <- f (ValInt $ select arr idx)
+  return (res,ArrInt $ store arr idx nval)
+accessArray f idx (ArrPtr arr tp) = do
+  let val = fmap (\(conds,idxs) -> (select conds idx,fmap (\i -> select i idx) idxs)) arr
+  (res,ValPtr nval _) <- f (ValPtr val tp)
+  let narr = Map.intersectionWith
+             (\(ncond,noff) (conds,offs)
+              -> (store conds idx ncond,
+                  zipWith (\noff offs -> store offs idx noff) noff offs))
+             nval arr
+  return (res,ArrPtr narr tp)
+accessArray f idx (ArrThreadId arr) = do
+  let val = fmap (\arr -> select arr idx) arr
+  (res,ValThreadId nval) <- f (ValThreadId val)
+  let narr = Map.intersectionWith
+             (\nval arr -> store arr idx nval)
+             nval arr
+  return (res,ArrThreadId narr)
 
 accessAlloc :: ([(a,SMTExpr Bool)] -> a)
-            -> (SymVal -> (a,SymVal))
+            -> (SymVal -> Maybe (a,SymVal))
             -> [Either Integer (SMTExpr Integer)]
             -> AllocVal
-            -> (a,AllocVal)
-accessAlloc comb f (Left i:is) (ValStatic s)
-  = (res,ValStatic ns)
+            -> Maybe (a,AllocVal)
+accessAlloc comb f idx@(Left i:is) (ValStatic s)
+  = do
+  (res,ns) <- accessStatic i s
+  return (res,ValStatic ns)
   where
-    (res,ns) = accessStatic i s
-    accessStatic 0 (s:ss) = let (res,ns) = accessStruct symITE comb f is s
-                            in (res,ns:ss)
-    accessStatic n (s:ss) = let (res,nss) = accessStatic (n-1) ss
-                            in (res,s:nss)
+    accessStatic 0 (s:ss) = do
+      (res,ns) <- accessStruct symITE comb f is s
+      return (res,ns:ss)
+    accessStatic n (s:ss) = do
+      (res,nss) <- accessStatic (n-1) ss
+      return (res,s:nss)
 accessAlloc comb f (Right i:is) (ValStatic s)
-  = (comb $ fmap (\(c,_,(res,_)) -> (res,c)) lst,
-     ValStatic $ fmap (\(c,old,(_,new)) -> structITE symITE c new old) lst)
+  = case mapMaybe (\(_,r) -> case r of
+                    Nothing -> Nothing
+                    Just (c,res,_) -> Just (res,c)
+                  ) lst of
+     [] -> Nothing
+     conds -> Just (comb conds,
+                    ValStatic $ fmap (\(x,r) -> case r of
+                                       Nothing -> x
+                                       Just (c,_,nx) -> structITE symITE c nx x
+                                     ) lst)
   where
-    lst = zipWith (\j x -> (i .==. (constant j),x,accessStruct symITE comb f is x)
+    lst = zipWith (\j x -> (x,case accessStruct symITE comb f is x of
+                               Nothing -> Nothing
+                               Just (res,nx) -> Just (i .==. (constant j),res,nx))
                   ) [0..] s
 {-accessAlloc comb f [] (ValStatic (x:xs))
   = (res,ValStatic (nx:xs))
   where
     (res,nx) = accessStruct symITE comb f [] x-}
 accessAlloc comb f (i:is) (ValDynamic arrs sz)
-  = (res,ValDynamic narrs sz)
+  = do
+  (res,narrs) <- accessStruct arrITE comb (accessArray nf i') is arrs
+  return (res,ValDynamic narrs sz)
   where
-    nf val = f (defaultIf (i' .>=. sz) val)
-    (res,narrs) = accessStruct arrITE comb (accessArray nf i') is arrs
+     -- Make sure that the model stays deterministic by loading default values for out-of-bounds indices
+    nf val = f (defaultIf ((i' .>=. sz) .||. (i' .<. 0)) val)
     i' = case i of
       Left i -> constant i
       Right i -> i
+
+accessAllocTyped :: SymType
+                 -> ([(a,SMTExpr Bool)] -> a)
+                 -> (SymVal -> (a,SymVal))
+                 -> [Either Integer (SMTExpr Integer)]
+                 -> AllocVal
+                 -> (a,AllocVal)
+accessAllocTyped tp comb f idx val
+  = case accessAlloc comb (\val -> if sameType tp (extractArgAnnotation val)
+                                   then Just (f val)
+                                   else Nothing
+                          ) idx val of
+     Just res -> res
+     Nothing -> error $ "accessAllocTyped: Type error while accessing "++show val++" with "++show idx
 
 sameType :: SymType -> SymType -> Bool
 sameType TpBool TpBool = True
@@ -280,6 +327,16 @@ sameStructType (Struct t1) (Struct t2) = sameStruct t1 t2
                                sameStruct xs ys
     sameStruct _ _ = False
 sameStructType _ _ = False
+
+sameValueType :: Struct SymVal -> Struct SymVal -> Bool
+sameValueType x1 x2 = sameStructType
+                      (extractArgAnnotation x1)
+                      (extractArgAnnotation x2)
+
+sameArrayType :: Struct SymArray -> Struct SymArray -> Bool
+sameArrayType x1 x2 = sameStructType
+                      (extractArgAnnotation x1)
+                      (extractArgAnnotation x2)
 
 addSymGate :: Args inp => GateMap inp -> SymType -> (inp -> SymVal) -> Maybe String
               -> (SymVal,GateMap inp)
@@ -649,6 +706,11 @@ showMemoryLoc (Left alloc) = unsafePerformIO $ do
 showMemoryLoc (Right global) = unsafePerformIO $ do
   n <- getNameString global
   return $ showChar '@' . showString n
+
+showValue :: ValueC v => Ptr v -> ShowS
+showValue v = unsafePerformIO $ do
+  n <- getNameString v
+  return $ showString n
 
 instance Show MemoryPtr where
   showsPrec _ ptr = showMemoryLoc (memoryLoc ptr) .

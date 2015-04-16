@@ -340,30 +340,6 @@ realizeInstruction thread blk sblk act (castDown -> Just store) edge real0 = do
                                        , writeContent = val'
                                        , eventOrigin = castUp store })
                            (events real2) })
-realizeInstruction thread blk sblk act i@(castDown -> Just load) edge real0 = do
-  name <- getNameString load
-  ptr <- loadInstGetPointerOperand load
-  (ptr',real1) <- realizeValue thread ptr edge real0
-  --putStrLn $ "Realizing load of "++name++" "++show (symbolicType ptr')
-  let val = memoryRead ptr' edge real1
-      (val',ngates) = addSymGate (gateMp real1) (symbolicType val)
-                      (symbolicValue val) (Just name)
-  --putStrLn $ "done: "++show (symbolicValue val (debugInputs (stateAnnotation real1) (inputAnnotation real1)))
-  {-do
-    iStr <- valueToString load
-    mp' <- mapM (\(nr,ev) -> do
-                    iStr <- valueToString (eventOrigin ev)
-                    return (nr,iStr)
-                ) (Map.toList $ events real1)
-    putStrLn $ "Realizing "++iStr++"... Events: "++show (Map.keys (observedEvents edge))++
-      " (all: "++show mp'++")"-}
-  --print (symbolicValue val (debugInputs (stateAnnotation real1) (inputAnnotation real1)))
-  return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
-          act,
-          real1 { instructions = Map.insert (thread,i)
-                                 (val { symbolicValue = const val' })
-                                 (instructions real1)
-                , gateMp = ngates })
 realizeInstruction thread blk sblk act (castDown -> Just br) edge real0 = do
   srcBlk <- instructionGetParent br
   isCond <- branchInstIsConditional br
@@ -492,14 +468,16 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
    "calloc" -> case Map.lookup i (allocations $ programInfo real0) of
      Just info -> do
        tp <- translateType real0 (allocType info)
-       return (InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
-                                , symbolicValue = \_ -> ValPtr (Map.singleton ptrLoc (constant True,[])) tp
+       return (InstructionValue { symbolicType = TpPtr (Map.singleton ptrLocDyn ()) tp
+                                , symbolicValue = \_ -> ValPtr (Map.singleton ptrLocDyn (constant True,[constant 0])) tp
                                 , alternative = Nothing
                                 },real0)
    _ -> error $ "Unknown function call: "++fname
   where
     ptrLoc = MemoryPtr { memoryLoc = Left i
                        , offsetPattern = [StaticAccess 0] }
+    ptrLocDyn = MemoryPtr { memoryLoc = Left i
+                          , offsetPattern = [DynamicAccess] }
 realizeDefInstruction thread i@(castDown -> Just icmp) edge real0 = do
   op <- getICmpOp icmp
   lhs <- getOperand icmp 0
@@ -626,6 +604,11 @@ realizeDefInstruction thread (castDown -> Just gep) edge real = do
                            , symbolicValue = \inp -> case symbolicValue ptr' inp of
                               ValPtr trgs _ -> ValPtr (derefPointer (ridx inp) trgs) ntp
                            , alternative = Nothing },real2)
+realizeDefInstruction thread (castDown -> Just load) edge real0 = do
+  name <- getNameString load
+  ptr <- loadInstGetPointerOperand load
+  (ptr',real1) <- realizeValue thread ptr edge real0
+  return (memoryRead ptr' edge real1,real1)
 realizeDefInstruction thread (castDown -> Just bitcast) edge real = do
   -- Ignore bitcasts for now, just assume that everything will work out
   arg <- getOperand (bitcast :: Ptr BitCastInst) 0
@@ -655,10 +638,12 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
       = let ValPtr trgs _ = f inp
             condMp = Map.mapWithKey (\trg (cond,dyn)
                                      -> let idx = idxList (offsetPattern trg) dyn
-                                            (res,_) = accessAlloc symITEs
+                                            (res,_) = accessAllocTyped tp symITEs
                                                       (\val -> (val,val))
                                                       idx
-                                                      ((memory ps) Map.! (memoryLoc trg))
+                                                      (case Map.lookup (memoryLoc trg) (memory ps) of
+                                                        Just r -> r
+                                                        Nothing -> error $ "Memory location "++show (memoryLoc trg)++" not defined.")
                                         in (res,cond)
                                     ) trgs
         in case Map.elems condMp of
@@ -701,7 +686,10 @@ getInstructionValue thread instr edge real
     Just val -> return (InstructionValue { symbolicType = symbolicType val
                                          , symbolicValue = \inp -> symITE (act inp)
                                                                    (symbolicValue val inp)
-                                                                   ((latchValues $ getThreadState thread $ fst inp) Map.! instr)
+                                                                   (case Map.lookup instr
+                                                                         (latchValues $ getThreadState thread $ fst inp) of
+                                                                     Just r -> r
+                                                                     Nothing -> error $ "getInstructionValue: Cannot get latch value of "++showValue instr "")
                                          , alternative = Nothing
                                          },
                         real { stateAnnotation = updateThreadStateDesc thread
@@ -712,8 +700,10 @@ getInstructionValue thread instr edge real
   _ -> do
     Singleton tp <- getType instr >>= translateType real
     return (InstructionValue { symbolicType = tp
-                             , symbolicValue = \(st,_) -> (latchValues $ getThreadState thread st)
-                                                          Map.! instr
+                             , symbolicValue = \(st,_) -> case Map.lookup instr
+                                                               (latchValues $ getThreadState thread st) of
+                                                           Just r -> r
+                                                           Nothing -> error $ "getInstructionValue: Cannot get latch value of "++showValue instr ""
                              , alternative = Nothing
                              },
             real { stateAnnotation = updateThreadStateDesc thread
@@ -900,12 +890,16 @@ realizeBlock thread blk sblk info real = do
   name <- subBlockName blk sblk
   instrs <- getSubBlockInstructions blk sblk
   let latchCond = \(st,inp)
-                  -> let blkAct = (latchBlocks $ getThreadState thread st) Map.!
-                                  (blk,sblk)
+                  -> let blkAct = case Map.lookup (blk,sblk)
+                                       (latchBlocks $ getThreadState thread st) of
+                                   Just act -> act
+                                   Nothing -> error $ "realizeBlock: Cannot get activation variable for "++show (blk,sblk)
                          stepAct = step $ getThreadInput thread inp
                          runAct = case thread of
                            Nothing -> []
-                           Just th -> [fst $ (threadState st) Map.! th]
+                           Just th -> case Map.lookup th (threadState st) of
+                                       Just (act,_) -> [act]
+                                       Nothing -> error $ "realizeBlock: Cannot find run variable for thread "++show th
                      in app and' $ runAct++[stepAct,blkAct]
       allConds = (if isEntryBlock
                   then [latchCond]
@@ -1033,13 +1027,19 @@ outputValues real = mp2
                    -> Map.union mp
                       (Map.mapWithKey (\(th,instr) _ inp@(st,_)
                                        -> let ts = getThreadState th st
-                                              old = (latchValues ts) Map.! instr
-                                              def = symbolicValue ((instructions real) Map.! (th,instr)) inp
-                                          in case (edgeValues finEdge) Map.! (th,instr) of
-                                              AlwaysDefined _ -> def
-                                              SometimesDefined act
+                                              old = case Map.lookup instr (latchValues ts) of
+                                                Just r -> r
+                                                Nothing -> error $ "outputValues: Cannot get latch value of "++show instr
+                                              def = symbolicValue (case Map.lookup (th,instr) (instructions real) of
+                                                                    Just r -> r
+                                                                    Nothing -> error $ "outputValues: Cannot get instruction value of "++show (th,instr)
+                                                                  ) inp
+                                          in case Map.lookup (th,instr) (edgeValues finEdge) of
+                                              Just (AlwaysDefined _) -> def
+                                              Just (SometimesDefined act)
                                                 -> symITE (act inp) def old
-                                              NeverDefined -> old
+                                              Just NeverDefined -> old
+                                              Nothing -> error $ "outputValues: Cannot find edge value of "++show (th,instr)
                                       ) (edgePhis cond))
                   ) Map.empty (edgeConditions finEdge)
     phis = foldl (\mp cond
@@ -1059,7 +1059,9 @@ outputValues real = mp2
             Just (SometimesDefined act) -> case Map.lookup (thread,instr) (instructions real) of
               Just val -> symITE (act inp) (symbolicValue val inp) old
             _ -> old
-        old = (latchValues $ getThreadState thread $ fst inp) Map.! instr
+        old = case Map.lookup instr (latchValues $ getThreadState thread $ fst inp) of
+          Just r -> r
+          Nothing -> error $ "outputValues: Cannot find old value of "++show instr
 
 outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInput) -> Map MemoryLoc AllocVal
 outputMem real inp
@@ -1070,7 +1072,7 @@ outputMem real inp
                   -> let (cond',dyn) = cond inp
                          idx = idxList (offsetPattern trg) dyn
                      in Map.adjust
-                        (\val -> snd $ accessAlloc (const ())
+                        (\val -> snd $ accessAllocTyped (symbolicType cont) (const ())
                                  (\old -> ((),symITE cond' (symbolicValue cont inp) old))
                                  idx val)
                         (memoryLoc trg) mem
