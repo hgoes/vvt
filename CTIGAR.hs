@@ -103,9 +103,10 @@ data InterpolationState mdl = InterpolationState { interpCur :: TR.State mdl
                                                  , interpNxt :: TR.State mdl
                                                  , interpInputs :: TR.Input mdl
                                                  , interpAsserts :: [SMTExpr Bool]
-                                                 , interpAnte :: InterpolationGroup
-                                                 , interpPost :: InterpolationGroup
+                                                 , interpAnte :: Either InterpolationGroup [SMTExpr Bool]
+                                                 , interpPost :: Maybe InterpolationGroup
                                                  , interpReverse :: TR.RevState mdl
+                                                 , interpUsingMathSAT :: Bool
                                                  }
 
 data LiftingState mdl = LiftingState { liftCur :: TR.State mdl
@@ -219,6 +220,12 @@ runIC3 cfg act = do
   stats <- if ic3CollectStats cfg
            then fmap Just newIC3Stats
            else return Nothing
+  -- MathSAT is really annoying, we have to take care of it like a baby
+  interpolationIsMathSAT <- do
+    backend <- ic3InterpolationBackend cfg
+    withSMTBackend backend $ do
+      name <- getInfo SMTSolverName
+      return $ name=="MathSAT5"
   let consBackend = case stats of
         Nothing -> ic3ConsecutionBackend cfg
         Just stats -> addTiming (consecutionTime stats) (consecutionNum stats)
@@ -241,7 +248,9 @@ runIC3 cfg act = do
         Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
         Just stats -> addTiming (interpolationTime stats) (interpolationNum stats)
                       (ic3InterpolationBackend cfg)
-      interpBackend'' = addModulusEmulation interpBackend'
+      interpBackend'' = if interpolationIsMathSAT
+                        then addModulusEmulation interpBackend'
+                        else interpBackend'
   cons <- consecutionNew ({-addDebugging "cons"-} consBackend)
           (do
               cur <- TR.createStateVars "" mdl
@@ -285,28 +294,58 @@ runIC3 cfg act = do
     assert $ TR.stateInvariant mdl inp cur
     return cur
   interpolation <- createSMTPool interpBackend'' $ do
-    setLogic "QF_LIA"
+    setLogic "QF_AUFLIA"
     setOption (ProduceInterpolants True)
-    ante <- interpolationGroup
-    post <- interpolationGroup
-    cur <- TR.createStateVars "" mdl
-    inp <- TR.createInputVars "" mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) (TR.startingProgress mdl)
-    (asserts,real2) <- TR.declareAssertions mdl cur inp real1
-    (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
-    (nxt',rev) <- TR.createRevState "" mdl
-    assertInterp (TR.stateInvariant mdl inp cur) ante
-    mapM_ (\asump -> assertInterp asump ante) assumps
-    mapM_ (\assert -> assertInterp assert ante) asserts
-    assertInterp (argEq nxt' nxt) ante
-    return $ InterpolationState { interpCur = cur
-                                , interpNxt = nxt'
-                                , interpInputs = inp
-                                , interpAsserts = asserts
-                                , interpAnte = ante
-                                , interpPost = post
-                                , interpReverse = rev
-                                }
+    if interpolationIsMathSAT
+      then do
+      ante <- interpolationGroup
+      post <- interpolationGroup
+      cur <- TR.createStateVars "" mdl
+      inp <- TR.createInputVars "" mdl
+      (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) (TR.startingProgress mdl)
+      (asserts,real2) <- TR.declareAssertions mdl cur inp real1
+      (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
+      (nxt',rev) <- TR.createRevState "" mdl
+      mapM_ (\asump -> assertInterp asump ante) assumps
+      mapM_ (\assert -> assertInterp assert ante) asserts
+      assertInterp (argEq nxt' nxt) ante
+      return $ InterpolationState { interpCur = cur
+                                  , interpNxt = nxt'
+                                  , interpInputs = inp
+                                  , interpAsserts = asserts
+                                  , interpAnte = Left ante
+                                  , interpPost = Just post
+                                  , interpReverse = rev
+                                  , interpUsingMathSAT = True
+                                  }
+      else do
+      cur <- TR.createStateVars "" mdl
+      inp <- TR.createInputVars "" mdl
+      (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
+      (asserts,real2) <- TR.declareAssertions mdl cur inp real1
+      (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
+      (nxt',rev) <- TR.createRevState "" mdl
+      exprs1 <- mapM (\assump -> do
+                         (assump',name) <- named "assump" assump
+                         assert assump'
+                         return name
+                     ) assumps
+      exprs2 <- mapM (\ass -> do
+                         (ass',name) <- named "assertion" ass
+                         assert ass'
+                         return name
+                     ) asserts
+      (eqExpr,namedEqExpr) <- named "equality" (argEq nxt' nxt)
+      assert eqExpr
+      return $ InterpolationState { interpCur = cur
+                                  , interpNxt = nxt'
+                                  , interpInputs = inp
+                                  , interpAsserts = exprs2
+                                  , interpAnte = Right (exprs1++exprs2++[namedEqExpr])
+                                  , interpPost = Nothing
+                                  , interpReverse = rev
+                                  , interpUsingMathSAT = False
+                                  }
   dom <- initialDomain (ic3DebugLevel cfg) domainBackend
          (TR.annotationState mdl)
          (TR.createStateVars "" mdl)
@@ -994,7 +1033,7 @@ elimSpuriousTrans st level = do
   updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
                                , numAddPreds = (numAddPreds stats)+(length props) })
   put $ env { ic3PredicateExtractor = nextr }
-  interp <- interpolate level (stateLifted rst)
+  interp <- interpolateState level (stateLifted rst)
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm
                      -> do
@@ -1004,41 +1043,81 @@ elimSpuriousTrans st level = do
   --liftIO $ domainDump ndomain >>= putStrLn
   modify $ \env -> env { ic3Domain = ndomain }
 
-interpolate :: TR.TransitionRelation mdl => Int -> PartialValue (TR.State mdl)
+interpolateState :: TR.TransitionRelation mdl => Int -> PartialValue (TR.State mdl)
                -> IC3 mdl [TR.State mdl -> SMTExpr Bool]
-interpolate j s = do
+interpolateState j s = do
   env <- get
   cfg <- ask
   liftIO $ withSMTPool (ic3Interpolation env) $
     \st -> stack $ do
       comment $ "Interpolating at level "++show j
-      -- XXX: Workaround for MathSAT:
-      ante <- interpolationGroup
-      post <- interpolationGroup
-      if j==0
-        then assertInterp (translateToMathSAT $ TR.initialState (ic3Model cfg) (interpCur st)) ante --(interpAnte st)
-        else (do
-                 let cons = ic3Consecution env
-                     frames = Vec.drop j (consecutionFrames cons)
-                 mapM_ (\fr -> mapM_ (\st_id -> do
-                                         let ast = getCube st_id cons
-                                             trm = toDomainTerm ast (ic3Domain env)
-                                                   (interpCur st)
-                                         assertInterp (translateToMathSAT $ not' trm) ante --(interpAnte st)
-                                     ) (IntSet.toList fr)
-                       ) frames)
-      assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial' (interpCur st) s)
-        ante -- (interpAnte st)
-      assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxt st) s)
-        post -- (interpPost st)
-      res <- checkSat
-      when res $ error "Interpolation query is SAT"
-      interp <- getInterpolant [ante,interpAnte st]
-      let interp1 = cleanInterpolant interp
-      interp1Str <- renderExpr interp1
-      comment $ "Cleaned interpolant: "++interp1Str
-      return $ fmap (TR.relativizeExpr (ic3Model cfg) (interpReverse st)
-                    ) $ splitInterpolant $ negateInterpolant interp1
+      if interpUsingMathSAT st
+        then do
+        -- XXX: Workaround for baby MathSAT:
+        ante <- interpolationGroup
+        post <- interpolationGroup
+        if j==0
+          then assertInterp (translateToMathSAT $ TR.initialState (ic3Model cfg) (interpCur st)) ante --(interpAnte st)
+          else (do
+                   let cons = ic3Consecution env
+                       frames = Vec.drop j (consecutionFrames cons)
+                   mapM_ (\fr -> mapM_ (\st_id -> do
+                                           let ast = getCube st_id cons
+                                               trm = toDomainTerm ast (ic3Domain env)
+                                                     (interpCur st)
+                                           assertInterp (translateToMathSAT $ not' trm) ante --(interpAnte st)
+                                       ) (IntSet.toList fr)
+                         ) frames)
+        assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial' (interpCur st) s)
+          ante -- (interpAnte st)
+        assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxt st) s)
+          post -- (interpPost st)
+        res <- checkSat
+        when res $ error "Interpolation query is SAT"
+        let Left ante' = interpAnte st
+        interp <- getInterpolant [ante,ante']
+        let interp1 = cleanInterpolant interp
+        interp1Str <- renderExpr interp1
+        comment $ "Cleaned interpolant: "++interp1Str
+        return $ fmap (TR.relativizeExpr (ic3Model cfg) (interpReverse st)
+                      ) $ splitInterpolant $ negateInterpolant interp1
+        else do
+        ante1 <- if j==0
+                 then do
+                   (inits,namedInits) <- named "init"
+                                         (TR.initialState (ic3Model cfg) (interpCur st))
+                   assert inits
+                   return [namedInits]
+                 else do
+                   let cons = ic3Consecution env
+                       frames = Vec.drop j (consecutionFrames cons)
+                   fmap concat $
+                     mapM (\fr -> mapM (\st_id -> do
+                                           let ast = getCube st_id cons
+                                               trm = toDomainTerm ast (ic3Domain env)
+                                                     (interpCur st)
+                                           (trm',namedTrm) <- named "trm" (not' trm)
+                                           assert trm'
+                                           return namedTrm
+                                       ) (IntSet.toList fr)
+                          ) frames
+        ante2 <- do
+          (asgn,namedAsgn) <- named "assign" $ not' $ app and' $ assignPartial' (interpCur st) s
+          assert asgn
+          return namedAsgn
+        post1 <- do
+          (asgn,namedAsgn) <- named "assignNxt" $ app and' $ assignPartial' (interpNxt st) s
+          assert asgn
+          return namedAsgn
+        res <- checkSat
+        when res $ error "Interpolation query is SAT"
+        let Right ante = interpAnte st
+        [interp] <- interpolate [post1,app and' $ ante++ante1++[ante2]]
+        let interp1 = cleanInterpolant interp
+        interp1Str <- renderExpr interp1
+        comment $ "Cleaned interpolant: "++interp1Str
+        return $ fmap (TR.relativizeExpr (ic3Model cfg) (interpReverse st)
+                      ) $ splitInterpolant $ negateInterpolant interp1
   where
     cleanInterpolant (Let lvl args f)
       = let (_,f') = foldExpr (\_ e -> case e of
@@ -1436,7 +1515,7 @@ addDebugging name act = do
   AnyBackend b <- act
   return $ AnyBackend $ namedDebugBackend name b
 
-addModulusEmulation :: IO (AnyBackend IO) -> IO (ModulusEmulator (AnyBackend IO))
+addModulusEmulation :: IO (AnyBackend IO) -> IO (AnyBackend IO)
 addModulusEmulation act = do
-  b <- act
-  return $ modulusEmulator True b
+  AnyBackend b <- act
+  return $ AnyBackend $ modulusEmulator True b
