@@ -9,7 +9,7 @@ import Consecution
 import PartialArgs
 import SMTPool
 import LitOrder
-import Options
+import BackendOptions
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals
@@ -171,8 +171,11 @@ splitLast [x] = ([],x)
 splitLast (x:xs) = let (rest,last) = splitLast xs
                    in (x:rest,last)
 
-mkIC3Config :: mdl -> Options -> IC3Config mdl
-mkIC3Config mdl opts
+mkIC3Config :: mdl -> BackendOptions
+            -> Int -- ^ Verbosity
+            -> Bool -- ^ Dump stats?
+            -> IC3Config mdl
+mkIC3Config mdl opts verb stats
   = IC3Cfg { ic3Model = mdl
            , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
                                      (if Set.member ConsecutionBackend (optDebugBackend opts)
@@ -198,13 +201,13 @@ mkIC3Config mdl opts
                                        (if Set.member Interpolation (optDebugBackend opts)
                                         then Just "interp"
                                         else Nothing)
-           , ic3DebugLevel = optVerbosity opts
+           , ic3DebugLevel = verb
            , ic3MaxSpurious = 0
            , ic3MicAttempts = 1 `shiftL` 20
            , ic3MaxDepth = 1
            , ic3MaxJoins = 1 `shiftL` 20
            , ic3MaxCTGs = 3
-           , ic3CollectStats = optStats opts
+           , ic3CollectStats = stats
            }
   where
     mkPipe cmd debug = let prog:args = words cmd
@@ -849,24 +852,28 @@ strengthen = strengthen' True
          return $ Just trivial
 
 check :: TR.TransitionRelation mdl
-         => mdl -> Options
+         => mdl
+         -> BackendOptions
+         -> Int -- ^ Verbosity
+         -> Bool -- ^ Dump stats?
          -> IO (Either [Unpacked (TR.State mdl,TR.Input mdl)] [AbstractState (TR.State mdl)])
-check st opts = do
+check st opts verb stats = do
   let prog:args = words (optBackend opts Map.! Base)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
   case tr of
     Just tr' -> return (Left tr')
-    Nothing -> runIC3 (mkIC3Config st opts) (do
-                                                addSuggestedPredicates
-                                                extend
-                                                extend
-                                                res <- checkIt
-                                                ic3DumpStats (case res of
-                                                               Left _ -> Nothing
-                                                               Right fp -> Just fp)
-                                                return res
-                                            )
+    Nothing -> runIC3 (mkIC3Config st opts verb stats)
+               (do
+                   addSuggestedPredicates
+                   extend
+                   extend
+                   res <- checkIt
+                   ic3DumpStats (case res of
+                                  Left _ -> Nothing
+                                  Right fp -> Just fp)
+                   return res
+               )
   where
     checkIt = do
       ic3DebugAct 1 (do

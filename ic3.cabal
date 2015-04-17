@@ -3,13 +3,13 @@ Version:        0.1
 Cabal-Version:  >= 1.2
 Build-Type:     Simple
 
-Executable hctigar
-  Main-Is:              Main.hs
-  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
-                        smtlib2,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,
-                        array,resource-pool,mtl,bytestring,attoparsec<0.11,
-                        atto-lisp,text,time,linear,data-fix,constraints
-  GHC-Options:          -threaded -fwarn-unused-imports
+--Executable hctigar
+--  Main-Is:              Main.hs
+--  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
+--                        smtlib2,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,
+--                        array,resource-pool,mtl,bytestring,attoparsec<0.11,
+--                        atto-lisp,text,time,linear,data-fix,constraints
+--  GHC-Options:          -threaded -fwarn-unused-imports
 
 --Executable vvt-karr
 --  Main-Is:              bin/Karr.hs
@@ -17,11 +17,16 @@ Executable hctigar
 
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs
-  Build-Depends:        atto-lisp,attoparsec<0.11,text,pretty
+  Build-Depends:        base,bytestring,atto-lisp,attoparsec<0.11,text,pretty
 
 Executable vvt-bmc
   Main-Is:              bin/BMC.hs
-  Build-Depends:        smtlib2,smtlib2-debug,smtlib2-emulated-datatypes
+  Build-Depends:        mtl,containers,constraints,data-fix,smtlib2,smtlib2-debug,smtlib2-emulated-datatypes
 
 Executable vvt-enc
   Main-Is:              bin/Encode.hs
+  Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
+
+Executable vvt-verify
+  Main-Is:              bin/Verify.hs
+  GHC-Options:          -threaded

@@ -26,12 +26,12 @@ main = do
      exitWith (ExitFailure (-1))
    Right (file,opts) -> getTransitionRelation file opts $ \st -> do
      tr <- case optTimeout opts of
-            Nothing -> check st opts
+            Nothing -> check st (optBackends opts) (optVerbosity opts) (optStats opts)
             Just to -> do
               mainThread <- myThreadId
               timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
               res <- catch (do
-                               res <- check st opts
+                               res <- check st (optBackends opts) (optVerbosity opts) (optStats opts)
                                killThread timeoutThread
                                return (Just res)
                            )

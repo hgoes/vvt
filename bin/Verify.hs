@@ -1,74 +1,49 @@
-module Options where
+module Main where
 
 import BackendOptions
+import Realization
+import Realization.Lisp
+import CTIGAR (check)
+import PartialArgs
 
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Set (Set)
-import qualified Data.Set as Set
+import Control.Concurrent
+import Control.Exception
+import System.IO
 
 data Options = Options { optBackends :: BackendOptions
-                       , optEncoding :: Encoding
-                       , optOptimizeTR :: Bool
-                       , optFunction :: String
                        , optShowHelp :: Bool
                        , optTimeout :: Maybe Int
                        , optVerbosity :: Int
                        , optStats :: Bool
-                       , optDumpModule :: Bool
-                       , optKarr :: Bool
-                       , optExtraPredicates :: Maybe String
                        }
-
-data Encoding = Monolithic
-              | BlockWise
-              | TRGen
-              | Lisp
-              | Threaded
 
 defaultOptions :: Options
 defaultOptions = Options { optBackends = defaultBackendOptions
-                         , optOptimizeTR = False
-                         , optEncoding = Monolithic
-                         , optFunction = "main"
                          , optShowHelp = False
                          , optTimeout = Nothing
                          , optVerbosity = 0
                          , optStats = False
-                         , optDumpModule = False
-                         , optKarr = True
-                         , optExtraPredicates = Nothing
                          }
 
 allOpts :: [OptDescr (Options -> Options)]
 allOpts
   = [Option ['h'] ["help"] (NoArg $ \opt -> opt { optShowHelp = True })
      "Shows this documentation"
-    ,Option ['e'] ["entry"]
-     (ReqArg (\e opt -> opt { optFunction = e }) "function")
-     "The entry function of the program"
-    ,Option ['E'] ["encoding"]
-     (ReqArg (\e opt -> opt { optEncoding = case e of
-                               "monolithic" -> Monolithic
-                               "blockwise" -> BlockWise
-                               "trgen" -> TRGen
-                               "lisp" -> Lisp
-                               "threaded" -> Threaded
-                            }) "name")
-     "Choose an encoding for the transition relation:\n  monolithic - Translate the whole program graph into one step (default)\n  blockwise - Each LLVM block is its own step\n  trgen - Use the original CTIGAR encoding"
     ,Option [] ["backend"]
      (ReqArg (\b opt -> case readsPrec 0 b of
                [(backend,':':solver)]
-                 -> opt { optBackends = setBackend backend solver (optBackends opt)
+                 -> opt { optBackends = setBackend backend solver
+                                        (optBackends opt)
                         }) "<backend>:solver")
      "The SMT solver used for the specified backend."
     ,Option [] ["debug-backend"]
      (ReqArg (\b opt -> case readsPrec 0 b of
                [(backend,[])]
-                 -> opt { optBackends = setDebugBackend backend (optBackends opt)
+                 -> opt { optBackends = setDebugBackend backend
+                                        (optBackends opt)
                         }) "<backend>")
      "Output the communication with the specified backend solver."
     ,Option ['t'] ["timeout"]
@@ -79,15 +54,8 @@ allOpts
                Nothing -> opt { optVerbosity = 1 }
                Just vs -> opt { optVerbosity = read vs }) "level")
      "How much debugging output to show"
-    ,Option ['O'] ["optimize"] (NoArg $ \opt -> opt { optOptimizeTR = True })
-     "Optimize the transition relation"
-    ,Option [] ["no-karr"] (NoArg $ \opt -> opt { optKarr = False }) "Disable the Karr analysis"
-    ,Option [] ["predicates"] (ReqArg (\str opt -> opt { optExtraPredicates = Just str }) "file")
-     "Read extra predicates from a file"
     ,Option ['s'] ["stats"] (NoArg $ \opt -> opt { optStats = True })
      "Print statistical information"
-    ,Option [] ["dump-module"] (NoArg $ \opt -> opt { optDumpModule = True })
-     "Dump the LLVM module"
     ]
 
 parseTime :: String -> Int
@@ -108,7 +76,7 @@ parseTime str = parseNumber 0 0 str
     parseNumber ful cur ('m':rest) = parseNumber (ful+60000000*cur) 0 rest
     parseNumber ful cur ('h':rest) = parseNumber (ful+3600000000*cur) 0 rest
 
-readOptions :: IO (Either [String] (String,Options))
+readOptions :: IO (Either [String] Options)
 readOptions = do
   args <- getArgs
   let (opts,rargs,errs) = getOpt Permute allOpts args
@@ -117,19 +85,63 @@ readOptions = do
     then showHelp
     else (case errs of
            [] -> case rargs of
-             [] -> return (Left ["Please provide an LLVM bitcode file"])
-             [bc] -> return (Right (bc,ropts))
-             _ -> return (Left ["Please provide only one LLVM bitcode file"])
+             [] -> return $ Right ropts
+             _ -> return (Left ["Unknown extra arguments: "++show rargs])
            _ -> return (Left errs))
 
 showHelp :: IO a
 showHelp = do
   putStrLn $
     usageInfo
-    (unlines ["USAGE: hctigar <file>"
-             ,"       where <file> is an LLVM bitcode file."
+    (unlines ["USAGE: vvt-verify < <file>"
+             ,"       where <file> is a transition relation in lisp format."
              ,""
              ,"  <backend> can be \"cons\", \"lifting\", \"domain\", \"init\" or \"interp\"."
              ]
     ) allOpts
   exitWith ExitSuccess
+
+main :: IO ()
+main = do
+  opts <- readOptions
+  case opts of
+   Left errs -> do
+     mapM_ (hPutStrLn stderr) errs
+     exitWith (ExitFailure (-1))
+   Right opts -> do
+     prog <- fmap parseLispProgram (readLispFile stdin)
+     tr <- case optTimeout opts of
+            Nothing -> check prog (optBackends opts) (optVerbosity opts) (optStats opts)
+            Just to -> do
+              mainThread <- myThreadId
+              timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
+              res <- catch (do
+                               res <- check prog (optBackends opts) (optVerbosity opts) (optStats opts)
+                               killThread timeoutThread
+                               return (Just res)
+                           )
+                     (\ex -> case ex of
+                       ExitFailure _ -> return Nothing)
+              case res of
+               Just tr -> return tr
+               Nothing -> do
+                 hPutStrLn stderr "Timeout"
+                 exitWith (ExitFailure (-2))
+     case tr of
+      Right fp -> putStrLn "No bug found."
+      Left tr' -> do
+        putStrLn "Bug found:"
+        mapM_ (\(step,inp) -> do
+                  putStr "State: "
+                  renderPartialState prog
+                    (unmaskValue (getUndefState prog) step) >>= putStrLn
+                  putStr "Input: "
+                  renderPartialInput prog
+                    (unmaskValue (getUndefInput prog) inp) >>= putStrLn
+              ) tr'
+
+getUndefState :: TransitionRelation tr => tr -> State tr
+getUndefState _ = undefined
+
+getUndefInput :: TransitionRelation tr => tr -> Input tr
+getUndefInput _ = undefined
