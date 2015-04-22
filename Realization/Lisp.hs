@@ -5,6 +5,7 @@ module Realization.Lisp where
 import Realization
 import Realization.Lisp.Value
 --import PartialArgs
+import RSM
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals
@@ -14,6 +15,8 @@ import Data.Unit
 
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.AttoLisp as L
 import Data.Typeable
@@ -28,6 +31,7 @@ import Control.Monad.State (runStateT,get,put,lift)
 import Data.List (genericIndex)
 import Control.Monad (mplus)
 import Control.Exception
+import Control.Monad.Trans (liftIO)
 import Debug.Trace
 
 data LispProgram
@@ -686,7 +690,7 @@ instance TransitionRelation LispProgram where
   type State LispProgram = Map T.Text LispValue
   type Input LispProgram = Map T.Text LispValue
   type RevState LispProgram = Map Integer (T.Text,LispRev)
-  type PredicateExtractor LispProgram = ()
+  type PredicateExtractor LispProgram = RSMState (Set T.Text) (T.Text,[Integer])
   type RealizationProgress LispProgram = Map T.Text LispValue
   createStateVars pre prog
     = sequence $ Map.mapWithKey
@@ -733,10 +737,40 @@ instance TransitionRelation LispProgram where
                           return expr'
                       ) (programAssumption prog)
                 ) gates
+  suggestedPredicates prog = fmap (\expr -> (False,
+                                             \st -> relativize st Map.empty Map.empty expr)) $
+                             programPredicates prog
   renderPartialState prog st = return (show st)
   renderPartialInput prog inp = return (show inp)
-  defaultPredicateExtractor _ = return ()
-  extractPredicates _ _ _ _ = return ((),[])
+  defaultPredicateExtractor _ = return emptyRSM
+  extractPredicates prog rsm full lifted = do
+    let st = Set.fromList
+             [ name
+             | (name,(tp,ann)) <- Map.toList (programState prog)
+             , Map.member "pc" ann
+             , case Map.lookup name full of
+                Just (Singleton (LispUValue (cast -> Just v))) -> v
+                _ -> False ]
+        vals = Map.foldlWithKey
+               (\mp name pval -> getInts name [] pval mp
+               ) Map.empty lifted
+        getInts name idx (Singleton (LispPValue x)) mp = case cast x of
+          Just i -> Map.insert (name,idx) i mp
+          Nothing -> mp
+        getInts name idx (Singleton LispPEmpty) mp = mp
+        getInts name idx (Struct vals) mp
+          = foldl (\mp (i,pval) -> getInts name (idx++[i]) pval mp
+                  ) mp (zip [0..] vals)
+
+        nrsm = addRSMState st vals rsm
+    (nrsm',props) <- mineStates (createSMTPipe "z3" ["-smt2","-in"]) nrsm
+    return (nrsm',fmap (\prop st
+                        -> prop (\(name,idx)
+                                 -> relativize st Map.empty Map.empty
+                                    (InternalObj (LispVarAccess (NamedVar name State (fst $ (programState prog) Map.! name))
+                                                  idx []) ()))
+                       ) props)
+  --extractPredicates _ _ _ _ = return ((),[])
   annotationState prog = fmap fst (programState prog)
   annotationInput prog = fmap fst (programInput prog)
   createRevState pre prog = do

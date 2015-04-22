@@ -1,4 +1,6 @@
-{-# LANGUAGE RankNTypes,TypeFamilies,MultiParamTypeClasses,FlexibleContexts,FlexibleInstances,ScopedTypeVariables,GADTs,DeriveDataTypeable #-}
+{-# LANGUAGE RankNTypes,TypeFamilies,MultiParamTypeClasses,FlexibleContexts,
+             FlexibleInstances,ScopedTypeVariables,GADTs,DeriveDataTypeable,
+             DeriveFunctor,DeriveFoldable #-}
 module Realization.Lisp.Value where
 
 import Language.SMTLib2
@@ -9,14 +11,15 @@ import Data.Fix
 import PartialArgs
 
 import Data.List (genericIndex,genericLength)
+import Data.Foldable
 import Data.Traversable
 import Data.Typeable
 import Data.Constraint
-import Prelude hiding (mapM)
+import Prelude hiding (mapM,foldl,and,concat)
 
 data LispStruct a = Singleton a
                   | Struct [LispStruct a]
-                  deriving (Eq,Ord,Typeable)
+                  deriving (Eq,Ord,Typeable,Functor,Foldable)
 
 class (SMTType t,SMTValue (ResultType t),Unit (SMTAnnotation t))
       => Indexable t i where
