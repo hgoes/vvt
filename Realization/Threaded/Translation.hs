@@ -78,14 +78,14 @@ toLispProgram real = do
                 ) st5 (Map.keys $ threadStateDesc $ stateAnnotation real)
   inp2 <- foldlM (\mp (instr,tp) -> do
                      name <- instrName instr
-                     let name1 = T.append "main-" name
+                     let name1 = T.append "main-inp-" name
                      return $ Map.insert name1 (toLispType $ Singleton tp) mp
                  ) inp1 (Map.toList $ nondetTypes $ mainInputDesc $ inputAnnotation real)
   inp3 <- foldlM (\mp (thread,thInp) -> do
                      let tName = threadNames Map.! thread
                      foldlM (\mp (instr,tp) -> do
                                name <- instrName instr
-                               let name1 = T.append (T.pack $ tName++"-") name
+                               let name1 = T.append (T.pack $ tName++"-inp-") name
                                return $ Map.insert name1 (toLispType $ Singleton tp) mp
                            ) mp (Map.toList $ nondetTypes thInp)
                  ) inp2 (Map.toList $ threadInputDesc $ inputAnnotation real)
@@ -451,7 +451,7 @@ makeProgramInput threadNames real = do
   mainNondet <- sequence $ Map.mapWithKey
                 (\instr tp -> do
                     name <- instrName instr
-                    return $ makeVar (L.NamedVar (T.append "main-" name) L.Input
+                    return $ makeVar (L.NamedVar (T.append "main-inp-" name) L.Input
                                       (L.LispType 0 (toLispType' (Singleton tp)))) tp
                 ) (nondetTypes $ mainInputDesc $ inputAnnotation real)
   thInps <- sequence $ Map.mapWithKey
@@ -461,7 +461,7 @@ makeProgramInput threadNames real = do
                           (\instr tp -> do
                               name <- instrName instr
                               return $ makeVar
-                                (L.NamedVar (T.append (T.pack $ thName++"-") name) L.Input
+                                (L.NamedVar (T.append (T.pack $ thName++"-inp-") name) L.Input
                                  (L.LispType 0 (toLispType' (Singleton tp)))) tp
                           ) (nondetTypes thd)
                 return ThreadInput { step = InternalObj (L.LispVarAccess
