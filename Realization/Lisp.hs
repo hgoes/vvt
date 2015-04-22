@@ -140,6 +140,7 @@ parseLispProgram descr = case descr of
              Nothing -> []
              Just xs -> fmap (\x -> case parseLispExpr' state Map.empty Map.empty cast x of
                                Just (Just y) -> y
+                               _ -> error $ "Cannot parse predicate: "++show x
                              ) xs
        in LispProgram { programAnnotation = ann
                       , programDataTypes = dts
@@ -803,6 +804,7 @@ instance TransitionRelation LispProgram where
                                SizeElement el -> case cast el of
                                                   Just el' -> ((),el')
                              ElementSpec is -> ((),getStruct val is)
+                         Nothing -> error $ "Lisp.relativizeExpr: Cannot relativize var "++show i++" ("++show rev++")"
                        _ -> ((),e)
                      ) () expr
       where
