@@ -940,8 +940,12 @@ realizeBlock thread blk sblk info real = do
                                                                                         | cond <- edgeConditions edge ]
                                                                                )
                                                          else AlwaysDefined (const act)
-                                                  ) edgePhiGates
-                                            ) (edgeValues edge)
+                                                  ) edgePhiGates)
+                                  (if isEntryBlock
+                                   then fmap (\def -> case def of
+                                               AlwaysDefined act -> SometimesDefined act
+                                               _ -> def) (edgeValues edge)
+                                   else edgeValues edge)
                    }
       real1 = real { gateMp = gates2
                    , instructions = instrs1
