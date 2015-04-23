@@ -311,6 +311,7 @@ runIC3 cfg act = do
       (nxt',rev) <- TR.createRevState "" mdl
       mapM_ (\asump -> assertInterp asump ante) assumps
       mapM_ (\assert -> assertInterp assert ante) asserts
+      assertInterp (TR.stateInvariant mdl inp cur) ante
       assertInterp (argEq nxt' nxt) ante
       return $ InterpolationState { interpCur = cur
                                   , interpNxt = nxt'
@@ -338,13 +339,15 @@ runIC3 cfg act = do
                          assert ass'
                          return name
                      ) asserts
+      (invExpr,namedInvExpr) <- named "invariant" (TR.stateInvariant mdl inp cur)
       (eqExpr,namedEqExpr) <- named "equality" (argEq nxt' nxt)
+      assert invExpr
       assert eqExpr
       return $ InterpolationState { interpCur = cur
                                   , interpNxt = nxt'
                                   , interpInputs = inp
                                   , interpAsserts = exprs2
-                                  , interpAnte = Right (exprs1++exprs2++[namedEqExpr])
+                                  , interpAnte = Right (exprs1++exprs2++[namedInvExpr,namedEqExpr])
                                   , interpPost = Nothing
                                   , interpReverse = rev
                                   , interpUsingMathSAT = False
