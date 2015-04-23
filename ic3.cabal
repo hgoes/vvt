@@ -5,6 +5,7 @@ Build-Type:     Simple
 Data-Files:     include/assert.h
                 include/pthread.h
                 include/stdlib.h
+                include/vvt.h
 
 --Executable hctigar
 --  Main-Is:              Main.hs
