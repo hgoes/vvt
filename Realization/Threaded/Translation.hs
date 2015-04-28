@@ -231,42 +231,33 @@ toLispProgram real = do
                                     (Singleton $ symbolicValue instrV input)) cur
                               ) old acts) mp
                  ) nxt5 (Map.toList $ threadStateDesc $ stateAnnotation real)                     
-  init1 <- mapM (\(glob,val) -> do
+  init1' <- mapM (\(glob,val) -> do
                     name <- memLocName (Right glob)
                     let tp = (memoryDesc (stateAnnotation real)) Map.! (Right glob)
                         var1 = toLispAllocExpr gateTrans tp val
-                        var2 = L.NamedVar name L.State (L.lispVarType var1)
-                    return (InternalObj (L.LispEq var2 var1) ())
-                ) (Map.toList $ memoryInit real)
-  init2 <- mapM (\th -> do
-                    let name = threadNames Map.! th
-                    return $ not' (InternalObj (L.LispVarAccess
-                                                (L.NamedVar (T.pack $ "run-"++name)
-                                                 L.State L.boolType) [] []) ())
-                ) (Map.keys $ threadStateDesc $ stateAnnotation real)
-  init3 <- mapM (\blk -> do
-                    name <- blockName blk
-                    let var = InternalObj (L.LispVarAccess
-                                           (L.NamedVar (T.append "main-" name)
-                                            L.State L.boolType) [] []) ()
-                    if blk==(mainBlock real,0)
-                      then return var
-                      else return (not' var)
-                ) (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
-  init4 <- mapM (\(th,blk) -> do
-                    let tName = threadNames Map.! th
-                    blks <- mapM (\blk' -> do
-                                     name <- blockName blk'
-                                     let var = InternalObj (L.LispVarAccess
-                                                            (L.NamedVar
-                                                             (T.append (T.pack $ tName++"-") name)
-                                                             L.State L.boolType) [] []) ()
-                                     if blk'==(blk,0)
-                                       then return var
-                                       else return (not' var)
-                                 ) (Map.keys $ latchBlockDesc $
-                                    (threadStateDesc $ stateAnnotation real) Map.! th)
-                    return $ app and' blks
+                    return (name,var1)
+                 ) (Map.toList $ memoryInit real)
+  init2' <- mapM (\th -> do
+                     let name = threadNames Map.! th
+                     return (T.pack $ "run-"++name,
+                             L.LispConstr (L.LispValue (L.Size [])
+                                           (L.Singleton (L.Val (constant False)))))
+                 ) (Map.keys $ threadStateDesc $ stateAnnotation real)
+  init3' <- mapM (\blk -> do
+                     name <- blockName blk
+                     return (T.append "main-" name,
+                             L.LispConstr (L.LispValue (L.Size [])
+                                           (L.Singleton (L.Val (constant $ blk==(mainBlock real,0))))))
+                 ) (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
+  init4' <- mapM (\(th,blk) -> do
+                     let tName = threadNames Map.! th
+                     mapM (\blk' -> do
+                              name <- blockName blk'
+                              return (T.append (T.pack $ tName++"-") name,
+                                      L.LispConstr (L.LispValue (L.Size [])
+                                                    (L.Singleton (L.Val (constant $ blk'==(blk,0))))))
+                          ) (Map.keys $ latchBlockDesc $
+                             (threadStateDesc $ stateAnnotation real) Map.! th)
                 ) (Map.toList $ threadBlocks real)
   let asserts = fmap (\cond -> toLispExpr gateTrans (cond input)) (assertions real)
   inv1 <- do
@@ -303,7 +294,7 @@ toLispProgram real = do
                          , L.programGates = gates
                          , L.programNext = nxt6
                          , L.programProperty = asserts
-                         , L.programInitial = init1++init2++init3++init4
+                         , L.programInit = Map.fromList (init1'++init2'++init3'++concat init4')
                          , L.programInvariant = [inv3] -- inv1:inv3:inv2
                          , L.programAssumption = []
                          , L.programPredicates = [] }

@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable,OverloadedStrings,RankNTypes,ScopedTypeVariables,
-             ViewPatterns,GADTs,TypeFamilies #-}
+             ViewPatterns,GADTs,TypeFamilies,FlexibleContexts #-}
 module Realization.Lisp where
 
 import Realization
@@ -42,7 +42,7 @@ data LispProgram
                 , programGates :: Map T.Text (LispType,LispVar)
                 , programNext :: Map T.Text LispVar
                 , programProperty :: [SMTExpr Bool]
-                , programInitial :: [SMTExpr Bool]
+                , programInit :: Map T.Text LispVar
                 , programInvariant :: [SMTExpr Bool]
                 , programAssumption :: [SMTExpr Bool]
                 , programPredicates :: [SMTExpr Bool]
@@ -121,11 +121,12 @@ parseLispProgram descr = case descr of
              Just xs -> fmap (\x -> case parseLispExpr' state inp gates cast x of
                                Just (Just y) -> y
                              ) xs
-           init = case Map.lookup "initial" mp of
-             Nothing -> []
-             Just xs -> fmap (\x -> case parseLispExpr' state Map.empty Map.empty cast x of
-                               Just (Just y) -> y
-                             ) xs
+           initAssign = case Map.lookup "init" mp of
+             Nothing -> Map.empty
+             Just xs -> Map.fromList [ case parseLispTopVar Map.empty Map.empty Map.empty def of
+                                        Just v -> (name,v)
+                                        Nothing -> error $ "Cannot parse init value: "++show def
+                                     | L.List [L.Symbol name,def] <- xs ]
            invar = case Map.lookup "invariant" mp of
              Nothing -> []
              Just xs -> fmap (\x -> case parseLispExpr' state inp Map.empty cast x of
@@ -149,7 +150,7 @@ parseLispProgram descr = case descr of
                       , programGates = gates
                       , programNext = next
                       , programProperty = prop
-                      , programInitial = init
+                      , programInit = initAssign
                       , programInvariant = invar
                       , programAssumption = assume
                       , programPredicates = preds
@@ -185,7 +186,7 @@ programToLisp prog = L.List ([L.Symbol "program"]++
              ,L.List $ [L.Symbol "gates"]++gatesLst
              ,L.List $ [L.Symbol "next"]++nextLst
              ,L.List $ [L.Symbol "property"]++propLst
-             ,L.List $ [L.Symbol "initial"]++initLst
+             ,L.List $ [L.Symbol "init"]++initAssignLst
              ,L.List $ [L.Symbol "invariant"]++invarLst
              ,L.List $ [L.Symbol "assumption"]++assumpLst
              ,L.List $ [L.Symbol "predicate"]++predLst]
@@ -204,8 +205,9 @@ programToLisp prog = L.List ([L.Symbol "program"]++
               | (name,def) <- Map.toList (programNext prog) ]
     propLst = fmap (printLispExpr (programDataTypes prog)
                    ) (programProperty prog)
-    initLst = fmap (printLispExpr (programDataTypes prog)
-                   ) (programInitial prog)
+    initAssignLst = [ L.List [L.Symbol name
+                             ,printLispVar (programDataTypes prog) def]
+                    | (name,def) <- Map.toList (programInit prog) ]
     invarLst = fmap (printLispExpr (programDataTypes prog)
                     ) (programInvariant prog)
     assumpLst = fmap (printLispExpr (programDataTypes prog)
@@ -703,9 +705,13 @@ instance TransitionRelation LispProgram where
       ) (programInput prog)
   initialState prog st = while CreateInvariant $ relativize st Map.empty Map.empty expr
     where
-      expr = case programInitial prog of
-        [e] -> e
+      expr = case [ InternalObj (LispEq
+                                 (NamedVar name State
+                                  (fst $ (programState prog) Map.! name))
+                                 val) ()
+                  | (name,val) <- Map.toList (programInit prog) ] of
         [] -> constant True
+        [e] -> e
         xs -> app and' xs
   stateInvariant prog inp st = relativize st inp Map.empty expr
     where

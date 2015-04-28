@@ -1,6 +1,6 @@
 {-# LANGUAGE RankNTypes,TypeFamilies,MultiParamTypeClasses,FlexibleContexts,
              FlexibleInstances,ScopedTypeVariables,GADTs,DeriveDataTypeable,
-             DeriveFunctor,DeriveFoldable #-}
+             DeriveFunctor,DeriveFoldable,DeriveTraversable #-}
 module Realization.Lisp.Value where
 
 import Language.SMTLib2
@@ -19,7 +19,7 @@ import Prelude hiding (mapM,foldl,and,concat)
 
 data LispStruct a = Singleton a
                   | Struct [LispStruct a]
-                  deriving (Eq,Ord,Typeable,Functor,Foldable)
+                  deriving (Eq,Ord,Typeable,Functor,Foldable,Traversable)
 
 class (SMTType t,SMTValue (ResultType t),Unit (SMTAnnotation t))
       => Indexable t i where
