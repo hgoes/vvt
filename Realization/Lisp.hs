@@ -512,23 +512,9 @@ relativize state inps gates (InternalObj (cast -> Just acc) ann)
                               Just i' -> (i',i)) n (relativizeVar state inps gates var)
     relativizeVarAccess (LispEq var1 var2)
       = let tp = lispVarType var1
-            lst = foldTypeWithIndex (\lst rev (_::t)
-                                     -> let e1,e2 :: SMTExpr t
-                                            e1 = relativize state inps gates $
-                                                 InternalObj
-                                                 (case rev of
-                                                   ElementSpec idx -> LispVarAccess var1 idx []
-                                                   SizeSpec idx -> LispSizeArrAccess var1 idx)
-                                                 unit
-                                            e2 = relativize state inps gates $
-                                                 InternalObj
-                                                 (case rev of
-                                                   ElementSpec idx -> LispVarAccess var2 idx []
-                                                   SizeSpec idx -> LispSizeArrAccess var2 idx)
-                                                 unit
-                                        in (e1 .==. e2):lst
-                                    ) [] tp
-        in case cast (app and' lst) of
+            val1 = relativizeVar state inps gates var1
+            val2 = relativizeVar state inps gates var2
+        in case cast (valueEq val1 val2) of
             Just res -> res
 relativize state inps gates (App (SMTBuiltIn "exactly-one" _) xs)
   = case cast xs of
