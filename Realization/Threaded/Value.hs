@@ -282,10 +282,9 @@ accessAlloc comb f (Right i:is) (ValStatic s)
                                Nothing -> Nothing
                                Just (res,nx) -> Just (i .==. (constant j),res,nx))
                   ) [0..] s
-{-accessAlloc comb f [] (ValStatic (x:xs))
-  = (res,ValStatic (nx:xs))
-  where
-    (res,nx) = accessStruct symITE comb f [] x-}
+accessAlloc comb f [] (ValStatic (x:xs)) = do
+  (res,nx) <- accessStruct symITE comb f [] x
+  return (res,ValStatic (nx:xs))
 accessAlloc comb f (i:is) (ValDynamic arrs sz)
   = do
   (res,narrs) <- accessStruct arrITE comb (accessArray nf i') is arrs
