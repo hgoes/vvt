@@ -532,18 +532,22 @@ relativize state inps gates (InternalObj (cast -> Just acc) ann)
             Just res -> res
 relativize state inps gates (App (SMTBuiltIn "exactly-one" _) xs)
   = case cast xs of
-     Just xs' -> case cast (app or' (oneOf [] $ fmap (relativize state inps gates) xs')) of
+     Just xs' -> case cast (oneOf $ fmap (relativize state inps gates) xs') of
        Just r -> r
   where
-    oneOf _ [] = []
-    oneOf xs (y:ys) = (app and' (y:(fmap not' $ xs++ys))):
-                      (oneOf (y:xs) ys)
 relativize state inps gates (App fun args)
   = let (_,nargs) = foldExprsId (\_ e _ -> ((),relativize state inps gates e)) () args (extractArgAnnotation args)
     in App fun nargs
 relativize state inps gates (UntypedExpr e) = UntypedExpr $ relativize state inps gates e
 relativize state inps gates (UntypedExprValue e) = UntypedExprValue $ relativize state inps gates e
 relativize state inps gates e = e
+
+oneOf :: [SMTExpr Bool] -> SMTExpr Bool
+oneOf xs = app or' (oneOf' [] xs)
+  where
+    oneOf' _ [] = []
+    oneOf' xs (y:ys) = (app and' (y:(fmap not' $ xs++ys))):
+                       (oneOf' (y:xs) ys)
 
 relativizeVar :: Map T.Text LispValue
               -> Map T.Text LispValue
