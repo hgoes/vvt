@@ -35,7 +35,12 @@ allOpts
                                      Nothing -> opt { addIneqPredicates = True }
                                      Just "on" -> opt { addIneqPredicates = True }
                                      Just "off" -> opt { addIneqPredicates = False }) "on|off")
-     "Inequality predicates"]
+     "Inequality predicates"
+    ,Option ['b'] ["bool"] (OptArg (\arg opt -> case arg of
+                                                 Nothing -> opt { addBoolPredicates = True }
+                                                 Just "on" -> opt { addBoolPredicates = True }
+                                                 Just "off" -> opt { addBoolPredicates = False }) "on|off")
+     "Boolean predicates"]
 
 readOptions :: IO (Either [String] Options)
 readOptions = do
