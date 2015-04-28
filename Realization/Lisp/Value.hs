@@ -110,30 +110,40 @@ argITE cond x y = res
                    ) x' y'
     Just (res,[]) = toArgs (extractArgAnnotation x) ites
 
-accessValue :: (forall t. SMTType t => SMTExpr t -> (a,SMTExpr t))
+zipStruct :: (a -> b -> c) -> LispStruct a -> LispStruct b -> LispStruct c
+zipStruct f (Singleton x) (Singleton y) = Singleton (f x y)
+zipStruct f (Struct xs) (Struct ys) = Struct (zipWith (zipStruct f) xs ys)
+
+linearizeStruct :: LispStruct a -> [a]
+linearizeStruct (Singleton x) = [x]
+linearizeStruct (Struct xs) = concat $ fmap linearizeStruct xs
+
+accessStruct :: (a -> (b,a)) -> [Integer] -> LispStruct a -> (b,LispStruct a)
+accessStruct f [] (Singleton x) = (res,Singleton nx)
+  where
+    (res,nx) = f x
+accessStruct f (i:is) (Struct xs) = (res,Struct nxs)
+  where
+    (res,nxs) = modify i xs
+    modify 0 (x:xs) = let (res,nx) = accessStruct f is x
+                      in (res,nx:xs)
+    modify n (x:xs) = let (res,nxs) = modify (n-1) xs
+                      in (res,x:nxs)
+
+accessValue :: (forall t. Indexable t (SMTExpr Integer) => SMTExpr t -> (a,SMTExpr t))
                   -> [Integer] -> [SMTExpr Integer] -> LispValue -> (a,LispValue)
 accessValue f fields idx v@(LispValue sz val)
   = (res,LispValue sz nval)
   where
-    (res,nval) = accessStruct val fields
-    accessStruct (Singleton (Val x)) [] = let (res,nx) = derefVal f x idx
-                                          in (res,Singleton (Val nx))
-    accessStruct (Struct xs) (i:is)
-      = (res,Struct nxs)
-      where
-        (res,nxs) = modifyStruct xs i
-        modifyStruct (x:xs) 0 = let (res,nx) = accessStruct x is
-                                in (res,nx:xs)
-        modifyStruct (x:xs) n = let (res,nxs) = modifyStruct xs (n-1)
-                                in (res,x:nxs)
-        modifyStruct _ _ = error $ "Failed to access "++show v++" with "++show fields++", "++show idx
+    (res,nval) = accessStruct (\(Val x) -> let (res,nx) = derefVal f x idx
+                                           in (res,Val nx)) fields val
 
-    derefVal :: Indexable t (SMTExpr Integer)
-                => (forall t. SMTType t => SMTExpr t -> (a,SMTExpr t)) -> SMTExpr t
-                -> [SMTExpr Integer] -> (a,SMTExpr t)
-    derefVal f val [] = f val {-let (res,nval) = f (deref (undefined::SMTExpr Integer) val)
-                        in (res,reref (undefined::SMTExpr Integer) nval)-}
-    derefVal f val (i:is) = index (\e -> derefVal f e is) val i
+derefVal :: Indexable t (SMTExpr Integer)
+            => (forall t. Indexable t (SMTExpr Integer)
+                => SMTExpr t -> (a,SMTExpr t)) -> SMTExpr t
+            -> [SMTExpr Integer] -> (a,SMTExpr t)
+derefVal f val [] = f val
+derefVal f val (i:is) = index (\e -> derefVal f e is) val i
 
 accessSize :: (SMTExpr Integer -> (a,SMTExpr Integer)) -> [SMTExpr Integer] -> LispValue
            -> (a,LispValue)
@@ -300,60 +310,123 @@ foldTypeWithIndex f s (LispType lvl tp) = s2
       = fst $ foldl (\(s,i) tp -> (foldStruct s (idx++[i]) tp,i+1)
                     ) (s,0::Integer) tps
 
+foldStruct :: Monad m => (s -> a -> b -> m (s,a))
+           -> s -> LispStruct a -> LispStruct b
+           -> m (s,LispStruct a)
+foldStruct f s ~(Singleton x) (Singleton y) = do
+  (ns,nx) <- f s x y
+  return (ns,Singleton nx)
+foldStruct f s ~(Struct xs) (Struct ys) = do
+  (ns,nxs) <- foldStruct' s xs ys
+  return (ns,Struct nxs)
+  where
+    foldStruct' s _ [] = return (s,[])
+    foldStruct' s ~(x:xs) (y:ys) = do
+      (s1,nx) <- foldStruct f s x y
+      (s2,nxs) <- foldStruct' s1 xs ys
+      return (s2,nx:nxs)
+
+foldsStruct :: Monad m => (s -> [(a,c)] -> b -> m (s,[a],a))
+            -> s -> [(LispStruct a,c)] -> LispStruct b
+            -> m (s,[LispStruct a],LispStruct a)
+foldsStruct f s lst (Singleton x) = do
+  (ns,nlst,res) <- f s (fmap (\(Singleton y,b) -> (y,b)) lst) x
+  return (ns,fmap Singleton nlst,Singleton res)
+foldsStruct f s lst (Struct xs) = do
+  (ns,nys,res) <- foldsStruct' s (fmap (\(Struct ys,b) -> (ys,b)) lst) xs
+  return (ns,fmap Struct nys,Struct res)
+  where
+    foldsStruct' s lst [] = return (s,fmap (const []) lst,[])
+    foldsStruct' s lst (x:xs) = do
+      (s1,ny,res) <- foldsStruct f s (fmap (\(~(y:ys),b) -> (y,b)) lst) x
+      (s2,nys,ress) <- foldsStruct' s1 (fmap (\(~(y:ys),b) -> (ys,b)) lst) xs
+      return (s2,zipWith (:) ny nys,res:ress)
+
+toArgsStruct :: (b -> [SMTExpr Untyped] -> Maybe (a,[SMTExpr Untyped]))
+             -> LispStruct b
+             -> [SMTExpr Untyped]
+             -> Maybe (LispStruct a,[SMTExpr Untyped])
+toArgsStruct f (Singleton x) es = do
+  (y,rest) <- f x es
+  return (Singleton y,rest)
+toArgsStruct f (Struct xs) es = do
+  (ys,rest) <- toArgs' xs es
+  return (Struct ys,rest)
+  where
+    toArgs' [] es = return ([],es)
+    toArgs' (x:xs) es = do
+      (y,es1) <- toArgsStruct f x es
+      (ys,es2) <- toArgs' xs es1
+      return (y:ys,es2)
+
+getTypesStruct :: (a -> [ProxyArg]) -> LispStruct a
+               -> [ProxyArg]
+getTypesStruct f (Singleton x) = f x
+getTypesStruct f (Struct xs) = concat $ fmap (getTypesStruct f) xs
+
+foldLispVal :: Monad m => Integer
+            -> (forall t. SMTType t => s -> SMTExpr t -> SMTAnnotation t -> m (s,SMTExpr t))
+            -> s -> LispVal -> Sort
+            -> m (s,LispVal)
+foldLispVal lvl f s val sort
+  = withIndexableSort (undefined::SMTExpr Integer) sort $
+    \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
+           \(_::t) -> do
+             (ns,ne) <- f s (case val of
+                              Val e -> case cast e of
+                                Just e' -> e') unit
+             return (ns,Val (ne::SMTExpr t))
+
+foldsLispVal :: Monad m => Integer
+             -> (forall t. SMTType t => s -> [(SMTExpr t,b)] -> SMTAnnotation t
+                 -> m (s,[SMTExpr t],SMTExpr t))
+             -> s -> [(LispVal,b)] -> Sort
+             -> m (s,[LispVal],LispVal)
+foldsLispVal lvl f s lst sort
+  = withIndexableSort (undefined::SMTExpr Integer) sort $
+    \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
+           \(_::t) -> do
+             (ns,nlst,res) <- f s (fmap (\(Val e,b) -> (case cast e of
+                                                         Just e' -> e',b)) lst) unit
+             return (ns,fmap Val nlst,Val (res::SMTExpr t))
+
+toArgsLispVal :: Integer -> Sort -> [SMTExpr Untyped] -> Maybe (LispVal,[SMTExpr Untyped])
+toArgsLispVal _ _ [] = Nothing
+toArgsLispVal lvl sort (e:es)
+  = withIndexableSort (undefined::SMTExpr Integer) sort $
+    \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
+           \(_::t) -> return (Val (castUntypedExpr e::SMTExpr t),es)
+
+getTypesLispVal :: Integer -> Sort -> [ProxyArg]
+getTypesLispVal lvl sort
+  = withIndexableSort (undefined::SMTExpr Integer) sort $
+    \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
+           \ut -> [ProxyArg ut unit]
+
+valueEq :: LispValue -> LispValue -> SMTExpr Bool
+valueEq (LispValue (Size sz1) val1) (LispValue (Size sz2) val2)
+  = app and' (szEq++valEq)
+  where
+    szEq = zipWith (\(SizeElement e1) (SizeElement e2) -> case cast e2 of
+                     Just e2' -> e1 .==. e2') sz1 sz2
+    valEq = linearizeStruct $ zipStruct (\(Val e1) (Val e2) -> case cast e2 of
+                                          Just e2' -> e1 .==. e2'
+                                        ) val1 val2
+
 instance Args LispValue where
   type ArgAnnotation LispValue = LispType
   foldExprs f s ~(LispValue sz struct) (LispType lvl tp) = do
     (s1,nsz) <- foldExprs f s sz lvl
-    (s2,nstruct) <- foldStruct s1 struct tp
+    (s2,nstruct) <- foldStruct (foldLispVal lvl f) s1 struct tp
     return (s2,LispValue nsz nstruct)
-    where
-      foldStruct s ~(Singleton val) (Singleton sort)
-        = withIndexableSort (undefined::SMTExpr Integer) sort $
-          \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
-                 \(_::t) -> do
-                   (ns,nval) <- f s (case val of
-                                      Val e -> case cast e of
-                                        Just e' -> e') unit
-                   return (ns,Singleton (Val (nval::SMTExpr t)))
-      foldStruct s ~(Struct vals) (Struct tps) = do
-        (ns,nvals) <- foldStructs s vals tps
-        return (ns,Struct nvals)
-      foldStructs s ~(x:xs) (y:ys) = do
-        (s1,nx) <- foldStruct s x y
-        (s2,nxs) <- foldStructs s1 xs ys
-        return (s2,nx:nxs)
-      foldStructs s _ [] = return (s,[])
   foldsExprs f s lst (LispType lvl tp) = do
     let sizes = fmap (\(val,b) -> (case val of
                                     LispValue sz _ -> sz,b)) lst
         structs = fmap (\(val,b) -> (case val of
                                       LispValue _ str -> str,b)) lst
     (s1,nsizes,nsize) <- foldsExprs f s sizes lvl
-    (s2,nstructs,nstruct) <- foldStruct s1 structs tp
+    (s2,nstructs,nstruct) <- foldsStruct (foldsLispVal lvl f) s1 structs tp
     return (s2,zipWith LispValue nsizes nstructs,LispValue nsize nstruct)
-    where
-      foldStruct s lst (Singleton sort)
-        = withIndexableSort (undefined::SMTExpr Integer) sort $
-          \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
-                 \(_::t) -> do
-                   let lst' = fmap (\(val,b) -> (case val of
-                                                  Singleton (Val e) -> case cast e of
-                                                    Just e' -> (e'::SMTExpr t),b)
-                                   ) lst
-                   (ns,nvals,nval) <- f s lst' unit
-                   return (ns,fmap (Singleton . Val) nvals,Singleton (Val nval))
-      foldStruct s lst (Struct tps) = do
-        let lst' = fmap (\(val,b) -> (case val of
-                                       Struct xs -> xs,b)) lst
-        (ns,nstructs,nstruct) <- foldStructs s lst' tps
-        return (ns,fmap Struct nstructs,Struct nstruct)
-      foldStructs s lst (y:ys) = do
-        let heads = fmap (\(x,b) -> (head x,b)) lst
-            tails = fmap (\(x,b) -> (tail x,b)) lst
-        (s1,nheads,nhead) <- foldStruct s heads y
-        (s2,ntails,ntail) <- foldStructs s1 tails ys
-        return (s2,zipWith (:) nheads ntails,nhead:ntail)
-      foldStructs s lst [] = return (s,fmap (const []) lst,[])
   extractArgAnnotation (LispValue sz struct)
     = LispType (extractArgAnnotation sz) (extractStruct struct)
     where
@@ -365,33 +438,14 @@ instance Args LispValue where
       stripSort sort = sort
   toArgs (LispType lvl tp) es = do
     (sz,es1) <- toArgs lvl es
-    (val,es2) <- toStruct tp es1
+    (val,es2) <- toArgsStruct (toArgsLispVal lvl) tp es1
     return (LispValue sz val,es2)
-    where
-      toStruct (Singleton tp) (e:es)
-        = withIndexableSort (undefined::SMTExpr Integer) tp $
-          \ut -> withLeveledArray ut (undefined::SMTExpr Integer) lvl $
-                 \(_::t) -> return (Singleton (Val (castUntypedExpr e::SMTExpr t)),es)
-      toStruct (Struct tps) es = do
-        (vals,es1) <- toStructs tps es
-        return (Struct vals,es1)
-      toStructs [] es = return ([],es)
-      toStructs (x:xs) es = do
-        (y,es1) <- toStruct x es
-        (ys,es2) <- toStructs xs es1
-        return (y:ys,es2)
   fromArgs (LispValue sz val) = fromArgs sz++fromStruct val
     where
       fromStruct (Singleton (Val expr)) = [UntypedExpr expr]
       fromStruct (Struct vals) = concat $ fmap fromStruct vals
   getTypes _ (LispType sz tp) = getTypes (undefined::Size) sz++
-                                getStruct tp
-    where
-      getStruct (Singleton sort)
-        = withIndexableSort (undefined::SMTExpr Integer) sort $
-          \ut -> withLeveledArray ut (undefined::SMTExpr Integer) sz $
-                 \ut -> [ProxyArg ut unit]
-      getStruct (Struct tps) = concat $ fmap getStruct tps
+                                getTypesStruct (getTypesLispVal sz) tp
 
 instance LiftArgs LispValue where
   type Unpacked LispValue = LispStruct LispUValue
@@ -520,6 +574,22 @@ instance PartialArgs LispValue where
 instance Show LispUValue where
   showsPrec p (LispUValue val) = showsPrec p val
   showsPrec p (LispUArray vals) = showList vals
+
+instance Eq LispUValue where
+  (LispUValue x) == (LispUValue y) = case cast y of
+    Nothing -> False
+    Just y' -> x==y'
+  (LispUArray xs) == (LispUArray ys) = xs==ys
+  _ == _ = False
+
+instance Ord LispUValue where
+  compare (LispUValue x) (LispUValue y) = case compare (typeOf x) (typeOf y) of
+    EQ -> case cast y of
+      Just y' -> compare x y'
+    r -> r
+  compare (LispUValue _) _ = LT
+  compare _ (LispUValue _) = GT
+  compare (LispUArray xs) (LispUArray ys) = compare xs ys
 
 instance Show LispPValue where
   showsPrec p LispPEmpty = showChar '*'
