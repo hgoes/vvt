@@ -2,6 +2,11 @@ module Main where
 
 import Realization.Lisp
 import Realization.Lisp.Predicates
+import Realization.Lisp.Karr
+
+import Language.SMTLib2
+import Language.SMTLib2.Pipe
+import Language.SMTLib2.Debug
 
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -83,4 +88,11 @@ main = do
                  then prog1 { programPredicates = boolStates prog++programPredicates prog1
                             }
                  else prog1
-     print $ programToLisp prog2
+     prog3 <- if addKarrPredicates opts
+              then (do
+                       pipe <- createSMTPipe "z3" ["-smt2","-in"]
+                       preds <- withSMTBackend ({-namedDebugBackend "karr"-} pipe)
+                                (karrPredicates prog)
+                       return (prog2 { programPredicates = preds++programPredicates prog2 }))
+              else return prog2
+     print $ programToLisp prog3
