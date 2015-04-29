@@ -324,6 +324,10 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                 real0 { yieldEdges = Map.insert (thread,blk,sblk+1)
                                      (edge { edgeConditions = [EdgeCondition act Map.empty] })
                                      (yieldEdges real0) })
+   "assume" -> do
+     cond <- getOperand call 0
+     (cond',real1) <- realizeValue thread cond edge real0
+     return (Just edge,\inp -> (valBool $ symbolicValue cond' inp) .&&. (act inp),real1)
    _ -> do
      (val,nreal) <- realizeDefInstruction thread i edge real0
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
