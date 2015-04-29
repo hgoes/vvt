@@ -6,41 +6,69 @@ import System.Process
 import System.IO
 import System.Environment
 import System.FilePath
+import System.Console.GetOpt
 
 data Action = Verify FilePath
             | Encode FilePath
             | ShowLLVM FilePath
 
-getAction :: IO Action
+data Options = Options { karrAnalysis :: Bool
+                       , showHelp :: Bool
+                       }
+
+defaultOptions :: Options
+defaultOptions = Options { karrAnalysis = False
+                         , showHelp = False }
+
+optDescr :: [OptDescr (Options -> Options)]
+optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
+           ,Option ['k'] ["karr"] (NoArg $ \opt -> opt { karrAnalysis = True }) "Use Karr analysis to get better predicates"]
+
+getAction :: IO (Maybe (Action,Options))
 getAction = do
   args <- getArgs
-  case args of
-   [] -> error "Please provide an action."
-   "verify":rest -> case rest of
-     [] -> error "Please provide a C-file to verify."
-     [file] -> return (Encode file)
-   "encode":rest -> case rest of
-     [] -> error "Please provide a C-file to encode."
-     [file] -> return (Encode file)
-   "show-llvm":rest -> case rest of
-     [] -> error "Please provide a C-file to compile."
-     [file] -> return (ShowLLVM file)
+  let (xs,extra,errs) = getOpt Permute optDescr args
+      opts = foldl (flip id) defaultOptions xs
+  if showHelp opts
+    then do
+    putStrLn $ usageInfo "Usage:\n\n    vvt ACTION [OPTIONS] [FILE..]\n\nAvailable actions:\n  encode - Create a transition relation from a C file.\n  show-llvm - Show the LLVM code that is used for the translation.\n\nAvailable options:" optDescr
+    return Nothing
+    else do
+    act <- case extra of
+            [] -> error "Please provide an action."
+            "verify":rest -> case rest of
+              [] -> error "Please provide a C-file to verify."
+              [file] -> return (Encode file)
+            "encode":rest -> case rest of
+              [] -> error "Please provide a C-file to encode."
+              [file] -> return (Encode file)
+            "show-llvm":rest -> case rest of
+              [] -> error "Please provide a C-file to compile."
+              [file] -> return (ShowLLVM file)
+    return (Just (act,opts))
 
-performAction :: Action -> IO ()
-performAction (Encode fn) = do
+performAction :: (Action,Options) -> IO ()
+performAction (Encode fn,opts) = do
   outp <- openFile (replaceExtension fn "l") WriteMode
   (inp,_) <- compile fn
-  ph <- execPipe inp outp [progOptimize,progEncode,progPredicates,progPretty]
+  ph <- execPipe inp outp [progOptimize
+                          ,progEncode
+                          ,progPredicates (karrAnalysis opts)
+                          ,progPretty]
   waitForProcess ph
   return ()
-performAction (ShowLLVM fn) = do
+performAction (ShowLLVM fn,opts) = do
   (inp,_) <- compile fn
   ph <- execPipe inp stdout [progOptimize,progDisassemble]
   waitForProcess ph
   return ()  
 
 main :: IO ()
-main = getAction >>= performAction
+main = do
+  act <- getAction
+  case act of
+   Nothing -> return ()
+   Just act -> performAction act
 
 execPipe :: Handle -> Handle -> [IO (FilePath,[String])] -> IO ProcessHandle
 execPipe inp outp [act] = do
@@ -73,10 +101,10 @@ progEncode = do
   bin <- getBinDir
   return (bin </> "vvt-enc",[])
 
-progPredicates :: IO (FilePath,[String])
-progPredicates = do
+progPredicates :: Bool -> IO (FilePath,[String])
+progPredicates useKarr = do
   bin <- getBinDir
-  return (bin </> "vvt-predicates",[])
+  return (bin </> "vvt-predicates",if useKarr then ["--karr=on"] else [])
 
 progVerify :: IO (FilePath,[String])
 progVerify = do
