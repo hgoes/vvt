@@ -755,6 +755,7 @@ instance TransitionRelation LispProgram where
           Just i -> Map.insert (name,idx) i mp
           Nothing -> mp
         getInts name idx (Singleton LispPEmpty) mp = mp
+        getInts name idx (Singleton (LispPArray arr)) mp = mp -- TODO
         getInts name idx (Struct vals) mp
           = foldl (\mp (i,pval) -> getInts name (idx++[i]) pval mp
                   ) mp (zip [0..] vals)
