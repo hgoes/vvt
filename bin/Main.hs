@@ -91,7 +91,7 @@ compile fp = do
   return (pout,ph)
 
 progOptimize :: IO (FilePath,[String])
-progOptimize = return ("opt",["-mem2reg","-inline","-loops","-loop-reduce","-loop-unroll","-instnamer","-","-o","-"])
+progOptimize = return ("opt",["-mem2reg","-always-inline","-inline","-loops","-loop-reduce","-loop-unroll","-instnamer","-","-o","-"])
 
 progDisassemble :: IO (FilePath,[String])
 progDisassemble = return ("llvm-dis",["-","-o","-"])
