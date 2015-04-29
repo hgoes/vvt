@@ -334,18 +334,8 @@ realizeInstruction thread blk sblk act (castDown -> Just store) edge real0 = do
   val <- storeInstGetValueOperand store
   (ptr',real1) <- realizeValue thread ptr edge real0
   (val',real2) <- realizeValue thread val edge real1
-  return (Just edge { observedEvents = Map.insert (Map.size (events real2)) ()
-                                       (observedEvents edge) },
-          act,
-          real2 { events = Map.insert (Map.size (events real2))
-                           (WriteEvent { target = Map.mapWithKey
-                                                  (\loc _ inp
-                                                   -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
-                                                      in ((act inp) .&&. cond,idx)
-                                                  ) (tpPtr $ symbolicType ptr')
-                                       , writeContent = val'
-                                       , eventOrigin = castUp store })
-                           (events real2) })
+  let (nedge,real3) = memoryWrite (castUp store) act ptr' val' edge real2
+  return (Just nedge,act,real3)
 realizeInstruction thread blk sblk act (castDown -> Just br) edge real0 = do
   srcBlk <- instructionGetParent br
   isCond <- branchInstIsConditional br
@@ -386,6 +376,35 @@ realizeInstruction thread blk sblk act (castDown -> Just (_::Ptr ReturnInst)) ed
      Nothing -> return (Nothing,act,real)
      Just th -> return (Nothing,act,
                         real { termEvents = Map.insertWith (++) th [act] (termEvents real) })
+realizeInstruction thread blk sblk act instr@(castDown -> Just atomic) edge real0 = do
+  name <- getNameString atomic
+  op <- atomicRMWInstGetOperation atomic
+  ptr <- atomicRMWInstGetPointerOperand atomic
+  val <- atomicRMWInstGetValOperand atomic
+  (ptr',real1) <- realizeValue thread ptr edge real0
+  (val',real2) <- realizeValue thread ptr edge real1
+  let oldval = memoryRead ptr' edge real2
+      newval = case op of
+        RMWXchg -> val'
+        RMWAdd -> InstructionValue { symbolicType = TpInt
+                                   , symbolicValue =
+                                     \inp -> ValInt (valInt (symbolicValue oldval inp) +
+                                                     valInt (symbolicValue val' inp))
+                                   , alternative = Nothing }
+        RMWSub -> InstructionValue { symbolicType = TpInt
+                                   , symbolicValue =
+                                     \inp -> ValInt (valInt (symbolicValue oldval inp) -
+                                                     valInt (symbolicValue val' inp))
+                                   , alternative = Nothing }
+      (nedge,real3) = memoryWrite instr act ptr' newval edge real2
+      (oldval',ngates) = addSymGate (gateMp real3) (symbolicType oldval)
+                         (symbolicValue oldval) (Just name)
+  return (Just nedge { edgeValues = Map.insert (thread,instr) (AlwaysDefined act) (edgeValues nedge) },
+          act,
+          real3 { instructions = Map.insert (thread,instr)
+                                 (oldval { symbolicValue = const oldval' })
+                                 (instructions real3)
+                , gateMp = ngates })
 realizeInstruction thread blk sblk act instr edge real = do
   name <- getNameString instr
   (val,nreal) <- realizeDefInstruction thread instr edge real
@@ -706,6 +725,26 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
       l:_ -> case Map.lookup (memoryLoc l) (memoryDesc $ stateAnnotation real) of
         Just t -> trace ("offsetAlloc "++show (offsetPattern l)++" "++show t) $
                   firstType $ offsetAlloc (offsetPattern l) t-}
+
+memoryWrite :: Ptr Instruction
+            -> (inp -> SMTExpr Bool)
+            -> InstructionValue inp
+            -> InstructionValue inp
+            -> Edge inp
+            -> Realization inp
+            -> (Edge inp,Realization inp)
+memoryWrite origin act ptr val edge real
+  = (edge { observedEvents = Map.insert (Map.size (events real)) ()
+                             (observedEvents edge) },
+     real { events = Map.insert (Map.size (events real))
+                     (WriteEvent { target = Map.mapWithKey
+                                            (\loc _ inp
+                                             -> let (cond,idx) = (valPtr $ symbolicValue ptr inp) Map.! loc
+                                                in ((act inp) .&&. cond,idx)
+                                            ) (tpPtr $ symbolicType ptr)
+                                 , writeContent = val
+                                 , eventOrigin = origin })
+                     (events real) })
 
 getInstructionValue :: Maybe (Ptr CallInst) -> Ptr Instruction
                     -> Edge (ProgramState,ProgramInput)
