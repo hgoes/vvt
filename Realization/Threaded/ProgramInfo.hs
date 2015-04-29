@@ -12,7 +12,9 @@ import qualified Data.Map as Map
 
 data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , entryPoints :: Map (Ptr BasicBlock,Int) ()
+                             , threadFunction :: Ptr Function
                              , threadArg :: Maybe (Ptr Argument,Ptr Type)
+                             , threadSliceMapping :: Map Integer (Ptr BasicBlock,Int)
                              , spawnQuantity :: Quantity
                              }
 
@@ -27,12 +29,14 @@ data ProgramInfo = ProgramInfo { mainThread :: ThreadInfo
 
 getProgramInfo :: Ptr Module -> Ptr Function -> IO ProgramInfo
 getProgramInfo mod mainFun = do
-  (entries,order) <- getSlicing mainFun
+  (entries,order,slMp) <- getSlicing mainFun
   mainLocs <- getThreadSpawns' mod mainFun
   applyLocs mainLocs
     (ProgramInfo { mainThread = ThreadInfo { blockOrder = order
                                            , entryPoints = entries
+                                           , threadFunction = mainFun
                                            , threadArg = Nothing
+                                           , threadSliceMapping = slMp
                                            , spawnQuantity = Finite 1 }
                  , threads = Map.empty
                  , allocations = Map.empty })
@@ -46,13 +50,15 @@ getProgramInfo mod mainFun = do
                                                     (ti { spawnQuantity = (spawnQuantity ti)+n })
                                                     (threads pi) }
          Nothing -> do
-           (entries,order) <- getSlicing fun
+           (entries,order,slMp) <- getSlicing fun
            nlocs <- getThreadSpawns' mod fun
            arg <- getThreadArgument fun
            applyLocs (locs++(fmap (\l -> l { quantity = (quantity l)*n }) nlocs))
              (pi { threads = Map.insert inst (ThreadInfo { blockOrder = order
                                                          , entryPoints = entries
+                                                         , threadFunction = fun
                                                          , threadArg = arg
+                                                         , threadSliceMapping = slMp
                                                          , spawnQuantity = n })
                              (threads pi) })
     applyLocs ((AllocationLocation { allocInstruction = inst

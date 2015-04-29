@@ -11,6 +11,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.List as List
 import Data.Foldable (sequence_,mapM_)
+import Foreign.Storable (peek)
 import Prelude hiding (sequence_,mapM_)
 
 data Slicing = Slicing { entryPoints :: Map (Ptr BasicBlock,Int) ()
@@ -19,9 +20,10 @@ data Slicing = Slicing { entryPoints :: Map (Ptr BasicBlock,Int) ()
                        , sliceQueue :: Map (Ptr BasicBlock,Int) [Ptr Instruction]
                        , realizationOrder :: [(Ptr BasicBlock,Int)]
                        , currentSlice :: Maybe (Ptr BasicBlock,Int,[Ptr Instruction])
+                       , sliceMapping :: Map Integer (Ptr BasicBlock,Int)
                        }
 
-getSlicing :: Ptr Function -> IO (Map (Ptr BasicBlock,Int) (),[(Ptr BasicBlock,Int)])
+getSlicing :: Ptr Function -> IO (Map (Ptr BasicBlock,Int) (),[(Ptr BasicBlock,Int)],Map Integer (Ptr BasicBlock,Int))
 getSlicing fun = do
   entry <- getEntryBlock fun
   instrs <- getInstList entry >>= ipListToList
@@ -30,13 +32,14 @@ getSlicing fun = do
                    , visitedBlocks = Set.singleton entry
                    , sliceQueue = Map.empty
                    , realizationOrder = []
-                   , currentSlice = Just (entry,0,instrs) }
+                   , currentSlice = Just (entry,0,instrs)
+                   , sliceMapping = Map.singleton 0 (entry,0) }
   getSlicing' s0
   where
     getSlicing' s = do
       s' <- stepSlicing s
       case s' of
-       Nothing -> return (entryPoints s,realizationOrder s)
+       Nothing -> return (entryPoints s,realizationOrder s,sliceMapping s)
        Just ns -> getSlicing' ns
 
 stepSlicing :: Slicing -> IO (Maybe Slicing)
@@ -80,6 +83,20 @@ stepSlicing sl = case currentSlice sl of
                                                  [] -> Map.insert (blk,sblk+1) is (sliceQueue sl)
                                                  (blk,_):_ -> Map.insert (blk,1) is (sliceQueue sl)
                                               }
+          "__yield" -> do
+            num <- callInstGetArgOperand call 0
+            case castDown num of
+             Just cint -> do
+               val <- constantIntGetValue cint
+               APInt _ rval <- peek val
+               return $ Just sl { currentSlice = Just (blk,sblk,[])
+                                , sliceQueue = case blockStack sl of
+                                   [] -> Map.insert (blk,sblk+1) is (sliceQueue sl)
+                                   (blk,_):_ -> Map.insert (blk,1) is (sliceQueue sl)
+                                , sliceMapping = case blockStack sl of
+                                   [] -> Map.insert rval (blk,sblk+1) (sliceMapping sl)
+                                   (blk,_):_ -> Map.insert rval (blk,1) (sliceMapping sl)
+                                }
           _ -> return $ Just sl { currentSlice = Just (blk,sblk,is) }
     [(castDown -> Just term)] -> do
       numSuccs <- terminatorInstGetNumSuccessors (term::Ptr TerminatorInst)

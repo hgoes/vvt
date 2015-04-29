@@ -318,6 +318,12 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                 real0 { yieldEdges = Map.insert (thread,blk,sblk+1)
                                      (edge { edgeConditions = [EdgeCondition act Map.empty] })
                                      (yieldEdges real0) })
+   "__yield"
+     -> return (Nothing,
+                act,
+                real0 { yieldEdges = Map.insert (thread,blk,sblk+1)
+                                     (edge { edgeConditions = [EdgeCondition act Map.empty] })
+                                     (yieldEdges real0) })
    _ -> do
      (val,nreal) <- realizeDefInstruction thread i edge real0
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
@@ -472,6 +478,34 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                                 , symbolicValue = \_ -> ValPtr (Map.singleton ptrLocDyn (constant True,[constant 0])) tp
                                 , alternative = Nothing
                                 },real0)
+   "__act" -> do
+     funVal <- callInstGetArgOperand call 0
+     case castDown funVal of
+      Just fun -> do
+        args <- callInstGetNumArgOperands call
+        acts <- mapM (\i -> do
+                         num <- callInstGetArgOperand call i
+                         case castDown num of
+                          Just cint -> do
+                            APInt _ rval <- constantIntGetValue cint >>= peek
+                            return rval
+                     ) [1..args-1]
+        let res (st,_) = case [ case Map.lookup i (threadSliceMapping thread) of
+                                 Just blk -> case Map.lookup blk (latchBlocks $
+                                                                  getThreadState thId st) of
+                                              Just act -> act
+                              | (thId,thread) <- (Nothing,mainThread (programInfo real0)):
+                                                 [ (Just thId,th)
+                                                 | (thId,th) <- Map.toList (threads $ programInfo real0) ]
+                              , threadFunction thread==fun
+                              , i <- acts
+                              ] of
+                          [x] -> x
+                          xs -> app or' xs
+        return (InstructionValue { symbolicType = TpBool
+                                 , symbolicValue = ValBool . res
+                                 , alternative = Nothing
+                                 },real0)
    _ -> error $ "Unknown function call: "++fname
   where
     ptrLoc = MemoryPtr { memoryLoc = Left i
@@ -976,6 +1010,7 @@ getSubBlockInstructions blk sub = do
            name <- getNameString fun
            case name of
             "pthread_yield" -> dropInstrs (n-1) is
+            "__yield" -> dropInstrs (n-1) is
             _ -> dropInstrs n is
          Nothing -> dropInstrs n is
       Nothing -> dropInstrs n is
