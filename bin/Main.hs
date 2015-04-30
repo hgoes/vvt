@@ -14,15 +14,18 @@ data Action = Verify FilePath
 
 data Options = Options { karrAnalysis :: Bool
                        , showHelp :: Bool
+                       , defines :: [String]
                        }
 
 defaultOptions :: Options
 defaultOptions = Options { karrAnalysis = False
-                         , showHelp = False }
+                         , showHelp = False
+                         , defines = [] }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
-           ,Option ['k'] ["karr"] (NoArg $ \opt -> opt { karrAnalysis = True }) "Use Karr analysis to get better predicates"]
+           ,Option ['k'] ["karr"] (NoArg $ \opt -> opt { karrAnalysis = True }) "Use Karr analysis to get better predicates"
+           ,Option ['D'] [] (ReqArg (\arg opt -> opt { defines = arg:defines opt }) "VAR[=VAL]") "Define macros for the C-preprocessor"]
 
 getAction :: IO (Maybe (Action,Options))
 getAction = do
@@ -50,7 +53,7 @@ getAction = do
 performAction :: (Action,Options) -> IO ()
 performAction (Encode fn,opts) = do
   outp <- openFile (replaceExtension fn "l") WriteMode
-  (inp,_) <- compile fn
+  (inp,_) <- compile fn (defines opts)
   ph <- execPipe inp outp [progOptimize
                           ,progEncode
                           ,progPredicates (karrAnalysis opts)
@@ -58,7 +61,7 @@ performAction (Encode fn,opts) = do
   waitForProcess ph
   return ()
 performAction (ShowLLVM fn,opts) = do
-  (inp,_) <- compile fn
+  (inp,_) <- compile fn (defines opts)
   ph <- execPipe inp stdout [progOptimize,progDisassemble]
   waitForProcess ph
   return ()  
@@ -82,10 +85,12 @@ execPipe inp outp (act:acts) = do
                                                         , std_out = CreatePipe })
   execPipe pout outp acts
 
-compile :: FilePath -> IO (Handle,ProcessHandle)
-compile fp = do
+compile :: FilePath -> [String] -> IO (Handle,ProcessHandle)
+compile fp defs = do
   includePath <- getDataFileName "include"
-  let clang = (proc "clang-3.4" ["-O0","-emit-llvm","-c","-o","-",fp,"-I"++includePath,"-DHCTIGAR"]) { std_out = CreatePipe }
+  let clang = (proc "clang-3.4" $
+                    ["-O0","-emit-llvm","-c","-o","-",fp,"-I"++includePath,"-DHCTIGAR"]++
+                    ["-D"++def | def <- defs ]) { std_out = CreatePipe }
   --let clang = (proc "ls" ["-l"]) { std_out = CreatePipe }
   (_,Just pout,_,ph) <- createProcess clang
   return (pout,ph)
