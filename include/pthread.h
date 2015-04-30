@@ -31,6 +31,8 @@ int pthread_yield(void);
 
 int pthread_join(pthread_t* pthread,void** retval);
 
+void pthread_exit(void* retval);
+  
 // Mutex functions
 
 int pthread_mutex_init(pthread_mutex_t *__restrict__ mutex,
@@ -40,6 +42,8 @@ int pthread_mutex_lock(pthread_mutex_t *mutex);
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex);
 
+int pthread_mutex_destroy(pthread_mutex_t *mutex);
+  
 #define pthread_join(thread,retval) pthread_join(&thread,retval)
 
 #ifdef __cplusplus

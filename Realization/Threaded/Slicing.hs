@@ -97,6 +97,8 @@ stepSlicing sl = case currentSlice sl of
                                    [] -> Map.insert rval (blk,sblk+1) (sliceMapping sl)
                                    (blk,_):_ -> Map.insert rval (blk,1) (sliceMapping sl)
                                 }
+          "pthread_exit" -> return $ Just sl { currentSlice = Just (blk,sblk,[])
+                                             , blockStack = (nullPtr,[]):blockStack sl }
           _ -> return $ Just sl { currentSlice = Just (blk,sblk,is) }
     [(castDown -> Just term)] -> do
       numSuccs <- terminatorInstGetNumSuccessors (term::Ptr TerminatorInst)

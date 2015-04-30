@@ -262,6 +262,16 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                       , symbolicValue = \_ -> ValInt (constant 0)
                                                       , alternative = Just $ IntConst 0 })
                                     (instructions real0) })
+   "pthread_mutex_destroy" -> do
+     -- Ignore this call for now...
+     return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
+                                      (edgeValues edge) },
+             act,
+             real0 { instructions = Map.insert (thread,i)
+                                    (InstructionValue { symbolicType = TpInt
+                                                      , symbolicValue = \_ -> ValInt (constant 0)
+                                                      , alternative = Just $ IntConst 0 })
+                                    (instructions real0) })
    "pthread_mutex_lock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
@@ -328,6 +338,10 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
      cond <- getOperand call 0
      (cond',real1) <- realizeValue thread cond edge real0
      return (Just edge,\inp -> (valBool $ symbolicValue cond' inp) .&&. (act inp),real1)
+   "pthread_exit" -> case thread of
+     Nothing -> return (Nothing,act,real0)
+     Just th -> return (Nothing,act,
+                        real0 { termEvents = Map.insertWith (++) th [act] (termEvents real0) })
    _ -> do
      (val,nreal) <- realizeDefInstruction thread i edge real0
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
@@ -1179,6 +1193,37 @@ getConstant (castDown -> Just czero) = do
      name <- structTypeGetName struct >>= stringRefData
      case name of
       "struct.pthread_mutex_t" -> return $ Singleton $ ValBool (constant False)
+   Nothing -> zeroInit tp
+   where
+     zeroInit (castDown -> Just itp) = do
+       bw <- getBitWidth itp
+       if bw==1
+         then return $ Singleton $ ValBool $ constant False
+         else return $ Singleton $ ValInt $ constant 0
+     zeroInit (castDown -> Just struct) = do
+       isMutex <- do
+         hasName <- structTypeHasName struct
+         if hasName
+           then do
+           name <- structTypeGetName struct >>= stringRefData
+           case name of
+            "struct.pthread_mutex_t" -> return True
+            _ -> return False
+           else return False
+       if isMutex then return $ Singleton $ ValBool (constant False)
+         else do
+         num <- structTypeGetNumElements struct
+         subs <- mapM (\i -> do
+                          stp <- structTypeGetElementType struct i
+                          zeroInit stp
+                      ) [0..num-1]
+         return (Struct subs)
+     zeroInit (castDown -> Just arrTp) = do
+       stp <- sequentialTypeGetElementType arrTp
+       num <- arrayTypeGetNumElements arrTp
+       zeroEl <- zeroInit stp
+       return (Struct $ genericReplicate num zeroEl)
+
 getConstant (castDown -> Just cstruct) = do
   tp <- getType (cstruct::Ptr ConstantStruct)
   num <- structTypeGetNumElements tp
