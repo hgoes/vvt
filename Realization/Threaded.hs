@@ -28,6 +28,8 @@ import Data.Foldable
 import Data.Traversable
 import Data.List (genericReplicate)
 import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
+import Control.Exception
+import System.IO.Unsafe
 
 import Debug.Trace
 
@@ -225,7 +227,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
    "pthread_join" -> do
      thId <- getOperand call 0
      (thId',real1) <- realizeValue thread thId edge real0
-     let rthId = memoryRead thId' edge real1
+     let rthId = memoryRead i thId' edge real1
          gt inp = app or' [ cact .&&. (not' $ fst $ (threadState $ fst inp) Map.! call')
                           | (call',cact) <- Map.toList $ valThreadId $
                                             symbolicValue rthId inp ]
@@ -275,7 +277,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
    "pthread_mutex_lock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead ptr' edge real1
+     let lock = memoryRead i ptr' edge real1
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
                                       (edgeValues edge)
                        , observedEvents = Map.insert (Map.size (events real1)) ()
@@ -300,7 +302,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
    "pthread_mutex_unlock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead ptr' edge real1
+     let lock = memoryRead i ptr' edge real1
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
                                       (edgeValues edge)
                        , observedEvents = Map.insert (Map.size (events real1)) ()
@@ -401,7 +403,7 @@ realizeInstruction thread blk sblk act instr@(castDown -> Just atomic) edge real
   val <- atomicRMWInstGetValOperand atomic
   (ptr',real1) <- realizeValue thread ptr edge real0
   (val',real2) <- realizeValue thread ptr edge real1
-  let oldval = memoryRead ptr' edge real2
+  let oldval = memoryRead instr ptr' edge real2
       newval = case op of
         RMWXchg -> val'
         RMWAdd -> InstructionValue { symbolicType = TpInt
@@ -675,11 +677,11 @@ realizeDefInstruction thread (castDown -> Just gep) edge real = do
                            , symbolicValue = \inp -> case symbolicValue ptr' inp of
                               ValPtr trgs _ -> ValPtr (derefPointer (ridx inp) trgs) ntp
                            , alternative = Nothing },real2)
-realizeDefInstruction thread (castDown -> Just load) edge real0 = do
+realizeDefInstruction thread instr@(castDown -> Just load) edge real0 = do
   name <- getNameString load
   ptr <- loadInstGetPointerOperand load
   (ptr',real1) <- realizeValue thread ptr edge real0
-  return (memoryRead ptr' edge real1,real1)
+  return (memoryRead instr ptr' edge real1,real1)
 realizeDefInstruction thread (castDown -> Just bitcast) edge real = do
   -- Ignore bitcasts for now, just assume that everything will work out
   arg <- getOperand (bitcast :: Ptr BitCastInst) 0
@@ -692,13 +694,14 @@ realizeDefInstruction _ i _ _ = do
   str <- valueToString i
   error $ "Unknown instruction: "++str
      
-memoryRead :: InstructionValue (ProgramState,ProgramInput)
+memoryRead :: Ptr Instruction
+           -> InstructionValue (ProgramState,ProgramInput)
            -> Edge (ProgramState,ProgramInput)
            -> Realization (ProgramState,ProgramInput)
            -> InstructionValue (ProgramState,ProgramInput)
-memoryRead (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
-                             , symbolicValue = f
-                             }) edge real
+memoryRead origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
+                                    , symbolicValue = f
+                                    }) edge real
   = InstructionValue { symbolicType = tp
                      , symbolicValue = val
                      , alternative = Nothing
@@ -722,7 +725,7 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
             xs -> symITEs xs
     val inp = let ValPtr trgs _ = f inp
               in foldl (\cval ev -> case ev of
-                         WriteEvent trg cont _
+                         WriteEvent trg cont writeOrigin
                            -> case [ app and' (cond1:cond2:match)
                                    | (ptr1,(cond1,idx1)) <- Map.toList trgs
                                    , (ptr2,info2) <- Map.toList trg
@@ -734,9 +737,21 @@ memoryRead (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
                                                    idx1 idx2 of
                                                Nothing -> []
                                                Just conds -> [conds] ] of
-                               [] -> cval
-                               [cond] -> symITE cond (symbolicValue cont inp) cval
-                               conds -> symITE (app or' conds) (symbolicValue cont inp) cval
+                              [] -> cval
+                              [cond] -> mkVal cond
+                              conds -> mkVal (app or' conds)
+                           where
+                                  mkVal c = if symbolicType cont==tp
+                                            then symITE c (symbolicValue cont inp) cval
+                                            else cval {-error $ "While realizing read to "++
+                                                 (unsafePerformIO $ getNameString origin)++
+                                                 " from "++show trgs++
+                                                 ": Write at "++
+                                                 (unsafePerformIO $ valueToString writeOrigin)++
+                                                 " to "++show (fmap (\x -> x inp) trg)++
+                                                 " has wrong type "++
+                                                 (show $ (symbolicType cont))++
+                                                 " (Expected: "++show tp++")."-}
                          _ -> cval
                        ) (startVal inp) (fmap snd $ Map.toAscList allEvents)
     {-tp = case Map.keys locs of
