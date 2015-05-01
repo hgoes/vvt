@@ -1203,13 +1203,8 @@ getConstant (castDown -> Just cint) = do
     else return $ Singleton $ ValInt $ constant $ fromIntegral rv
 getConstant (castDown -> Just czero) = do
   tp <- getType (czero::Ptr ConstantAggregateZero)
-  case castDown tp of
-   Just struct -> do
-     name <- structTypeGetName struct >>= stringRefData
-     case name of
-      "struct.pthread_mutex_t" -> return $ Singleton $ ValBool (constant False)
-   Nothing -> zeroInit tp
-   where
+  zeroInit tp
+  where
      zeroInit (castDown -> Just itp) = do
        bw <- getBitWidth itp
        if bw==1
