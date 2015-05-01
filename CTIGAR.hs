@@ -11,7 +11,7 @@ import SMTPool
 import LitOrder
 import Options
 
-import Language.SMTLib2
+import Language.SMTLib2 hiding (interpolate)
 import Language.SMTLib2.Internals
 import Language.SMTLib2.Internals.Operators
 import Language.SMTLib2.Pipe
@@ -803,7 +803,7 @@ check st opts = do
           cex <- gets ic3CexState
           tr <- liftIO $ getWitnessTr cex
           res <- liftIO $ do
-            backend <- createSMTPipe "z3" ["-in","-smt2"] >>= namedDebugBackend "err"
+            backend <- createSMTPipe "z3" ["-in","-smt2"]
             withSMTBackendExitCleanly backend $ do
               st0 <- TR.createStateVars "" real
               assert $ TR.initialState real st0
