@@ -518,39 +518,58 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                                 , alternative = Nothing
                                 },real0)
    "__act" -> do
-     funVal <- callInstGetArgOperand call 0
-     case castDown funVal of
-      Just fun -> do
-        args <- callInstGetNumArgOperands call
-        acts <- mapM (\i -> do
-                         num <- callInstGetArgOperand call i
-                         case castDown num of
-                          Just cint -> do
-                            APInt _ rval <- constantIntGetValue cint >>= peek
-                            return rval
-                     ) [1..args-1]
-        let res (st,_) = case [ case Map.lookup i (threadSliceMapping thread) of
-                                 Just blk -> case Map.lookup blk (latchBlocks $
-                                                                  getThreadState thId st) of
-                                              Just act -> act
-                              | (thId,thread) <- (Nothing,mainThread (programInfo real0)):
-                                                 [ (Just thId,th)
-                                                 | (thId,th) <- Map.toList (threads $ programInfo real0) ]
-                              , threadFunction thread==fun
-                              , i <- acts
-                              ] of
-                          [x] -> x
-                          xs -> app or' xs
-        return (InstructionValue { symbolicType = TpBool
-                                 , symbolicValue = ValBool . res
-                                 , alternative = Nothing
-                                 },real0)
+     acts <- parseActArgs call
+     let res (st,_) = case [ case Map.lookup i (threadSliceMapping thread) of
+                              Just blk -> case Map.lookup blk (latchBlocks $
+                                                               getThreadState thId st) of
+                                           Just act -> act
+                           | (fun,is) <- acts
+                           , (thId,thread) <- (Nothing,mainThread (programInfo real0)):
+                                              [ (Just thId,th)
+                                              | (thId,th) <- Map.toList
+                                                             (threads $ programInfo real0) ]
+                           , threadFunction thread==fun
+                           , i <- is
+                           ] of
+                       [] -> constant True
+                       [x] -> x
+                       xs -> app or' xs
+     return (InstructionValue { symbolicType = TpBool
+                              , symbolicValue = ValBool . res
+                              , alternative = Nothing
+                              },real0)
    _ -> error $ "Unknown function call: "++fname
   where
     ptrLoc = MemoryPtr { memoryLoc = Left i
                        , offsetPattern = [StaticAccess 0] }
     ptrLocDyn = MemoryPtr { memoryLoc = Left i
                           , offsetPattern = [DynamicAccess] }
+    parseActArgs :: Ptr CallInst -> IO [(Ptr Function,[Integer])]
+    parseActArgs call = do
+      nargs <- callInstGetNumArgOperands call
+      parseActArgsFun call 0 nargs
+    parseActArgsFun :: Ptr CallInst -> Integer -> Integer -> IO [(Ptr Function,[Integer])]
+    parseActArgsFun call n nargs
+      | n==nargs = return []
+      | otherwise = do
+          fun <- callInstGetArgOperand call n
+          case castDown fun of
+           Just rfun -> do
+             (nums,rest) <- parseActArgsNums call (n+1) nargs
+             return $ (rfun,nums):rest
+    parseActArgsNums :: Ptr CallInst -> Integer -> Integer -> IO ([Integer],[(Ptr Function,[Integer])])
+    parseActArgsNums call n nargs
+      | n==nargs = return ([],[])
+      | otherwise = do
+          num <- callInstGetArgOperand call n
+          case castDown num of
+           Just cint -> do
+             APInt _ rval <- constantIntGetValue cint >>= peek
+             (nums,rest) <- parseActArgsNums call (n+1) nargs
+             return (rval:nums,rest)
+           Nothing -> do
+             rest <- parseActArgsFun call n nargs
+             return ([],rest)
 realizeDefInstruction thread i@(castDown -> Just icmp) edge real0 = do
   op <- getICmpOp icmp
   lhs <- getOperand icmp 0
