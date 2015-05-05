@@ -17,6 +17,7 @@ import Language.SMTLib2.Internals hiding (Value)
 import LLVM.FFI
 import Foreign.Ptr (Ptr,nullPtr)
 import Foreign.Storable (peek)
+import Foreign.Marshal.Array (peekArray)
 import Data.Monoid
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -26,7 +27,7 @@ import Data.Typeable
 import "mtl" Control.Monad.State (StateT,runStateT,get,put,lift,liftIO,MonadIO)
 import Data.Foldable
 import Data.Traversable
-import Data.List (genericReplicate)
+import Data.List (genericReplicate,genericIndex)
 import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
 import Control.Exception
 import System.IO.Unsafe
@@ -396,13 +397,45 @@ realizeInstruction thread blk sblk act (castDown -> Just (_::Ptr ReturnInst)) ed
      Nothing -> return (Nothing,act,real)
      Just th -> return (Nothing,act,
                         real { termEvents = Map.insertWith (++) th [act] (termEvents real) })
+realizeInstruction thread blk sblk act instr@(castDown -> Just cmpxchg) edge real0 = do
+  ptr <- atomicCmpXchgInstGetPointerOperand cmpxchg
+  cmp <- atomicCmpXchgInstGetCompareOperand cmpxchg
+  new <- atomicCmpXchgInstGetNewValOperand  cmpxchg
+  (ptr',real1) <- realizeValue thread ptr edge real0
+  (cmp',real2) <- realizeValue thread cmp edge real1
+  (new',real3) <- realizeValue thread new edge real2
+  let oldval = memoryRead instr ptr' edge real3
+      (oldval',gates1) = addSymGate (gateMp real3) (symbolicType oldval)
+                         (symbolicValue oldval) (Just "atomic-read")
+      isEq inp = valEq (symbolicValue oldval inp) (symbolicValue cmp' inp)
+      (isEq',gates2) = addGate gates1 (Gate { gateTransfer = isEq
+                                            , gateAnnotation = ()
+                                            , gateName = Just "atomic-cmp" })
+      real4 = real3 { gateMp = gates2 }
+      (nedge,real5) = memoryWrite instr act ptr'
+                      (InstructionValue { symbolicType = symbolicType oldval
+                                        , symbolicValue = \inp -> argITE (isEq inp)
+                                                                  (symbolicValue new' inp)
+                                                                  oldval'
+                                        , alternative = Nothing }) edge real4
+      res = InstructionValue { symbolicType = TpVector [symbolicType oldval
+                                                       ,TpBool]
+                             , symbolicValue = \inp -> ValVector
+                                                       [symbolicValue oldval inp
+                                                       ,ValBool isEq']
+                             , alternative = Nothing }
+  return (Just nedge { edgeValues = Map.insert (thread,instr)
+                                    (AlwaysDefined act)
+                                    (edgeValues nedge) },
+          act,
+          real5 { instructions = Map.insert (thread,instr) res (instructions real5) })
 realizeInstruction thread blk sblk act instr@(castDown -> Just atomic) edge real0 = do
   name <- getNameString atomic
   op <- atomicRMWInstGetOperation atomic
   ptr <- atomicRMWInstGetPointerOperand atomic
   val <- atomicRMWInstGetValOperand atomic
   (ptr',real1) <- realizeValue thread ptr edge real0
-  (val',real2) <- realizeValue thread ptr edge real1
+  (val',real2) <- realizeValue thread val edge real1
   let oldval = memoryRead instr ptr' edge real2
       newval = case op of
         RMWXchg -> val'
@@ -709,6 +742,23 @@ realizeDefInstruction thread (castDown -> Just sext) edge real = do
   -- Again, ignore sign extensions
   arg <- getOperand (sext :: Ptr SExtInst) 0
   realizeValue thread arg edge real
+realizeDefInstruction thread (castDown -> Just extr) edge real = do
+  begin <- extractValueInstIdxBegin extr
+  len <- extractValueInstGetNumIndices extr
+  idx <- peekArray (fromIntegral len) begin
+  arg <- getOperand extr 0
+  (arg',real1) <- realizeValue thread arg edge real
+  return (InstructionValue { symbolicType = indexType (symbolicType arg') idx
+                           , symbolicValue = \inp -> indexValue (symbolicValue arg' inp) idx
+                           , alternative = Nothing },real1)
+  where
+    indexType :: Integral a => SymType -> [a] -> SymType
+    indexType tp [] = tp
+    indexType (TpVector tps) (i:is) = indexType (tps `genericIndex` i) is
+
+    indexValue :: Integral a => SymVal -> [a] -> SymVal
+    indexValue val [] = val
+    indexValue (ValVector vals) (i:is) = indexValue (vals `genericIndex` i) is
 realizeDefInstruction _ i _ _ = do
   str <- valueToString i
   error $ "Unknown instruction: "++str
