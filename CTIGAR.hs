@@ -599,6 +599,9 @@ abstractConsecution fi abs_st succ = do
       let absCore' = if absInit
                      then absCore
                      else Vec.cons (ic3InitialProperty env,False) absCore
+      ic3DebugAct 3 $ do
+        abs_st_str <- renderAbstractState absCore'
+        liftIO $ putStrLn ("Reduced abstract state: "++abs_st_str)
       --absInit' <- initiationAbstract absCore'
       --error $ "abstractConsecution core: "++show absCore'++" "++show absInit'
       return $ Left absCore'
@@ -661,9 +664,11 @@ handleObligations queue = case Queue.minView queue of
       consRes <- abstractConsecution (oblLevel obl) (bestAbstraction rst) (Just (oblState obl))
       case consRes of
         Right abstractPred -> do
+          ic3Debug 4 "Abstract counter-example found."
           concConsRes <- concreteConsecution (oblLevel obl) (stateLifted rst) (oblState obl)
           case concConsRes of
             Nothing -> do
+              ic3Debug 4 "No corresponding concrete counter-example found."
               absPred <- case stateLiftedAst rst of
                 Nothing -> return $ Right abstractPred
                 Just _ -> case stateFullAst rst of
@@ -680,6 +685,7 @@ handleObligations queue = case Queue.minView queue of
                       else elim
                   where
                     elim = do
+                      ic3Debug 4 "Eliminating spurious counter-example."
                       elimSpuriousTrans (oblState obl) (oblLevel obl)
                       return True
                     spurious = error "spur"

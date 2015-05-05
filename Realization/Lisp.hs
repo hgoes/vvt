@@ -155,6 +155,7 @@ parseLispProgram descr = case descr of
                       , programAssumption = assume
                       , programPredicates = preds
                       }
+  _ -> error $ "Invalid lisp program: "++show descr
   where
     parseVarMap lst = Map.fromList $
                       fmap (\st -> case st of

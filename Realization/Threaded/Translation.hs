@@ -549,17 +549,15 @@ toLispExprs' trans (Singleton (TpPtr locs _)) (Singleton (ValPtr trgs _))
                           Nothing -> (constant False,[]{-[ constant 0
                                                          | DynamicAccess <- pat ]-}) ]
     else unsafePerformIO $ do
-      putStrLn "Allowed:"
-      mapM (\ptr -> do
-               name <- memLocName (memoryLoc ptr)
-               putStrLn $ (T.unpack name)++" "++show (offsetPattern ptr)
-           ) (Map.keys locs)
-      putStrLn "Forbidden:"
-      mapM (\ptr -> do
-               name <- memLocName (memoryLoc ptr)
-               putStrLn $ (T.unpack name)++" "++show (offsetPattern ptr)
-           ) (Map.keys diff)
-      error $ "Incomplete: Pointer pointing to unexpected location"
+      allowed <- mapM (\ptr -> do
+                          name <- memLocName (memoryLoc ptr)
+                          return $ "\n"++(T.unpack name)++" "++show (offsetPattern ptr)
+                      ) (Map.keys locs)
+      forbidden <- mapM (\ptr -> do
+                            name <- memLocName (memoryLoc ptr)
+                            return $ "\n"++(T.unpack name)++" "++show (offsetPattern ptr)
+                        ) (Map.keys diff)
+      error $ "Incomplete: Pointer pointing to unexpected location:\nAllowed:"++concat allowed++"\nForbidden:"++concat forbidden
   where
     diff = Map.difference trgs locs
 toLispExprs' trans (Singleton (TpThreadId trgs)) (Singleton (ValThreadId ths))
