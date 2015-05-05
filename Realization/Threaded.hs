@@ -390,6 +390,30 @@ realizeInstruction thread blk sblk act (castDown -> Just br) edge real0 = do
                             (edge { edgeConditions = [EdgeCondition { edgeActivation = act
                                                                     , edgePhis = phis }]
                                   }) (edges real1) })
+realizeInstruction thread blk sblk act (castDown -> Just sw) edge real0 = do
+  srcBlk <- instructionGetParent sw
+  cond <- switchInstGetCondition sw
+  defBlk <- switchInstGetDefaultDest sw
+  trgs <- switchInstGetCases sw
+  (cond',real1) <- realizeValue thread cond edge real0
+  mkSwitch (valInt . symbolicValue cond') trgs srcBlk defBlk [] real1
+  where
+    mkSwitch _ [] srcBlk defBlk conds real = do
+      (phis,nreal) <- realizePhis thread srcBlk defBlk edge real
+      return (Nothing,act,nreal { edges = Map.insertWith mappend (thread,defBlk,0)
+                                          (edge { edgeConditions = [EdgeCondition { edgeActivation = \inp -> app and' [ not' (c inp)
+                                                                                                                      | c <- conds ]
+                                                                                  , edgePhis = phis }]
+                                                }) (edges nreal) })
+    mkSwitch cond ((cint,blk):trgs) srcBlk defBlk conds real = do
+      APInt _ rval <- constantIntGetValue cint >>= peek
+      (phis,real1) <- realizePhis thread srcBlk blk edge real
+      let rcond inp = cond inp .==. constant rval
+          real2 = real1 { edges = Map.insertWith mappend (thread,blk,0)
+                                  (edge { edgeConditions = [EdgeCondition { edgeActivation = rcond
+                                                                          , edgePhis = phis }]
+                                        }) (edges real1) }
+      mkSwitch cond trgs srcBlk defBlk (rcond:conds) real2
 realizeInstruction thread blk sblk act (castDown -> Just (_::Ptr PHINode)) edge real
   = return (Just edge,act,real)
 realizeInstruction thread blk sblk act (castDown -> Just (_::Ptr ReturnInst)) edge real
