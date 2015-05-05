@@ -96,7 +96,17 @@ compile fp defs = do
   return (pout,ph)
 
 progOptimize :: IO (FilePath,[String])
-progOptimize = return ("opt",["-mem2reg","-always-inline","-inline","-loops","-loop-unroll","-instnamer","-","-o","-"])
+progOptimize = return ("opt",["-mem2reg"
+                             ,"-internalize-public-api-list=main"
+                             ,"-internalize"
+                             ,"-inline"
+                             ,"-loops"
+                             ,"-loop-simplify"
+                             ,"-loop-rotate"
+                             ,"-lcssa"
+                             ,"-loop-unroll"
+                             ,"-instnamer"
+                             ,"-","-o","-"])
 
 progDisassemble :: IO (FilePath,[String])
 progDisassemble = return ("llvm-dis",["-","-o","-"])
