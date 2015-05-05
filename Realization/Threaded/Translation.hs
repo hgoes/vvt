@@ -313,6 +313,7 @@ toLispType' (Singleton (TpPtr dest _))
              | dest <- Map.keys dest ]
 toLispType' (Singleton (TpThreadId ths)) = L.Struct [ L.Singleton (Fix BoolSort)
                                                     | th <- Map.keys ths ]
+toLispType' (Singleton (TpVector tps)) = L.Struct (fmap (toLispType'.Singleton) tps)
 toLispType' (Struct tps) = L.Struct $ fmap toLispType' tps
 
 toLispAllocType :: AllocType -> (L.LispType,L.Annotation)
@@ -498,6 +499,8 @@ makeVar' idx var (TpThreadId ths)
     (\i () -> (i+1,InternalObj (L.LispVarAccess
                                 var
                                 (idx++[i]) []) ())) 0 ths
+makeVar' idx var (TpVector tps)
+  = ValVector $ zipWith (\tp i -> makeVar' (idx++[i]) var tp) tps [0..]
 
 makeAllocVar :: T.Text -> L.LispVarCat -> AllocType -> AllocVal
 makeAllocVar name cat tp@(TpStatic n tps)
@@ -565,6 +568,8 @@ toLispExprs' trans (Singleton (TpThreadId trgs)) (Singleton (ValThreadId ths))
              , let cond = case Map.lookup trg ths of
                      Just c -> c
                      Nothing -> constant False ]
+toLispExprs' trans (Singleton (TpVector tps)) (Singleton (ValVector vals))
+  = L.Struct $ zipWith (\tp val -> toLispExprs' trans (Singleton tp) (Singleton val)) tps vals
 toLispExprs' trans (Struct tps) (Struct fs)
   = L.Struct (zipWith (toLispExprs' trans) tps fs)
 
