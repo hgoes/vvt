@@ -83,6 +83,16 @@ data Realization inp = Realization { edges :: Map (Maybe (Ptr CallInst),Ptr Basi
                                    , programInfo :: ProgramInfo
                                    }
 
+constantIntValue :: Integer -> InstructionValue inp
+constantIntValue n = InstructionValue { symbolicType = TpInt
+                                      , symbolicValue = \_ -> ValInt (constant n)
+                                      , alternative = Just $ IntConst n }
+
+constantBoolValue :: Bool -> InstructionValue inp
+constantBoolValue n = InstructionValue { symbolicType = TpBool
+                                       , symbolicValue = \_ -> ValBool (constant n)
+                                       , alternative = Nothing }
+
 realizeProgram :: Ptr Module -> Ptr Function -> IO (Realization (ProgramState,ProgramInput))
 realizeProgram mod fun = do
   info <- getProgramInfo mod fun
@@ -220,10 +230,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                           }) (events real2)
                    , spawnEvents = Map.insertWith (++) call [(act,arg)] (spawnEvents real2)
                    , instructions = Map.insert (thread,i)
-                                    (InstructionValue { symbolicType = TpInt
-                                                      , symbolicValue = \_ -> ValInt (constant 0)
-                                                      , alternative = Just (IntConst 0)
-                                                      })
+                                    (constantIntValue 0)
                                     (instructions real2) })
    "pthread_join" -> do
      thId <- getOperand call 0
@@ -240,10 +247,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
              \inp -> (act inp) .&&. cond,
              real1 { instructions = Map.insert (thread,i)
-                                    (InstructionValue { symbolicType = TpInt
-                                                      , symbolicValue = \_ -> ValInt (constant 0)
-                                                      , alternative = Just (IntConst 0)
-                                                      })
+                                    (constantIntValue 0)
                                     (instructions real1)
                    , gateMp = ngates
                    })
@@ -261,9 +265,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                       (edgeValues edge) },
              act,
              real0 { instructions = Map.insert (thread,i)
-                                    (InstructionValue { symbolicType = TpInt
-                                                      , symbolicValue = \_ -> ValInt (constant 0)
-                                                      , alternative = Just $ IntConst 0 })
+                                    (constantIntValue 0)
                                     (instructions real0) })
    "pthread_mutex_destroy" -> do
      -- Ignore this call for now...
@@ -271,9 +273,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                       (edgeValues edge) },
              act,
              real0 { instructions = Map.insert (thread,i)
-                                    (InstructionValue { symbolicType = TpInt
-                                                      , symbolicValue = \_ -> ValInt (constant 0)
-                                                      , alternative = Just $ IntConst 0 })
+                                    (constantIntValue 0)
                                     (instructions real0) })
    "pthread_mutex_lock" -> do
      ptr <- getOperand call 0
@@ -285,9 +285,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                           (observedEvents edge) },
              \inp -> (act inp) .&&. (not' $ valBool $ symbolicValue lock inp),
              real1 { instructions = Map.insert (thread,i)
-                                    (InstructionValue { symbolicType = TpInt
-                                                      , symbolicValue = \_ -> ValInt (constant 0)
-                                                      , alternative = Just $ IntConst 0 })
+                                    (constantIntValue 0)
                                     (instructions real1)
                    , events = Map.insert (Map.size (events real1))
                               (WriteEvent { target = Map.mapWithKey
@@ -295,9 +293,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                       -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
-                                          , writeContent = InstructionValue { symbolicType = TpBool
-                                                                            , symbolicValue = \_ -> ValBool (constant True)
-                                                                            , alternative = Nothing }
+                                          , writeContent = constantBoolValue True
                                           , eventOrigin = castUp call
                                           }) (events real1) })
    "pthread_mutex_unlock" -> do
@@ -310,9 +306,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                           (observedEvents edge) },
              act,
              real1 { instructions = Map.insert (thread,i)
-                                    (InstructionValue { symbolicType = TpInt
-                                                      , symbolicValue = \_ -> ValInt (constant 0)
-                                                      , alternative = Just $ IntConst 0 })
+                                    (constantIntValue 0)
                                     (instructions real1)
                    , events = Map.insert (Map.size (events real1))
                               (WriteEvent { target = Map.mapWithKey
@@ -320,8 +314,97 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                       -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
-                                          , writeContent = InstructionValue { symbolicType = TpBool
-                                                                            , symbolicValue = \_ -> ValBool (constant False)
+                                          , writeContent = constantBoolValue False
+                                          , eventOrigin = castUp call
+                                          }) (events real1) })
+   "pthread_rwlock_init" -> do
+     -- Ignore this call for now
+     return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
+                                      (edgeValues edge) },
+             act,
+             real0 { instructions = Map.insert (thread,i)
+                                    (constantIntValue 0)
+                                    (instructions real0) })
+   "pthread_rwlock_destroy" -> do
+     -- Ignore this call for now...
+     return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
+                                      (edgeValues edge) },
+             act,
+             real0 { instructions = Map.insert (thread,i)
+                                    (constantIntValue 0)
+                                    (instructions real0) })
+   "pthread_rwlock_rdlock" -> do
+     ptr <- getOperand call 0
+     (ptr',real1) <- realizeValue thread ptr edge real0
+     let lock = memoryRead i ptr' edge real1
+     return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
+                                      (edgeValues edge)
+                       , observedEvents = Map.insert (Map.size (events real1)) ()
+                                          (observedEvents edge) },
+             \inp -> (act inp) .&&. (not' $ valBool $ head $ valVector $ symbolicValue lock inp),
+             real1 { instructions = Map.insert (thread,i)
+                                    (constantIntValue 0)
+                                    (instructions real1)
+                   , events = Map.insert (Map.size (events real1))
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType ptr')
+                                          , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
+                                                                            , symbolicValue = \inp -> case symbolicValue lock inp of
+                                                                               ValVector [wr,ValInt rd] -> ValVector [wr,ValInt (rd+1)]
+                                                                            , alternative = Nothing }
+                                          , eventOrigin = castUp call
+                                          }) (events real1) })
+   "pthread_rwlock_wrlock" -> do
+     ptr <- getOperand call 0
+     (ptr',real1) <- realizeValue thread ptr edge real0
+     let lock = memoryRead i ptr' edge real1
+     return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
+                                      (edgeValues edge)
+                       , observedEvents = Map.insert (Map.size (events real1)) ()
+                                          (observedEvents edge) },
+             \inp -> (act inp) .&&.
+                     (not' $ valBool $ head $ valVector $ symbolicValue lock inp) .&&.
+                     ((valInt $ (valVector $ symbolicValue lock inp)!!1) .==. 0),
+             real1 { instructions = Map.insert (thread,i)
+                                    (constantIntValue 0)
+                                    (instructions real1)
+                   , events = Map.insert (Map.size (events real1))
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType ptr')
+                                          , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
+                                                                            , symbolicValue = \inp -> ValVector [ValBool (constant True),ValInt 0]
+                                                                            , alternative = Nothing }
+                                          , eventOrigin = castUp call
+                                          }) (events real1) })
+   "pthread_rwlock_unlock" -> do
+     ptr <- getOperand call 0
+     (ptr',real1) <- realizeValue thread ptr edge real0
+     let lock = memoryRead i ptr' edge real1
+     return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
+                                      (edgeValues edge)
+                       , observedEvents = Map.insert (Map.size (events real1)) ()
+                                          (observedEvents edge) },
+             act,
+             real1 { instructions = Map.insert (thread,i)
+                                    (constantIntValue 0)
+                                    (instructions real1)
+                   , events = Map.insert (Map.size (events real1))
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType ptr')
+                                          , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
+                                                                            , symbolicValue = \inp -> case symbolicValue lock inp of
+                                                                                                       ValVector [ValBool wr,ValInt rd]
+                                                                                                         -> ValVector [ValBool (constant False)
+                                                                                                                      ,ValInt (ite (rd.==.0) 0 (rd-1))]
                                                                             , alternative = Nothing }
                                           , eventOrigin = castUp call
                                           }) (events real1) })
@@ -1000,6 +1083,7 @@ translateType real (castDown -> Just struct) = do
    "struct.pthread_t" -> return $ Singleton $ TpThreadId (fmap (const ())
                                                           (threadStateDesc $ stateAnnotation real))
    "struct.pthread_mutex_t" -> return $ Singleton TpBool
+   "struct.pthread_rwlock_t" -> return $ Singleton $ TpVector [TpBool,TpInt]
    _ -> do
      num <- structTypeGetNumElements struct
      tps <- mapM (\i -> structTypeGetElementType struct i >>= translateType real) [0..num-1]
@@ -1026,6 +1110,8 @@ translateType0 (castDown -> Just struct) = do
   case name of
    "struct.pthread_t" -> return $ Singleton $ TpThreadId Map.empty
    "struct.pthread_mutex_t" -> return $ Singleton TpBool
+   "struct.pthread_rwlock_t" -> return $ Singleton $
+                                TpVector [TpBool,TpInt]
    _ -> do
      num <- structTypeGetNumElements struct
      tps <- mapM (\i -> structTypeGetElementType struct i >>= translateType0) [0..num-1]
@@ -1304,23 +1390,28 @@ getConstant (castDown -> Just czero) = do
          then return $ Singleton $ ValBool $ constant False
          else return $ Singleton $ ValInt $ constant 0
      zeroInit (castDown -> Just struct) = do
-       isMutex <- do
+       specialInit <- do
          hasName <- structTypeHasName struct
          if hasName
            then do
            name <- structTypeGetName struct >>= stringRefData
            case name of
-            "struct.pthread_mutex_t" -> return True
-            _ -> return False
-           else return False
-       if isMutex then return $ Singleton $ ValBool (constant False)
-         else do
-         num <- structTypeGetNumElements struct
-         subs <- mapM (\i -> do
-                          stp <- structTypeGetElementType struct i
-                          zeroInit stp
-                      ) [0..num-1]
-         return (Struct subs)
+            "struct.pthread_mutex_t" -> return $ Just $ Singleton $
+                                        ValBool $ constant False
+            "struct.pthread_rwlock_t" -> return $ Just $ Singleton $
+                                         ValVector [ValBool $ constant False
+                                                   ,ValInt $ constant 0]
+            _ -> return Nothing
+           else return Nothing
+       case specialInit of
+        Just init -> return init
+        Nothing -> do
+          num <- structTypeGetNumElements struct
+          subs <- mapM (\i -> do
+                           stp <- structTypeGetElementType struct i
+                           zeroInit stp
+                       ) [0..num-1]
+          return (Struct subs)
      zeroInit (castDown -> Just arrTp) = do
        stp <- sequentialTypeGetElementType arrTp
        num <- arrayTypeGetNumElements arrTp
