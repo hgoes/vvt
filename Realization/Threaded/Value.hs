@@ -157,18 +157,21 @@ derefPointer idx mp
     toAccess [] = ([],[])
 
 
-withOffset :: (Struct b -> Maybe (a,Struct b)) -> Integer
-           -> Struct b -> Maybe (a,Struct b)
-withOffset f n (Struct xs) = do
-  (res,nxs) <- withStruct n xs
-  return (res,Struct nxs)
+withOffset :: (Struct b -> c -> (Maybe (a,Struct b),c)) -> Integer
+           -> Struct b -> c -> (Maybe (a,Struct b),c)
+withOffset f n (Struct xs) st = (do
+                                    (obj,nxs) <- res
+                                    return (obj,Struct nxs),nst)
   where
-    withStruct 0 (x:xs) = do
-      (res,nx) <- f x
-      return (res,nx:xs)
-    withStruct n (x:xs) = do
-      (res,nxs) <- withStruct (n-1) xs
-      return (res,x:nxs)
+    (res,nst) = withStruct n xs
+    withStruct 0 (x:xs) = let (res,nst) = f x st
+                          in (do
+                                 (obj,nx) <- res
+                                 return (obj,nx:xs),nst)
+    withStruct n (x:xs) = let (res,nst) = withStruct (n-1) xs
+                          in (do
+                                 (obj,nxs) <- res
+                                 return (obj,x:nxs),nst)
 
 symITE :: SMTExpr Bool -> SymVal -> SymVal -> SymVal
 symITE cond (ValBool x) (ValBool y) = ValBool (ite cond x y)
@@ -224,46 +227,58 @@ structITEs comb xs = Struct (zipStructs (fmap (\(Struct x,c) -> (x,c)) xs))
 
 withDynOffset :: (SMTExpr Bool -> b -> b -> b)
               -> ([(a,SMTExpr Bool)] -> a)
-              -> (Struct b -> Maybe (a,Struct b))
+              -> (Struct b -> c -> (Maybe (a,Struct b),c))
               -> SMTExpr Integer
-              -> Struct b -> Maybe (a,Struct b)
-withDynOffset ite comb f n (Struct xs)
-  = case mapMaybe (\(_,r) -> case r of
-                              Just (c,res,_) -> Just (res,c)
-                              Nothing -> Nothing
-                  ) lst of
-     [] -> Nothing
-     conds -> Just (comb conds,
-                    Struct $ fmap (\(x,r) -> case r of
-                                    Just (c,_,nx) -> structITE ite c nx x
-                                    Nothing -> x
-                                  ) lst)
+              -> [Struct b] -> c -> (Maybe (a,[Struct b]),c)
+withDynOffset ite comb f n xs st
+  = (case catMaybes $ fmap snd lst of
+      [] -> Nothing
+      conds -> Just (comb [ (obj,cond) | (cond,obj,_) <- conds ],
+                     fmap (\(x,r) -> case r of
+                            Just (c,_,nx) -> structITE ite c nx x
+                            Nothing -> x
+                          ) lst),nst)
   where
-    lst = zipWith (\i x -> (x,case f x of
-                             Just (res,nx) -> Just (n .==. (constant i),res,nx)
-                             Nothing -> Nothing)
-                  ) [0..] xs
+    (nst,lst) = it 0 xs st
+    it i (x:xs) st = let (res,st1) = f x st
+                         (st2,rest) = it (i+1) xs st1
+                     in (st2,(x,case res of
+                               Just (obj,nx) -> Just (n.==.(constant i),obj,nx)
+                               Nothing -> Nothing):rest)
+    it i [] st = (st,[])
 
 accessStruct :: (SMTExpr Bool -> b -> b -> b)
              -> ([(a,SMTExpr Bool)] -> a)
-             -> (b -> Maybe (a,b))
+             -> (b -> c -> (Maybe (a,b),c))
              -> [Either Integer (SMTExpr Integer)]
              -> Struct b
-             -> Maybe (a,Struct b)
-accessStruct _ _ f [] (Singleton x) = do
-  (res,nx) <- f x
-  return (res,Singleton nx)
-accessStruct ite comb f (Left i:is) s
-  = withOffset (accessStruct ite comb f is) i s
-accessStruct ite comb f (Right i:is) s
-  = withDynOffset ite comb (accessStruct ite comb f is) i s
+             -> c
+             -> (Maybe (a,Struct b),c)
+accessStruct _ _ f [] (Singleton x) st = (nval,nst)
+  where
+    (res,nst) = f x st
+    nval = do
+      (obj,nx) <- res
+      return (obj,Singleton nx)
+accessStruct ite comb f (Left i:is) s st
+  = withOffset (accessStruct ite comb f is) i s st
+accessStruct ite comb f (Right i:is) (Struct s) st
+  = (do
+        (obj,ns) <- res
+        return (obj,Struct ns),nst)
+  where
+    (res,nst) = withDynOffset ite comb (accessStruct ite comb f is) i s st
 
-accessArray :: (SymVal -> Maybe (a,SymVal)) -> SMTExpr Integer
+accessArray :: (SymVal -> c -> (Maybe (a,SymVal),c)) -> SMTExpr Integer
             -> SymArray
-            -> Maybe (a,SymArray)
-accessArray f idx arr = do
-  (res,nval) <- f (extractValue idx arr)
-  return (res,insertValue idx nval arr)
+            -> c
+            -> (Maybe (a,SymArray),c)
+accessArray f idx arr st
+  = (do
+        (obj,nval) <- res
+        return (obj,insertValue idx nval arr),nst)
+  where
+    (res,nst) = f (extractValue idx arr) st
 
 extractValue :: SMTExpr Integer -> SymArray -> SymVal
 extractValue idx (ArrBool arr) = ValBool (select arr idx)
@@ -292,45 +307,43 @@ insertValue idx (ValVector vals) (ArrVector arr)
   = ArrVector (zipWith (insertValue idx) vals arr)
 
 accessAlloc :: ([(a,SMTExpr Bool)] -> a)
-            -> (SymVal -> Maybe (a,SymVal))
+            -> (SymVal -> c -> (Maybe (a,SymVal),c))
             -> [Either Integer (SMTExpr Integer)]
             -> AllocVal
-            -> Maybe (a,AllocVal)
-accessAlloc comb f idx@(Left i:is) (ValStatic s)
-  = do
-  (res,ns) <- accessStatic i s
-  return (res,ValStatic ns)
+            -> c
+            -> (Maybe (a,AllocVal),c)
+accessAlloc comb f idx@(Left i:is) (ValStatic s) st
+  = (do
+        (obj,ns) <- res
+        return (obj,ValStatic ns),nst)
   where
-    accessStatic 0 (s:ss) = do
-      (res,ns) <- accessStruct symITE comb f is s
-      return (res,ns:ss)
-    accessStatic n (s:ss) = do
-      (res,nss) <- accessStatic (n-1) ss
-      return (res,s:nss)
-accessAlloc comb f (Right i:is) (ValStatic s)
-  = case mapMaybe (\(_,r) -> case r of
-                    Nothing -> Nothing
-                    Just (c,res,_) -> Just (res,c)
-                  ) lst of
-     [] -> Nothing
-     conds -> Just (comb conds,
-                    ValStatic $ fmap (\(x,r) -> case r of
-                                       Nothing -> x
-                                       Just (c,_,nx) -> structITE symITE c nx x
-                                     ) lst)
+    (res,nst) = accessStatic i s
+    accessStatic 0 (s:ss) = let (res,nst) = accessStruct symITE comb f is s st
+                            in (do
+                                   (obj,ns) <- res
+                                   return (obj,ns:ss),nst)
+    accessStatic n (s:ss) = let (res,nst) = accessStatic (n-1) ss
+                            in (do
+                                   (obj,nss) <- res
+                                   return (obj,s:nss),nst)
+accessAlloc comb f (Right i:is) (ValStatic s) st
+  = (do
+        (obj,ns) <- res
+        return (obj,ValStatic ns),nst)
   where
-    lst = zipWith (\j x -> (x,case accessStruct symITE comb f is x of
-                               Nothing -> Nothing
-                               Just (res,nx) -> Just (i .==. (constant j),res,nx))
-                  ) [0..] s
-accessAlloc comb f [] (ValStatic (x:xs)) = do
-  (res,nx) <- accessStruct symITE comb f [] x
-  return (res,ValStatic (nx:xs))
-accessAlloc comb f (i:is) (ValDynamic arrs sz)
-  = do
-  (res,narrs) <- accessStruct arrITE comb (accessArray nf i') is arrs
-  return (res,ValDynamic narrs sz)
+    (res,nst) = withDynOffset symITE comb (accessStruct symITE comb f is) i s st
+accessAlloc comb f [] (ValStatic (x:xs)) st
+  = (do
+        (obj,nx) <- res
+        return (obj,ValStatic (nx:xs)),nst)
   where
+    (res,nst) = accessStruct symITE comb f [] x st
+accessAlloc comb f (i:is) (ValDynamic arrs sz) st
+  = (do
+        (obj,narrs) <- res
+        return (obj,ValDynamic arrs sz),nst)
+  where
+    (res,nst) = accessStruct arrITE comb (accessArray nf i') is arrs st
      -- Make sure that the model stays deterministic by loading default values for out-of-bounds indices
     nf val = f (defaultIf ((i' .>=. sz) .||. (i' .<. 0)) val)
     i' = case i of
@@ -339,17 +352,19 @@ accessAlloc comb f (i:is) (ValDynamic arrs sz)
 
 accessAllocTyped :: SymType
                  -> ([(a,SMTExpr Bool)] -> a)
-                 -> (SymVal -> (a,SymVal))
+                 -> (SymVal -> c -> (a,SymVal,c))
                  -> [Either Integer (SMTExpr Integer)]
                  -> AllocVal
-                 -> (a,AllocVal)
-accessAllocTyped tp comb f idx val
-  = case accessAlloc comb (\val -> if sameType tp (extractArgAnnotation val)
-                                   then Just (f val)
-                                   else Nothing
-                          ) idx val of
-     Just res -> res
-     Nothing -> error $ "accessAllocTyped: Type error while accessing "++show val++" with "++show idx
+                 -> c
+                 -> (a,AllocVal,c)
+accessAllocTyped tp comb f idx val st
+  = case accessAlloc comb (\val st -> if sameType tp (extractArgAnnotation val)
+                                      then (let (obj,nval,nst) = f val st
+                                            in (Just (obj,nval),nst))
+                                      else (Nothing,st)
+                          ) idx val st of
+     (Just (obj,nval),nst) -> (obj,nval,nst)
+     (Nothing,_) -> error $ "accessAllocTyped: Type error while accessing "++show val++" with "++show idx
 
 sameType :: SymType -> SymType -> Bool
 sameType TpBool TpBool = True

@@ -27,12 +27,14 @@ import System.IO.Unsafe
 
 toLispProgram :: Realization (ProgramState,ProgramInput)
               -> IO L.LispProgram
-toLispProgram real = do
+toLispProgram real' = do
   threadNames <- evalStateT (mapM (\_ -> do
                                       n <- get
                                       put (n+1)
                                       return $ "thread"++show n
-                                  ) (threadStateDesc $ stateAnnotation real)) 1
+                                  ) (threadStateDesc $ stateAnnotation real')) 1
+  input <- makeProgramInput threadNames real'
+  let (mem,real) = outputMem real' input
   st1 <- foldlM (\mp blk -> do
                     name <- blockName blk
                     return $ Map.insert (T.append "main-" name) (L.boolType,Map.singleton "pc" (L.Symbol "true")) mp
@@ -89,7 +91,6 @@ toLispProgram real = do
                                return $ Map.insert name1 (toLispType $ Singleton tp) mp
                            ) mp (Map.toList $ nondetTypes thInp)
                  ) inp2 (Map.toList $ threadInputDesc $ inputAnnotation real)
-  input <- makeProgramInput threadNames real
   let gateTrans = Map.foldlWithKey
                   (\gts tp (_,AnyGateArray arr)
                    -> Map.foldlWithKey
@@ -191,7 +192,7 @@ toLispProgram real = do
                      let tp = (memoryDesc $ stateAnnotation real) Map.! loc
                      name <- memLocName loc
                      return $ Map.insert name (toLispAllocExpr gateTrans tp val) mp
-                 ) nxt3 (Map.toList $ outputMem real input)
+                 ) nxt3 (Map.toList mem)
   nxt5 <- foldlM (\mp th -> do
                      let name = threadNames Map.! th
                          conds = case Map.lookup th (spawnEvents real) of

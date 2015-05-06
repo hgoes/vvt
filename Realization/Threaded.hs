@@ -888,12 +888,12 @@ memoryRead origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
       = let ValPtr trgs _ = f inp
             condMp = Map.mapWithKey (\trg (cond,dyn)
                                      -> let idx = idxList (offsetPattern trg) dyn
-                                            (res,_) = accessAllocTyped tp symITEs
-                                                      (\val -> (val,val))
-                                                      idx
-                                                      (case Map.lookup (memoryLoc trg) (memory ps) of
-                                                        Just r -> r
-                                                        Nothing -> error $ "Memory location "++show (memoryLoc trg)++" not defined.")
+                                            (res,_,_) = accessAllocTyped tp symITEs
+                                                        (\val _ -> (val,val,()))
+                                                        idx
+                                                        (case Map.lookup (memoryLoc trg) (memory ps) of
+                                                          Just r -> r
+                                                          Nothing -> error $ "Memory location "++show (memoryLoc trg)++" not defined.") ()
                                         in (res,cond)
                                     ) trgs
         in case Map.elems condMp of
@@ -1353,7 +1353,33 @@ outputValues real = mp2
           Just r -> r
           Nothing -> error $ "outputValues: Cannot find old value of "++show instr
 
-outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInput) -> Map MemoryLoc AllocVal
+outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInput)
+          -> (Map MemoryLoc AllocVal,Realization (ProgramState,ProgramInput))
+outputMem real inp
+  = Map.foldlWithKey
+    (\(mem,real) n ev -> case ev of
+      WriteEvent trgs cont _
+        -> Map.foldlWithKey
+           (\(mem,real) trg cond
+            -> let (cond',dyn) = cond inp
+                   idx = idxList (offsetPattern trg) dyn
+                   val = case Map.lookup (memoryLoc trg) mem of
+                          Just v -> v
+                   (_,nval,ngates) = accessAllocTyped (symbolicType cont) (const ())
+                                     (\old gates -> let (new,ngates) = addSymGate gates
+                                                                       (symbolicType cont)
+                                                                       (\inp -> symITE cond'
+                                                                                (symbolicValue cont inp)
+                                                                                old)
+                                                                       (Just $ "write"++show n)
+                                                    in ((),new,ngates)
+                                     ) idx val (gateMp real)
+               in (Map.insert (memoryLoc trg) nval mem,
+                   real { gateMp = ngates })
+           ) (mem,real) trgs
+    ) (memory (fst inp),real) (events real)
+
+{-outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInput) -> Map MemoryLoc AllocVal
 outputMem real inp
   = foldl (\mem ev -> case ev of
             WriteEvent trgs cont _
@@ -1369,7 +1395,7 @@ outputMem real inp
                  ) mem trgs
           ) mem0 (events real)
   where
-    mem0 = memory (fst inp)
+    mem0 = memory (fst inp)-}
 
 getConstant :: Ptr Constant -> IO (Struct SymVal)
 getConstant (castDown -> Just cint) = do
