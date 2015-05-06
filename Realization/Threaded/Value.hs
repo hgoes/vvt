@@ -490,7 +490,7 @@ addArgGate gts ann (f::inp -> outp) name = (arg,ngts)
         in ((n+1,ngts),UntypedExpr expr)
 
 argITE :: Args arg => SMTExpr Bool -> arg -> arg -> arg
-argITE cond x y = trace ("argITE("++show x++","++show y++") ~> "++show res) res
+argITE cond x y = res
   where
     x' = fromArgs x
     y' = fromArgs y
