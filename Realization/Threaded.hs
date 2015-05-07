@@ -692,16 +692,19 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
     parseActArgsFun call n nargs
       | n==nargs = return []
       | otherwise = do
-          fun <- callInstGetArgOperand call n
+          fun <- callInstGetArgOperand call n >>= removeCasts
           case castDown fun of
            Just rfun -> do
              (nums,rest) <- parseActArgsNums call (n+1) nargs
              return $ (rfun,nums):rest
+           Nothing -> do
+             valStr <- valueToString fun
+             error $ "Unknown argument to __act function: "++valStr++" (expecting function)"
     parseActArgsNums :: Ptr CallInst -> Integer -> Integer -> IO ([Integer],[(Ptr Function,[Integer])])
     parseActArgsNums call n nargs
       | n==nargs = return ([],[])
       | otherwise = do
-          num <- callInstGetArgOperand call n
+          num <- callInstGetArgOperand call n >>= removeCasts
           case castDown num of
            Just cint -> do
              APInt _ rval <- constantIntGetValue cint >>= peek
@@ -710,6 +713,10 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
            Nothing -> do
              rest <- parseActArgsFun call n nargs
              return ([],rest)
+    removeCasts (castDown -> Just cexpr) = do
+      arg <- getOperand (cexpr::Ptr ConstantExpr) 0
+      removeCasts arg
+    removeCasts arg = return arg
 realizeDefInstruction thread i@(castDown -> Just icmp) edge real0 = do
   op <- getICmpOp icmp
   lhs <- getOperand icmp 0
