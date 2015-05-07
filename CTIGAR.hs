@@ -933,7 +933,7 @@ check st opts verb stats = do
       mapM_ assert assumps
       comment "Assertions"
       assert $ app or' (fmap not' (ass++errs))
-      return []
+      return [(st,inps)]
     constructTrace real st (x:xs) asserts = do
       comment "Assignments"
       assert $ app and' $ assignPartial' st x
