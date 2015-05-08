@@ -27,11 +27,8 @@ void* thr1(void* arg) { //nsThread::Init (mozilla/xpcom/threads/nsThread.cpp 1.3
 
   int PR_CreateThread__RES = 1;
   __VERIFIER_atomic_acquire();
-  pthread_yield();
   start_main=1;
-  pthread_yield();
   __VERIFIER_atomic_thr1(PR_CreateThread__RES);
-  pthread_yield();
   __VERIFIER_atomic_release();
 
   return 0;
@@ -48,12 +45,9 @@ void __VERIFIER_atomic_thr2(int self)
 void* thr2(void* arg) { //nsThread::Main (mozilla/xpcom/threads/nsThread.cpp 1.31)
 
   int self = mThread;
-  while (start_main==0) { pthread_yield(); }
-  pthread_yield();
+  while (start_main==0);
   __VERIFIER_atomic_acquire();
-  pthread_yield();
   __VERIFIER_atomic_release();
-  pthread_yield();
   __VERIFIER_atomic_thr2(self);
 
   return 0;
@@ -64,7 +58,6 @@ int main()
   pthread_t t;
 
   pthread_create(&t, 0, thr1, 0);
-  pthread_yield();
   thr2(0);
 
   return 0;

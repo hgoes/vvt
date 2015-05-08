@@ -15,19 +15,14 @@ void findMax(int offset) {
 
   for(i = offset; i < offset+WORKPERTHREAD; i++) {
     e = storage[i];
-    pthread_yield();
 
     pthread_mutex_lock(&m);
-    pthread_yield();
     {
       if(e > max) {
-	pthread_yield();
 	max = e;
       }
-      pthread_yield();
     }
     pthread_mutex_unlock(&m);
-    pthread_yield();
     assert(e <= max);
   }
 }
@@ -47,7 +42,6 @@ int main(){
   pthread_t t1,t2;
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

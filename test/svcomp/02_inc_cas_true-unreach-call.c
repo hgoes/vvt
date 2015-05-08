@@ -4,21 +4,19 @@
 #include <pthread.h>
 #include <assert.h>
 
-volatile unsigned value;
+unsigned value;
 
 void* thr1(void* arg) {
   unsigned v,vn;
   bool casret;
   do {
     v = value;
-    pthread_yield();
     if(v == 0u-1) {
       return 0;
     }
 
     vn = v + 1;
     casret = __sync_bool_compare_and_swap(&value,v,vn);
-    pthread_yield();
   }
   while (!casret);
   assert(value > v);
@@ -30,7 +28,6 @@ int main(){
   pthread_t t1,t2;
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

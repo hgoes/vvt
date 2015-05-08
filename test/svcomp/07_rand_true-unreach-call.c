@@ -14,18 +14,12 @@ int PseudoRandomUsingAtomic_nextInt(int n) {
 
   pthread_mutex_lock(&m);
   read = seed;
-#ifndef LIPTON
-  pthread_yield();
-#endif
   do {
     nexts = __nondet_int();
   } while(nexts == read || nexts == 0);
   
   assert(nexts != read); 
   seed = nexts;
-#ifndef LIPTON
-  pthread_yield();
-#endif
   pthread_mutex_unlock(&m);
   return nexts % n;
 }
@@ -33,13 +27,11 @@ int PseudoRandomUsingAtomic_nextInt(int n) {
 void PseudoRandomUsingAtomic_monitor(){
   while(1) {
     assert(seed != 0);
-    pthread_yield();
   }
 }
 
 void PseudoRandomUsingAtomic_constructor(int init){
   seed = init;
-  pthread_yield();
 }
 
 void PseudoRandomUsingAtomic__threadmain(){ 
@@ -57,22 +49,15 @@ int state = STATE_UNINITIALIZED;
 void* thr1(void* arg)
 {
   pthread_mutex_lock(&m);
-#ifndef LIPTON
-  pthread_yield();
-#endif
   switch(state)	{
   case STATE_UNINITIALIZED: 
     PseudoRandomUsingAtomic_constructor(1);
     state = STATE_INITIALIZED;
-#ifndef LIPTON
-    pthread_yield();
-#endif
     pthread_mutex_unlock(&m);	
     PseudoRandomUsingAtomic_monitor(); //never returns
     break;
   case STATE_INITIALIZED:
     pthread_mutex_unlock(&m);
-    pthread_yield();
     PseudoRandomUsingAtomic__threadmain();
     break;
   }
@@ -86,7 +71,6 @@ int main()
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
   pthread_create(&t3, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

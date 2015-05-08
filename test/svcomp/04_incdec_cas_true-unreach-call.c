@@ -5,11 +5,11 @@
 #include <vvt.h>
 #include <assert.h>
 
-volatile unsigned value = 0;
+unsigned value = 0;
 
 /*helpers for the property*/
-volatile unsigned inc_flag = 0;
-volatile unsigned dec_flag = 0;
+unsigned inc_flag = 0;
+unsigned dec_flag = 0;
 
 void __VERIFIER_atomic_assert1(unsigned inc__v)
 {
@@ -21,7 +21,6 @@ unsigned inc() {
 
   do {
     inc__v = value;
-    pthread_yield();
     if(inc__v == 0u-1) {
       return 0; /*increment failed, return min*/
     }
@@ -30,7 +29,6 @@ unsigned inc() {
 
     inc__casret = __sync_bool_compare_and_swap(&value,inc__v,inc__vn);
     inc_flag = inc_flag||inc__casret;
-    pthread_yield();
   }
   while (inc__casret==0);
   
@@ -49,7 +47,6 @@ unsigned dec() {
   
   do {
     dec__v = value;
-    pthread_yield();
     
     if(dec__v == 0) {
       return 0u-1; /*decrement failed, return max*/
@@ -58,7 +55,6 @@ unsigned dec() {
     dec__vn = dec__v - 1;
     dec__casret = __sync_bool_compare_and_swap(&value,dec__v,dec__vn);
     dec_flag = dec_flag||dec__casret;
-    pthread_yield();
   }
   while (dec__casret==0);
   

@@ -8,22 +8,6 @@ int max = 0x80000000;
 
 int storage[WORKPERTHREAD*THREADSMAX];
 
-void __VERIFIER_atomic_CAS(
-  volatile int *v,
-  int e,
-  int u,
-  int *r)
-{
-	if(*v == e)
-	{
-		*v = u, *r = 1;
-	}
-	else
-	{
-		*r = 0;
-	}
-}
-
 void findMax(int offset) {
   int i;
   int e;
@@ -32,14 +16,11 @@ void findMax(int offset) {
   
   for(i = offset; i < offset+WORKPERTHREAD; i++) {
     e = storage[i];
-    pthread_yield();
     
     while(1) {
       c = max;
-      pthread_yield();
       if(e > c){
 	cret = __sync_bool_compare_and_swap(&max,c,e);
-	pthread_yield();
 	if(cret){
 	  break;
 	}
@@ -67,7 +48,6 @@ int main(){
   pthread_t t1,t2;
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

@@ -18,17 +18,13 @@ void* thr1(void* arg){
   unsigned int l = 0;
 
   __VERIFIER_atomic_inc_r();
-  pthread_yield();
   if(r == 1){
     unsigned int tmp_s;
   L3:
     tmp_s = s;
-    pthread_yield();
     s = tmp_s + 1;
-    pthread_yield();
     l = l + 1;
     assert(s == l);
-    pthread_yield();
     goto L3;
   }
 
@@ -39,7 +35,6 @@ int main(){
   pthread_t t1,t2;
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

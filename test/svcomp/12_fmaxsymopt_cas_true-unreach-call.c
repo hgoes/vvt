@@ -17,7 +17,6 @@ void findMax(int offset) {
 
   for(i = offset; i < offset+WORKPERTHREAD; i++) {
     e = storage[i];
-    pthread_yield();
     if(e > my_max) {
       my_max = e;
     }
@@ -28,7 +27,6 @@ void findMax(int offset) {
     c = max;
     if(my_max > c){
       cret = __sync_bool_compare_and_swap(&max,c,my_max);
-      pthread_yield();
       if(cret){
 	break;
       }
@@ -55,7 +53,6 @@ int main(){
 
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

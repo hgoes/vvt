@@ -23,14 +23,12 @@ int PseudoRandomUsingAtomic_nex() {
   int nex, nexts, casret, nex_return;
   while(1) {
     nex = seed;
-    pthread_yield();
     nexts = nC(nex);
     casret = __sync_bool_compare_and_swap(&seed,nex,nexts);
     if(casret == 1){
       nex_return = min(nexts,NUM);
       break;
     }
-    pthread_yield();
   }
   return nex_return;
 }
@@ -47,7 +45,6 @@ int main()
 
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

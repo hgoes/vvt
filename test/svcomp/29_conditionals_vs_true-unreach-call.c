@@ -13,7 +13,6 @@ void* thr1(void* arg) {
   
   int z;
   pthread_mutex_lock(&m);
-  pthread_yield();
   if(x == y) {
     z = 0;
   } else {
@@ -34,7 +33,6 @@ int main() {
   
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
 

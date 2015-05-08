@@ -16,32 +16,14 @@ int calculateNext(int s2) {
 int seed;
 pthread_mutex_t m;
 
-void __VERIFIER_atomic_CAS(
-  volatile int *v,
-  int e,
-  int u,
-  int *r)
-{
-	if(*v == e)
-	{
-		*v = u, *r = 1;
-	}
-	else
-	{
-		*r = 0;
-	}
-}
-
 int PseudoRandomUsingAtomic_nextInt(int n) {
   int read, nexts, casret, nextInt_return;
   
   while(1) {
     read = seed;
-    pthread_yield();
     nexts = calculateNext(read);
     assert(nexts != read);
     casret = __sync_bool_compare_and_swap(&seed,read,nexts);
-    pthread_yield();
     if(casret == 1){
       nextInt_return = nexts % n;
       //assume(nexts < n);
@@ -55,13 +37,11 @@ int PseudoRandomUsingAtomic_nextInt(int n) {
 void PseudoRandomUsingAtomic_monitor() {
   while(1) {
     assert(seed != 0);
-    pthread_yield();
   }
 }
 
 void PseudoRandomUsingAtomic_constructor(int init) {
   seed = init;
-  pthread_yield();
 }
 
 void PseudoRandomUsingAtomic__threadmain() { 
@@ -78,12 +58,10 @@ int state = STATE_UNINITIALIZED;
 
 void* thr1(void* arg) {
   pthread_mutex_lock(&m);
-  pthread_yield();
   switch(state) {
   case STATE_UNINITIALIZED: 
     PseudoRandomUsingAtomic_constructor(1);
     state = STATE_INITIALIZED;
-    pthread_yield();
     pthread_mutex_unlock(&m);
     PseudoRandomUsingAtomic_monitor(); //never returns
     break;
@@ -101,6 +79,5 @@ int main()
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
   pthread_create(&t3, 0, thr1, 0);
-  pthread_yield();
   return 0;
 }
