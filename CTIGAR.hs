@@ -896,7 +896,7 @@ check st opts verb stats = do
           cex <- gets ic3CexState
           tr <- liftIO $ getWitnessTr cex
           res <- liftIO $ do
-            backend <- fmap (namedDebugBackend "err") $ createSMTPipe "z3" ["-in","-smt2"]
+            backend <- createSMTPipe "z3" ["-in","-smt2"]
             withSMTBackendExitCleanly backend $ do
               st0 <- TR.createStateVars "" real
               assert $ TR.initialState real st0
