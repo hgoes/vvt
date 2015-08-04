@@ -752,6 +752,7 @@ instance TransitionRelation LispProgram where
         vals = Map.foldlWithKey
                (\mp name pval -> getInts name [] pval mp
                ) Map.empty lifted
+        getInts :: T.Text -> [Integer] -> LispStruct LispPValue -> Map (T.Text,[Integer]) Integer -> Map (T.Text,[Integer]) Integer
         getInts name idx (Singleton (LispPValue x)) mp = case cast x of
           Just i -> Map.insert (name,idx) i mp
           Nothing -> mp
