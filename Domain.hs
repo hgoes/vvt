@@ -10,6 +10,7 @@ module Domain
        ,domainAddUniqueUnsafe
        ,domainHash
        ,renderDomainTerm
+       ,renderDomain
        ) where
 
 import Language.SMTLib2
@@ -341,3 +342,15 @@ renderDomainPred :: (a -> SMTExpr Bool) -> Domain a -> IO String
 renderDomainPred pred dom
   = withSMTPool (domainPool dom) $
     \vars -> renderExpr (pred vars)
+
+renderDomain :: Domain a -> IO String
+renderDomain dom
+  = withSMTPool (domainPool dom) $
+    \vars -> do
+      nodes <- mapM (\(nd,(pred,_,_)) -> do
+                         res <- renderExpr (pred vars)
+                         return $ "nd"++show nd++"[label=\""++res++"\"];"
+                    ) $ labNodes (domainGraph dom)
+      edges <- mapM (\(n1,n2,_) -> return $ "nd"++show n1++" -> nd"++show n2++";"
+                    ) $ labEdges (domainGraph dom)
+      return $ unlines $ ["digraph domain {"]++nodes++edges++["}"]

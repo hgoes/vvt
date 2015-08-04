@@ -18,6 +18,7 @@ data Options = Options { optBackends :: BackendOptions
                        , optTimeout :: Maybe Int
                        , optVerbosity :: Int
                        , optStats :: Bool
+                       , optDumpDomain :: Maybe String
                        }
 
 defaultOptions :: Options
@@ -26,6 +27,7 @@ defaultOptions = Options { optBackends = defaultBackendOptions
                          , optTimeout = Nothing
                          , optVerbosity = 0
                          , optStats = False
+                         , optDumpDomain = Nothing
                          }
 
 allOpts :: [OptDescr (Options -> Options)]
@@ -56,6 +58,9 @@ allOpts
      "How much debugging output to show"
     ,Option ['s'] ["stats"] (NoArg $ \opt -> opt { optStats = True })
      "Print statistical information"
+    ,Option [] ["dump-domain"]
+     (ReqArg (\file opt -> opt { optDumpDomain = Just file }) "file")
+     "Dump the domain graph into a file."
     ]
 
 parseTime :: String -> Int
@@ -111,12 +116,20 @@ main = do
    Right opts -> do
      prog <- fmap parseLispProgram (readLispFile stdin)
      tr <- case optTimeout opts of
-            Nothing -> check prog (optBackends opts) (optVerbosity opts) (optStats opts)
+            Nothing -> check prog
+                       (optBackends opts)
+                       (optVerbosity opts)
+                       (optStats opts)
+                       (optDumpDomain opts)
             Just to -> do
               mainThread <- myThreadId
               timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
               res <- catch (do
-                               res <- check prog (optBackends opts) (optVerbosity opts) (optStats opts)
+                               res <- check prog
+                                      (optBackends opts)
+                                      (optVerbosity opts)
+                                      (optStats opts)
+                                      (optDumpDomain opts)
                                killThread timeoutThread
                                return (Just res)
                            )

@@ -42,6 +42,7 @@ import Data.Bits (shiftL)
 import Data.Maybe (catMaybes)
 import Data.Either (partitionEithers)
 import Data.Time.Clock
+import Control.Exception (Exception,SomeException,finally,catch,throw)
 
 data IC3Config mdl
   = IC3Cfg { ic3Model :: mdl
@@ -58,6 +59,7 @@ data IC3Config mdl
            , ic3MaxJoins :: Int
            , ic3MaxCTGs :: Int
            , ic3CollectStats :: Bool
+           , ic3DumpDomainFile :: Maybe String
            }
 
 data IC3Env mdl
@@ -168,6 +170,10 @@ instance MonadReader (IC3Config mdl) (IC3 mdl) where
   local f act = IC3 $ \cfg ref -> evalIC3 act (f cfg) ref
   reader f = IC3 $ \cfg _ -> return $ f cfg
 
+ic3Catch :: Exception e => IC3 mdl a -> (e -> IC3 mdl a) -> IC3 mdl a
+ic3Catch act handle = IC3 $ \cfg ref -> evalIC3 act cfg ref `catch`
+                                        (\ex -> evalIC3 (handle ex) cfg ref)
+
 bestAbstraction :: State inp st -> AbstractState st
 bestAbstraction st = case stateLiftedAst st of
   Just abs -> abs
@@ -198,8 +204,9 @@ splitLast (x:xs) = let (rest,last) = splitLast xs
 mkIC3Config :: mdl -> BackendOptions
             -> Int -- ^ Verbosity
             -> Bool -- ^ Dump stats?
+            -> Maybe String -- ^ Dump domain?
             -> IC3Config mdl
-mkIC3Config mdl opts verb stats
+mkIC3Config mdl opts verb stats dumpDomain
   = IC3Cfg { ic3Model = mdl
            , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
                                      (if Set.member ConsecutionBackend (optDebugBackend opts)
@@ -232,6 +239,7 @@ mkIC3Config mdl opts verb stats
            , ic3MaxJoins = 1 `shiftL` 20
            , ic3MaxCTGs = 3
            , ic3CollectStats = stats
+           , ic3DumpDomainFile = dumpDomain
            }
   where
     mkPipe cmd debug = let prog:args = words cmd
@@ -890,24 +898,27 @@ check :: TR.TransitionRelation mdl
          -> BackendOptions
          -> Int -- ^ Verbosity
          -> Bool -- ^ Dump stats?
+         -> Maybe String -- ^ Dump domain?
          -> IO (Either [Unpacked (TR.State mdl,TR.Input mdl)] [AbstractState (TR.State mdl)])
-check st opts verb stats = do
+check st opts verb stats dumpDomain = do
   let prog:args = words (optBackend opts Map.! Base)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
   case tr of
     Just tr' -> return (Left tr')
-    Nothing -> runIC3 (mkIC3Config st opts verb stats)
-               (do
-                   addSuggestedPredicates
-                   extend
-                   extend
-                   res <- checkIt
-                   ic3DumpStats (case res of
-                                  Left _ -> Nothing
-                                  Right fp -> Just fp)
-                   return res
-               )
+    Nothing -> runIC3 (mkIC3Config st opts verb stats dumpDomain)
+               ((do
+                     addSuggestedPredicates
+                     extend
+                     extend
+                     res <- checkIt
+                     ic3DumpStats (case res of
+                                     Left _ -> Nothing
+                                     Right fp -> Just fp)
+                     return res
+                ) `ic3Catch` (\ex -> do
+                                  ic3DumpStats Nothing
+                                  throw (ex::SomeException)))
   where
     checkIt = do
       ic3DebugAct 1 (do
@@ -1538,6 +1549,13 @@ ic3DumpStats fp = do
          (show $ (round $ 100*(fromIntegral $ numUnliftedErased stats) /
                   (fromIntegral $ numErased stats) :: Int))
    Nothing -> return ()
+  dumpDomain <- asks ic3DumpDomainFile
+  case dumpDomain of
+    Nothing -> return ()
+    Just fn -> do
+      domain <- gets ic3Domain
+      str <- liftIO $ renderDomain domain
+      liftIO $ writeFile fn str
 
 addTiming :: IORef NominalDiffTime -> IORef Int -> IO (AnyBackend IO) -> IO (AnyBackend IO)
 addTiming time_ref num_ref act = do
