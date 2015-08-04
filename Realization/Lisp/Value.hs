@@ -529,6 +529,7 @@ instance PartialArgs LispValue where
   maskValue u (Singleton val) mask = (Singleton nval,nmask)
     where
       (nval,nmask) = maskVal val mask
+      maskVal :: LispPValue -> [Bool] -> (LispPValue,[Bool])
       maskVal (LispPArray vals) (_:mask)
         = let (nmask,nvals) = mapAccumL (\mask val -> let (nval,nmask) = maskVal val mask
                                                       in (nmask,nval)
