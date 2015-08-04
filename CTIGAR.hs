@@ -1,6 +1,6 @@
 {-# LANGUAGE ExistentialQuantification,FlexibleContexts,RankNTypes,
              ScopedTypeVariables,PackageImports,GADTs,DeriveDataTypeable,
-             ViewPatterns #-}
+             ViewPatterns,MultiParamTypeClasses #-}
 module CTIGAR where
 
 import qualified Realization as TR
@@ -26,9 +26,9 @@ import qualified Data.Vector as Vec
 import qualified Data.IntSet as IntSet
 import Data.IORef
 import Control.Monad (when)
-import "mtl" Control.Monad.Trans (liftIO)
-import "mtl" Control.Monad.Reader (ReaderT,runReaderT,ask,asks)
-import "mtl" Control.Monad.State (StateT,evalStateT,gets)
+import "mtl" Control.Monad.Trans (MonadIO,liftIO)
+import "mtl" Control.Monad.Reader (MonadReader(..),ask,asks)
+import "mtl" Control.Monad.State (MonadState,gets)
 import Data.List (sort,sortBy,genericIndex)
 import Data.PQueue.Min (MinQueue)
 import qualified Data.PQueue.Min as Queue
@@ -128,7 +128,8 @@ instance Ord (Obligation inp st) where
 
 type Queue inp st = MinQueue (Obligation inp st)
 
-type IC3 mdl a = ReaderT (IC3Config mdl) (StateT (IC3Env mdl) IO) a
+-- | In order to deal with exceptions, this is a custom monad.
+newtype IC3 mdl a = IC3 { evalIC3 :: IC3Config mdl -> IORef (IC3Env mdl) -> IO a }
 
 data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
                           , stateLiftedAst :: Maybe (AbstractState st)
@@ -143,6 +144,29 @@ data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
                           , stateSpuriousSucc :: Bool
                           , stateDomainHash :: Int
                           }
+
+instance Monad (IC3 mdl) where
+  (>>=) ic3 f = IC3 $ \cfg ref -> do
+    r1 <- evalIC3 ic3 cfg ref
+    evalIC3 (f r1) cfg ref
+  return x = IC3 $ \_ _ -> return x
+
+instance MonadIO (IC3 mdl) where
+  liftIO f = IC3 $ \_ _ -> f
+
+instance Functor (IC3 mdl) where
+  fmap f act = IC3 $ \cfg ref -> do
+    res <- evalIC3 act cfg ref
+    return (f res)
+
+instance MonadState (IC3Env mdl) (IC3 mdl) where
+  get = IC3 $ \_ ref -> readIORef ref
+  put x = IC3 $ \_ ref -> writeIORef ref x
+
+instance MonadReader (IC3Config mdl) (IC3 mdl) where
+  ask = IC3 $ \cfg _ -> return cfg
+  local f act = IC3 $ \cfg ref -> evalIC3 act (f cfg) ref
+  reader f = IC3 $ \cfg _ -> return $ f cfg
 
 bestAbstraction :: State inp st -> AbstractState st
 bestAbstraction st = case stateLiftedAst st of
@@ -357,18 +381,19 @@ runIC3 cfg act = do
          (TR.createStateVars "" mdl)
   (initNode,dom') <- domainAdd (TR.initialState mdl) dom
   extractor <- TR.defaultPredicateExtractor mdl
-  evalStateT (runReaderT act cfg) (IC3Env { ic3Domain = dom'
-                                          , ic3InitialProperty = initNode
-                                          , ic3Consecution = cons
-                                          , ic3Lifting = lifting
-                                          , ic3Initiation = initiation
-                                          , ic3Interpolation = interpolation
-                                          , ic3CexState = Nothing
-                                          , ic3LitOrder = Map.empty
-                                          , ic3Earliest = 0
-                                          , ic3PredicateExtractor = extractor
-                                          , ic3Stats = stats
-                                          })
+  ref <- newIORef (IC3Env { ic3Domain = dom'
+                          , ic3InitialProperty = initNode
+                          , ic3Consecution = cons
+                          , ic3Lifting = lifting
+                          , ic3Initiation = initiation
+                          , ic3Interpolation = interpolation
+                          , ic3CexState = Nothing
+                          , ic3LitOrder = Map.empty
+                          , ic3Earliest = 0
+                          , ic3PredicateExtractor = extractor
+                          , ic3Stats = stats
+                          })
+  evalIC3 act cfg ref
 
 extractState :: (PartialArgs inp,PartialArgs st)
                 => Maybe (IORef (State inp st))
