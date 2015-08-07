@@ -199,7 +199,9 @@ toLinState = Map.foldlWithKey (\cur name val -> case val of
 makeKarrExtractor :: Monad m => LispProgram -> SMT' m KarrExtractor
 makeKarrExtractor prog = do
   pcSt <- argVarsAnnNamed "pc" (fmap fst pcs)
-  let makeStruct mp name idx (Singleton (Left sort))
+  let makeStruct :: Monad m => Map (T.Text,LispRev) a -> T.Text -> [Integer] -> LispStruct (Either Sort ())
+                 -> SMT' m (LispStruct (Either LispVal (Map (T.Text,LispRev) (SMTExpr Integer),SMTExpr Integer)))
+      makeStruct mp name idx (Singleton (Left sort))
         = withIndexableSort (undefined::SMTExpr Integer) sort $
           \(_::t) -> do
             val <- argVarsAnnNamed (T.unpack name) unit
