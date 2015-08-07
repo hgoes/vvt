@@ -5,3 +5,7 @@
 *.cpachecker.c
 dist
 *.o
+*.output
+*.out
+*.l
+*.s
