@@ -29,7 +29,7 @@ import Control.Monad (when)
 import "mtl" Control.Monad.Trans (MonadIO,liftIO)
 import "mtl" Control.Monad.Reader (MonadReader(..),ask,asks)
 import "mtl" Control.Monad.State (MonadState,gets)
-import Data.List (sort,sortBy,genericIndex)
+import Data.List (sort,sortBy,genericIndex,intercalate)
 import Data.PQueue.Min (MinQueue)
 import qualified Data.PQueue.Min as Queue
 import Data.Graph.Inductive (Node)
@@ -331,6 +331,7 @@ runIC3 cfg act = do
   interpolation <- createSMTPool interpBackend'' $ do
     setLogic "QF_AUFLIA"
     setOption (ProduceInterpolants True)
+    setOption (ProduceModels True)
     if interpolationIsMathSAT
       then do
       ante <- interpolationGroup
@@ -1125,7 +1126,12 @@ interpolateState j s = do
         assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxt st) s)
           post -- (interpPost st)
         res <- checkSat
-        when res $ error "Interpolation query is SAT"
+        when res $ do
+          curSt <- getValues (interpCur st) >>= TR.renderState (ic3Model cfg)
+          curInpSt <- getValues (interpInputs st) >>= TR.renderInput (ic3Model cfg)
+          nxtSt <- getValues (interpNxt st) >>= TR.renderState (ic3Model cfg)
+          error $ "Interpolation query is SAT.\nState:\n"++
+            curSt++"\nInput:\n"++curInpSt++"\nNext state:\n"++nxtSt
         let Left ante' = interpAnte st
         interp <- getInterpolant [ante,ante']
         let interp1 = cleanInterpolant interp
@@ -1419,15 +1425,16 @@ checkFixpoint abs_fp = do
   mdl <- asks ic3Model
   domain <- gets ic3Domain
   let fp = getFixpoint domain abs_fp
-  backend <- liftIO $ createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "fp"
+  backend <- liftIO $ {-fmap (namedDebugBackend "fp") $-} createSMTPipe "z3" ["-in","-smt2"]
   liftIO $ withSMTBackendExitCleanly backend $ do
+    setOption (ProduceModels True)
     incorrectInitial <- stack $ do
       cur <- TR.createStateVars "" mdl
       assert $ TR.initialState mdl cur
       assert $ not' (fp cur)
       checkSat
     when incorrectInitial (error "Fixpoint doesn't cover initial condition")
-    errorReachable <- stack $ do
+    stack $ do
       cur <- TR.createStateVars "" mdl
       inp <- TR.createInputVars "" mdl
       assert $ TR.stateInvariant mdl inp cur
@@ -1442,9 +1449,17 @@ checkFixpoint abs_fp = do
       assert $ not' $ app and' asserts'
       (assumps',real1') <- TR.declareAssumptions mdl nxt inp' real0'
       assert $ app and' assumps'
-      checkSat
-    when errorReachable (error "Fixpoint doesn't imply property")
-    incorrectFix <- stack $ do
+      assert $ TR.stateInvariant mdl inp' nxt
+      errorReachable <- checkSat
+      when errorReachable (do
+                               curSt <- getValues cur >>= TR.renderState mdl
+                               curInpSt <- getValues inp >>= TR.renderInput mdl
+                               nxtSt <- getValues nxt >>= TR.renderState mdl
+                               nxtInpSt <- getValues inp' >>= TR.renderInput mdl
+                               error $ "Fixpoint doesn't imply property.\nState:\n"++
+                                 curSt++"\nInput:\n"++curInpSt++"\nNext state:\n"++nxtSt++"\nNext input:\n"++nxtInpSt
+                          )
+    stack $ do
       cur <- TR.createStateVars "" mdl
       inp <- TR.createInputVars "" mdl
       assert $ TR.stateInvariant mdl inp cur
@@ -1457,8 +1472,19 @@ checkFixpoint abs_fp = do
       nxt_inp <- TR.createInputVars "" mdl
       assert $ TR.stateInvariant mdl nxt_inp nxt
       assert $ not' $ fp nxt
-      checkSat
-    when incorrectFix (error "Fixpoint is doesn't hold in one transition")
+      incorrectFix <- checkSat
+      when incorrectFix (do
+                             curSt <- getValues cur >>= TR.renderState mdl
+                             curInpSt <- getValues inp >>= TR.renderInput mdl
+                             nxtSt <- getValues nxt >>= TR.renderState mdl
+                             nxtInpSt <- getValues nxt_inp >>= TR.renderInput mdl
+                             fpSt <- liftIO $ mapM (\e -> renderDomainTerm e domain
+                                                   ) abs_fp
+                             error $ "Fixpoint "++
+                               intercalate ", " fpSt++
+                               " doesn't hold after one transition.\nState:\n"++
+                               curSt++"\nInput:\n"++curInpSt++"\nNext state:\n"++nxtSt++"\nNext input:\n"++nxtInpSt
+                        )
 
 newIC3Stats :: IO IC3Stats
 newIC3Stats = do

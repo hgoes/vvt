@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeFamilies,MultiParamTypeClasses,FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies,MultiParamTypeClasses,FlexibleContexts,ScopedTypeVariables #-}
 module Realization where
 
 import PartialArgs
@@ -40,3 +40,11 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
                        -> m (PredicateExtractor t,
                              [State t -> SMTExpr Bool])
   startingProgress :: t -> RealizationProgress t
+
+renderState :: (TransitionRelation t,MonadIO m) => t -> Unpacked (State t) -> m String
+renderState (mdl::t) st = renderPartialState mdl
+                          (unmaskValue (undefined::State t) st)
+
+renderInput :: (TransitionRelation t,MonadIO m) => t -> Unpacked (Input t) -> m String
+renderInput (mdl::t) st = renderPartialInput mdl
+                          (unmaskValue (undefined::Input t) st)
