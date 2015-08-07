@@ -13,6 +13,7 @@ extern size_t __nondet_size();
 extern bool __nondet_bool();
 
 extern void __yield(int loc);
+extern void __yield_internal(int loc);
 extern bool __act(void *(*thread) (void *),int loc,...);
 
 extern void assume(bool cond);

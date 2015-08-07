@@ -83,23 +83,26 @@ stepSlicing sl = case currentSlice sl of
                                                  [] -> Map.insert (blk,sblk+1) is (sliceQueue sl)
                                                  (blk,_):_ -> Map.insert (blk,1) is (sliceQueue sl)
                                               }
-          "__yield" -> do
-            num <- callInstGetArgOperand call 0
-            case castDown num of
-             Just cint -> do
-               val <- constantIntGetValue cint
-               APInt _ rval <- peek val
-               return $ Just sl { currentSlice = Just (blk,sblk,[])
-                                , sliceQueue = case blockStack sl of
-                                   [] -> Map.insert (blk,sblk+1) is (sliceQueue sl)
-                                   (blk,_):_ -> Map.insert (blk,1) is (sliceQueue sl)
-                                , sliceMapping = case blockStack sl of
-                                   [] -> Map.insert rval (blk,sblk+1) (sliceMapping sl)
-                                   (blk,_):_ -> Map.insert rval (blk,1) (sliceMapping sl)
-                                }
+          "__yield" -> processYield
+          "__yield_internal" -> processYield
           "pthread_exit" -> return $ Just sl { currentSlice = Just (blk,sblk,[])
                                              , blockStack = (nullPtr,[]):blockStack sl }
           _ -> return $ Just sl { currentSlice = Just (blk,sblk,is) }
+          where
+            processYield = do
+              num <- callInstGetArgOperand call 0
+              case castDown num of
+                Just cint -> do
+                  val <- constantIntGetValue cint
+                  APInt _ rval <- peek val
+                  return $ Just sl { currentSlice = Just (blk,sblk,[])
+                                   , sliceQueue = case blockStack sl of
+                                       [] -> Map.insert (blk,sblk+1) is (sliceQueue sl)
+                                       (blk,_):_ -> Map.insert (blk,1) is (sliceQueue sl)
+                                   , sliceMapping = case blockStack sl of
+                                       [] -> Map.insert rval (blk,sblk+1) (sliceMapping sl)
+                                       (blk,_):_ -> Map.insert rval (blk,1) (sliceMapping sl)
+                                   }
     [(castDown -> Just term)] -> do
       numSuccs <- terminatorInstGetNumSuccessors (term::Ptr TerminatorInst)
       succs <- mapM (terminatorInstGetSuccessor term) [0..numSuccs-1]

@@ -67,6 +67,8 @@ data Realization inp = Realization { edges :: Map (Maybe (Ptr CallInst),Ptr Basi
                                               (Edge inp)
                                    , yieldEdges :: Map (Maybe (Ptr CallInst),Ptr BasicBlock,Int)
                                                    (Edge inp)
+                                   , internalYieldEdges :: Map (Maybe (Ptr CallInst),Ptr BasicBlock,Int)
+                                                           (Edge inp)
                                    , instructions :: Map (Maybe (Ptr CallInst),Ptr Instruction)
                                                      (InstructionValue inp)
                                    , stateAnnotation :: ProgramStateDesc
@@ -153,6 +155,7 @@ realizeProgram mod fun = do
   let sigs' = threadBasedReachability (fmap (const ()) (threads info)) sigs
       real0 = Realization { edges = Map.empty
                           , yieldEdges = Map.empty
+                          , internalYieldEdges = Map.empty
                           , instructions = Map.empty
                           , stateAnnotation = ProgramStateDesc { mainStateDesc = mainDesc
                                                                , threadStateDesc = thDesc
@@ -434,6 +437,11 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                 real0 { yieldEdges = Map.insert (thread,blk,sblk+1)
                                      (edge { edgeConditions = [EdgeCondition act Map.empty] })
                                      (yieldEdges real0) })
+   "__yield_internal"
+     -> return (Nothing,act,
+                real0 { internalYieldEdges = Map.insert (thread,blk,sblk+1)
+                                             (edge { edgeConditions = [EdgeCondition act Map.empty] })
+                                             (internalYieldEdges real0) })
    "assume" -> do
      cond <- getOperand call 0
      (cond',real1) <- realizeValue thread cond edge real0
@@ -1285,6 +1293,7 @@ getSubBlockInstructions blk sub = do
            case name of
             "pthread_yield" -> dropInstrs (n-1) is
             "__yield" -> dropInstrs (n-1) is
+            "__yield_internal" -> dropInstrs (n-1) is
             _ -> dropInstrs n is
          Nothing -> dropInstrs n is
       Nothing -> dropInstrs n is
@@ -1336,7 +1345,7 @@ outputValues real = mp2
                    (getExpr (Just th) instr) mp
               ) mp (latchValueDesc thSt)
           ) mp1 (threadStateDesc $ stateAnnotation real)
-    finEdge = foldl mappend (foldl mappend mempty (edges real)) (yieldEdges real)
+    finEdge = foldl mappend (foldl mappend mempty (edges real)) (Map.union (yieldEdges real) (internalYieldEdges real))
     phis0 = foldl (\mp cond
                    -> Map.union mp
                       (Map.mapWithKey (\(th,instr) _ inp@(st,_)
