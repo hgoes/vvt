@@ -83,6 +83,16 @@ data Realization inp = Realization { edges :: Map (Maybe (Ptr CallInst),Ptr Basi
                                    , programInfo :: ProgramInfo
                                    }
 
+mkAnd :: [SMTExpr Bool] -> SMTExpr Bool
+mkAnd [] = constant True
+mkAnd [x] = x
+mkAnd xs = app and' xs
+
+mkOr :: [SMTExpr Bool] -> SMTExpr Bool
+mkOr [] = constant False
+mkOr [x] = x
+mkOr xs = app or' xs
+
 constantIntValue :: Integer -> InstructionValue inp
 constantIntValue n = InstructionValue { symbolicType = TpInt
                                       , symbolicValue = \_ -> ValInt (constant n)
@@ -236,9 +246,9 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
      thId <- getOperand call 0
      (thId',real1) <- realizeValue thread thId edge real0
      let rthId = memoryRead i thId' edge real1
-         gt inp = app or' [ cact .&&. (not' $ fst $ (threadState $ fst inp) Map.! call')
-                          | (call',cact) <- Map.toList $ valThreadId $
-                                            symbolicValue rthId inp ]
+         gt inp = mkOr [ cact .&&. (not' $ fst $ (threadState $ fst inp) Map.! call')
+                       | (call',cact) <- Map.toList $ valThreadId $
+                                         symbolicValue rthId inp ]
          (cond,ngates) = addGate (gateMp real1)
                          (Gate { gateTransfer = gt
                                , gateAnnotation = ()
@@ -254,9 +264,13 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
    "assert" -> do
      val <- getOperand call 0
      (val',real1) <- realizeValue thread val edge real0
+     let dontStep = Map.null (threadStateDesc $ stateAnnotation real1)
      return (Just edge,
              act,
-             real1 { assertions = (\inp -> (act inp) .=>. (valBool $ symbolicValue val' inp)):
+             real1 { assertions = (\inp -> (if dontStep
+                                            then act inp
+                                            else act inp .&&. (step $ getThreadInput thread (snd inp)))
+                                           .=>. (valBool $ symbolicValue val' inp)):
                                   (assertions real1)
                    })
    "pthread_mutex_init" -> do
@@ -484,7 +498,7 @@ realizeInstruction thread blk sblk act (castDown -> Just sw) edge real0 = do
     mkSwitch _ [] srcBlk defBlk conds real = do
       (phis,nreal) <- realizePhis thread srcBlk defBlk edge real
       return (Nothing,act,nreal { edges = Map.insertWith mappend (thread,defBlk,0)
-                                          (edge { edgeConditions = [EdgeCondition { edgeActivation = \inp -> app and' [ not' (c inp)
+                                          (edge { edgeConditions = [EdgeCondition { edgeActivation = \inp -> mkAnd [ not' (c inp)
                                                                                                                       | c <- conds ]
                                                                                   , edgePhis = phis }]
                                                 }) (edges nreal) })
@@ -672,8 +686,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                            , i <- is
                            ] of
                        [] -> constant True
-                       [x] -> x
-                       xs -> app or' xs
+                       xs -> mkOr xs
      return (InstructionValue { symbolicType = TpBool
                               , symbolicValue = ValBool . res
                               , alternative = Nothing
@@ -728,21 +741,21 @@ realizeDefInstruction thread i@(castDown -> Just icmp) edge real0 = do
                            , alternative = Nothing },real2)
   where
     cmp I_EQ (alternative -> Just (OrList xs)) (alternative -> Just (IntConst 0)) inp
-      = app and' [ valInt (x inp) .==. 0 | x <- xs ]
+      = mkAnd [ valInt (x inp) .==. 0 | x <- xs ]
     cmp I_EQ (alternative -> Just (IntConst 0)) (alternative -> Just (OrList xs)) inp
-      = app and' [ valInt (x inp) .==. 0 | x <- xs ]
+      = mkAnd [ valInt (x inp) .==. 0 | x <- xs ]
     cmp I_EQ x@(symbolicType -> TpBool) y@(symbolicType -> TpBool) inp
       = (valBool (symbolicValue x inp)) .==. (valBool (symbolicValue y inp))
     cmp I_EQ x@(symbolicType -> TpInt) y@(symbolicType -> TpInt) inp
       = (valInt (symbolicValue x inp)) .==. (valInt (symbolicValue y inp))
     cmp I_EQ x@(symbolicType -> TpPtr locx _) y@(symbolicType -> TpPtr locy _) inp
-      = app or' (Map.elems $ Map.intersectionWith
-                 (\(c1,i1) (c2,i2) -> case zip i1 i2 of
-                   [] -> c1 .==. c2
-                   xs -> app and' $ (c1.==.c2):[ (j1.==.j2) | (j1,j2) <- xs ]
-                 )
-                 (valPtr $ symbolicValue x inp)
-                 (valPtr $ symbolicValue y inp))
+      = mkOr (Map.elems $ Map.intersectionWith
+              (\(c1,i1) (c2,i2) -> case zip i1 i2 of
+                 [] -> c1 .==. c2
+                 xs -> mkAnd $ (c1.==.c2):[ (j1.==.j2) | (j1,j2) <- xs ]
+              )
+              (valPtr $ symbolicValue x inp)
+              (valPtr $ symbolicValue y inp))
     cmp I_NE x y inp = not' $ cmp I_EQ x y inp
     cmp I_SGE x y inp = (valInt $ symbolicValue x inp) .>=.
                         (valInt $ symbolicValue y inp)
@@ -909,7 +922,7 @@ memoryRead origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
     val inp = let ValPtr trgs _ = f inp
               in foldl (\cval ev -> case ev of
                          WriteEvent trg cont writeOrigin
-                           -> case [ app and' (cond1:cond2:match)
+                           -> case [ mkAnd (cond1:cond2:match)
                                    | (ptr1,(cond1,idx1)) <- Map.toList trgs
                                    , (ptr2,info2) <- Map.toList trg
                                    , memoryLoc ptr1 == memoryLoc ptr2
@@ -922,7 +935,7 @@ memoryRead origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
                                                Just conds -> [conds] ] of
                               [] -> cval
                               [cond] -> mkVal cond
-                              conds -> mkVal (app or' conds)
+                              conds -> mkVal (mkOr conds)
                            where
                                   mkVal c = if symbolicType cont==tp
                                             then symITE c (symbolicValue cont inp) cval
@@ -1181,7 +1194,8 @@ realizeBlock :: Maybe (Ptr CallInst) -> Ptr BasicBlock -> Int
 realizeBlock thread blk sblk info real = do
   name <- subBlockName blk sblk
   instrs <- getSubBlockInstructions blk sblk
-  let latchCond = \(st,inp)
+  let dontStep = Map.null $ threadStateDesc $ stateAnnotation real
+      latchCond = \(st,inp)
                   -> let blkAct = case Map.lookup (blk,sblk)
                                        (latchBlocks $ getThreadState thread st) of
                                    Just act -> act
@@ -1192,7 +1206,9 @@ realizeBlock thread blk sblk info real = do
                            Just th -> case Map.lookup th (threadState st) of
                                        Just (act,_) -> [act]
                                        Nothing -> error $ "realizeBlock: Cannot find run variable for thread "++show th
-                     in app and' $ runAct++[stepAct,blkAct]
+                     in mkAnd $ runAct++(if dontStep
+                                         then []
+                                         else [stepAct])++[blkAct]
       allConds = (if isEntryBlock
                   then [latchCond]
                   else [])++
@@ -1201,7 +1217,7 @@ realizeBlock thread blk sblk info real = do
                      (Gate { gateTransfer = case allConds of
                               [] -> \_ -> constant False
                               [f] -> f
-                              _ -> \st -> app or' [ f st | f <- allConds ]
+                              _ -> \st -> mkOr [ f st | f <- allConds ]
                            , gateAnnotation = ()
                            , gateName = Just name })
       edgePhi = foldl (\cmp cond
@@ -1227,7 +1243,7 @@ realizeBlock thread blk sblk info real = do
                                      ) gates1
   let instrs1 = Map.union (instructions real) edgePhiGates
       edge1 = edge { edgeValues = Map.union (fmap (\_ -> if isEntryBlock
-                                                         then SometimesDefined (\inp -> app or'
+                                                         then SometimesDefined (\inp -> mkOr
                                                                                         [ edgeActivation cond inp
                                                                                         | cond <- edgeConditions edge ]
                                                                                )
@@ -1306,6 +1322,7 @@ outputValues :: Realization (ProgramState,ProgramInput)
                 ((ProgramState,ProgramInput) -> SymVal)
 outputValues real = mp2
   where
+    dontStep = Map.null (threadStateDesc $ stateAnnotation real)
     mp1 = Map.foldlWithKey (\mp instr _
                             -> Map.insert (Nothing,instr)
                                (getExpr Nothing instr) mp
@@ -1345,7 +1362,9 @@ outputValues real = mp2
                                     (v1 inp) (v2 inp))
                      (fmap symbolicValue (edgePhis cond)) mp
                  ) phis0 (edgeConditions finEdge)
-    getExpr thread instr inp = symITE stepCond body old
+    getExpr thread instr inp = if dontStep
+                               then body
+                               else symITE stepCond body old
       where
         stepCond = step $ getThreadInput thread (snd inp)
         body = case Map.lookup (thread,instr) phis of
