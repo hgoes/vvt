@@ -13,7 +13,9 @@ unsigned dec_flag = 0;
 
 void __VERIFIER_atomic_assert1(unsigned inc__v)
 {
+  __atomic_begin();
   assert(dec_flag || value > inc__v);
+  __atomic_end();
 }
 
 unsigned inc() {
@@ -39,7 +41,9 @@ unsigned inc() {
 
 void __VERIFIER_atomic_assert2(unsigned dec__v)
 {
+  __atomic_begin();
   assert(inc_flag || value < dec__v);
+  __atomic_end();
 }
 
 unsigned dec() {
