@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +53,10 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex);
 
 int pthread_mutex_destroy(pthread_mutex_t *mutex);
 
+// Helper function
+
+bool pthread_mutex_locked(pthread_mutex_t *mutex);
+  
 // Read-Write lock functions
 
 int pthread_rwlock_init(pthread_rwlock_t *__restrict__ rwlock,

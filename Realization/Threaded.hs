@@ -699,6 +699,11 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                               , symbolicValue = ValBool . res
                               , alternative = Nothing
                               },real0)
+   "pthread_mutex_locked" -> do
+     ptr <- getOperand call 0
+     (ptr',real1) <- realizeValue thread ptr edge real0
+     let lock = memoryRead i ptr' edge real1
+     return (lock,real1)
    _ -> error $ "Unknown function call: "++fname
   where
     ptrLoc = MemoryPtr { memoryLoc = Left i
