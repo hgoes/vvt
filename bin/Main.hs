@@ -59,6 +59,7 @@ performAction (Encode fn,opts) = do
   (inp,_) <- compile opts fn
   ph <- execPipe inp outp [progOptimize
                           ,progEncode
+                          ,progSimplify
                           ,progPredicates (karrAnalysis opts)
                           ,progPretty]
   waitForProcess ph
@@ -133,3 +134,8 @@ progPretty :: IO (FilePath,[String])
 progPretty = do
   bin <- getBinDir
   return (bin </> "vvt-pp",[])
+
+progSimplify :: IO (FilePath,[String])
+progSimplify = do
+  bin <- getBinDir
+  return (bin </> "vvt-opt",[])

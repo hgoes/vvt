@@ -38,6 +38,9 @@ Executable vvt-verify
 Executable vvt-predicates
   Main-Is:              bin/Predicates.hs
 
+Executable vvt-opt
+  Main-Is:              bin/Optimize.hs
+  
 Executable vvt
   Main-Is:              bin/Main.hs
   Build-Depends:        process,filepath
