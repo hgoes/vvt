@@ -21,7 +21,7 @@ Data-Files:     include/assert.h
 
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs
-  Build-Depends:        base,bytestring,atto-lisp,attoparsec<0.11,text,pretty
+  Build-Depends:        base,bytestring,atto-lisp,attoparsec<0.13,text,pretty
 
 Executable vvt-bmc
   Main-Is:              bin/BMC.hs

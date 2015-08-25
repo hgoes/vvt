@@ -147,6 +147,13 @@ data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
                           , stateDomainHash :: Int
                           }
 
+instance Applicative (IC3 mdl) where
+  pure x = IC3 (\_ _ -> return x)
+  x <*> y = IC3 (\cfg env -> do
+                     f <- evalIC3 x cfg env
+                     v <- evalIC3 y cfg env
+                     return (f v))
+
 instance Monad (IC3 mdl) where
   (>>=) ic3 f = IC3 $ \cfg ref -> do
     r1 <- evalIC3 ic3 cfg ref
