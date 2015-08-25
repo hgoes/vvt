@@ -74,6 +74,8 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *rwlock);
 
 int pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
 
+#define PTHREAD_MUTEX_INITIALIZER { 0 }
+
 #define pthread_join(thread,retval) pthread_join(&thread,retval)
 
 #ifdef __cplusplus
