@@ -437,7 +437,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                 real0 { yieldEdges = Map.insert (thread,blk,sblk+1)
                                      (edge { edgeConditions = [EdgeCondition act Map.empty] })
                                      (yieldEdges real0) })
-   "__yield_internal"
+   "__yield_local"
      -> return (Nothing,act,
                 real0 { internalYieldEdges = Map.insert (thread,blk,sblk+1)
                                              (edge { edgeConditions = [EdgeCondition act Map.empty] })
@@ -1293,7 +1293,7 @@ getSubBlockInstructions blk sub = do
            case name of
             "pthread_yield" -> dropInstrs (n-1) is
             "__yield" -> dropInstrs (n-1) is
-            "__yield_internal" -> dropInstrs (n-1) is
+            "__yield_local" -> dropInstrs (n-1) is
             _ -> dropInstrs n is
          Nothing -> dropInstrs n is
       Nothing -> dropInstrs n is

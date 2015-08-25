@@ -84,7 +84,7 @@ stepSlicing sl = case currentSlice sl of
                                                  (blk,_):_ -> Map.insert (blk,1) is (sliceQueue sl)
                                               }
           "__yield" -> processYield
-          "__yield_internal" -> processYield
+          "__yield_local" -> processYield
           "pthread_exit" -> return $ Just sl { currentSlice = Just (blk,sblk,[])
                                              , blockStack = (nullPtr,[]):blockStack sl }
           _ -> return $ Just sl { currentSlice = Just (blk,sblk,is) }
