@@ -450,6 +450,13 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
      Nothing -> return (Nothing,act,real0)
      Just th -> return (Nothing,act,
                         real0 { termEvents = Map.insertWith (++) th [act] (termEvents real0) })
+   -- Ignore atomic block denotions
+   -- Only important for inserting yield instructions
+   "__atomic_begin" -> return (Just edge,act,real0)
+   "__atomic_end" -> return (Just edge,act,real0)
+   -- Ignore llvm annotations
+   "llvm.lifetime.start" -> return (Just edge,act,real0)
+   "llvm.lifetime.end" -> return (Just edge,act,real0)
    _ -> do
      (val,nreal) <- realizeDefInstruction thread i edge real0
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
