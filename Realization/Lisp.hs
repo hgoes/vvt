@@ -131,11 +131,13 @@ parseLispProgram descr = case descr of
              Nothing -> []
              Just xs -> fmap (\x -> case parseLispExpr' state inp Map.empty cast x of
                                Just (Just y) -> y
+                               _ -> error $ "Cannot parse invariant: "++show x
                              ) xs
            assume = case Map.lookup "assumption" mp of
              Nothing -> []
              Just xs -> fmap (\x -> case parseLispExpr' state inp gates cast x of
                                Just (Just y) -> y
+                               _ -> error $ "Cannot parse assumption: "++show x
                              ) xs
            preds = case Map.lookup "predicate" mp of
              Nothing -> []
@@ -219,6 +221,9 @@ programToLisp prog = L.List ([L.Symbol "program"]++
 exactlyOne :: SMTFunction [SMTExpr Bool] Bool
 exactlyOne = SMTBuiltIn "exactly-one" ()
 
+atMostOne :: SMTFunction [SMTExpr Bool] Bool
+atMostOne = SMTBuiltIn "at-most-one" ()
+
 exactlyOneParser :: FunctionParser
 exactlyOneParser
   = FunctionParser $
@@ -229,6 +234,18 @@ exactlyOneParser
     parse = OverloadedParser { sortConstraint = all (== Fix BoolSort)
                              , deriveRetSort = \_ -> Just (Fix BoolSort)
                              , parseOverloaded = \_ _ app -> Just (app exactlyOne) }
+
+atMostOneParser :: FunctionParser
+atMostOneParser
+  = FunctionParser $
+    \lsp _ _ -> case lsp of
+    L.Symbol "at-most-one" -> Just parse
+    _ -> Nothing
+  where
+    parse = OverloadedParser { sortConstraint = all (== Fix BoolSort)
+                             , deriveRetSort = \_ -> Just (Fix BoolSort)
+                             , parseOverloaded = \_ _ app -> Just (app atMostOne) }
+
 
 parseLispType :: L.Lisp -> Maybe LispType
 parseLispType (L.List [L.Symbol "array",
@@ -413,7 +430,7 @@ parseLispExpr' :: Map T.Text (LispType,Annotation)
                -> L.Lisp
                -> Maybe b
 parseLispExpr' state inps gates app
-  = parseLispExpr state inps gates (commonFunctions `mappend` exactlyOneParser)
+  = parseLispExpr state inps gates (commonFunctions `mappend` exactlyOneParser `mappend` atMostOneParser)
     (const Nothing)
     emptyDataTypeInfo
     app
@@ -521,7 +538,10 @@ relativize state inps gates (App (SMTBuiltIn "exactly-one" _) xs)
   = case cast xs of
      Just xs' -> case cast (oneOf $ fmap (relativize state inps gates) xs') of
        Just r -> r
-  where
+relativize state inps gates (App (SMTBuiltIn "at-most-one" _) xs)
+  = case cast xs of
+     Just xs' -> case cast (atMostOneOf $ fmap (relativize state inps gates) xs') of
+       Just r -> r
 relativize state inps gates (App fun args)
   = let (_,nargs) = foldExprsId (\_ e _ -> ((),relativize state inps gates e)) () args (extractArgAnnotation args)
     in App fun nargs
@@ -533,6 +553,13 @@ oneOf :: [SMTExpr Bool] -> SMTExpr Bool
 oneOf xs = app or' (oneOf' [] xs)
   where
     oneOf' _ [] = []
+    oneOf' xs (y:ys) = (app and' (y:(fmap not' $ xs++ys))):
+                       (oneOf' (y:xs) ys)
+
+atMostOneOf :: [SMTExpr Bool] -> SMTExpr Bool
+atMostOneOf xs = app or' (oneOf' [] xs)
+  where
+    oneOf' xs [] = [app and' (fmap not' xs)]
     oneOf' xs (y:ys) = (app and' (y:(fmap not' $ xs++ys))):
                        (oneOf' (y:xs) ys)
 
