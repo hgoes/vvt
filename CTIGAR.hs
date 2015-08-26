@@ -326,14 +326,13 @@ runIC3 cfg act = do
     inp' <- TR.createInputVars "inp.nxt." mdl
     (asserts,real1') <- TR.declareAssertions mdl nxt inp' (TR.startingProgress mdl)
     (assumps2,real2') <- TR.declareAssumptions mdl nxt inp' real1'
-    assert (TR.stateInvariant mdl inp' nxt)
+    --assert (TR.stateInvariant mdl inp' nxt)
     mapM_ assert assumps2
     return $ LiftingState cur inp nxt inp' asserts
   initiation <- createSMTPool initiationBackend $ do
     cur <- TR.createStateVars "" mdl
-    inp <- TR.createInputVars "inp." mdl
     assert $ TR.initialState mdl cur
-    assert $ TR.stateInvariant mdl inp cur
+    --assert $ TR.stateInvariant mdl inp cur
     return cur
   interpolation <- createSMTPool interpBackend'' $ do
     setLogic "QF_AUFLIA"
@@ -472,7 +471,7 @@ lift' (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
                                cid <- assertId cond'
                                return (Map.insert cid (Right n) mp,n+1)
                            ) (cmp1,0) assignedInp
-  --assert $ argEq inp (liftArgs vinp ann_inp)
+  --assert $ argEq inp (liftArgs vinp (extractArgAnnotation inp))
   assert $ argEq inp' (liftArgs vinp' (extractArgAnnotation inp'))
   assert vnxt
   res <- checkSat
@@ -973,6 +972,8 @@ check st opts verb stats dumpDomain = do
       inps <- TR.createInputVars "" real
       (assumps,real0) <- TR.declareAssumptions real st inps (TR.startingProgress real)
       (ass,_) <- TR.declareAssertions real st inps real0
+      comment "Invariant"
+      assert $ TR.stateInvariant real inps st
       comment "Assumptions"
       mapM_ assert assumps
       comment "Assertions"
@@ -983,6 +984,8 @@ check st opts verb stats dumpDomain = do
       assert $ app and' $ assignPartial' st x
       comment "Inputs"
       inps <- TR.createInputVars "" real
+      comment "Invariant"
+      assert $ TR.stateInvariant real inps st
       (assumps,real0) <- TR.declareAssumptions real st inps (TR.startingProgress real)
       (nxt_st,real1) <- TR.declareNextState real st inps Nothing real0
       (ass,real2) <- TR.declareAssertions real st inps real1
