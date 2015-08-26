@@ -3,7 +3,7 @@ LIPTON=/home/eq/repos/lipton/LiptonPass
 CLANG=clang-3.4
 CLANG_OPTS=-mem2reg -internalize-public-api-list=main -internalize -inline -loops -loop-simplify -loop-rotate -lcssa -loop-unroll
 
-BENCHMARKS=$(shell cat benchmarks)
+BENCHMARKS=$(shell grep -v ^\# benchmarks )
 LLVM_FILES=$(addsuffix .ll,$(BENCHMARKS))
 LIPTON_FILES=$(addsuffix .lipton.ll,$(BENCHMARKS))
 VVT_FILES=$(addsuffix .l,$(BENCHMARKS))
@@ -19,7 +19,7 @@ $(LLVM_FILES): %.ll: %.c
 	| llvm-dis -o $@ -
 
 $(LIPTON_FILES): %.lipton.ll: %.ll
-	llvm-as $< -o - | $(LIPTON) | opt -mem2reg -instnamer - -o - | llvm-dis -o $@ -
+	llvm-as $< -o - | $(LIPTON) | opt -mem2reg -constprop -simplifycfg -globaldce -instnamer - -o - | llvm-dis -o $@ -
 
 $(VVT_FILES): %.l: %.lipton.ll
 	vvt-enc < $< | vvt-opt | vvt-predicates | vvt-pp > $@
