@@ -35,7 +35,6 @@ int main()
 
   pthread_create(&t1, 0, thr1, 0);
   pthread_create(&t2, 0, thr1, 0);
-  pthread_yield();
   thr1(0);
 
   return 0;

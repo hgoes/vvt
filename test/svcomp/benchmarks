@@ -19,7 +19,7 @@
 19_time_var_mutex_true-unreach-call
 20_lamport_true-unreach-call
 23_lu-fig2.fixed_true-unreach-call
-25_stack_longer_false-unreach-call
+#25_stack_longer_false-unreach-call
 29_conditionals_vs_true-unreach-call
 31_simple_loop5_vs_true-unreach-call
 32_pthread5_vs_false-unreach-call
