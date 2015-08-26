@@ -291,7 +291,10 @@ toLispProgram real' = do
                                            (L.NamedVar (T.append "main-" name)
                                             L.State L.boolType) [] []) ()
                  ) (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
-    return $ app L.exactlyOne blks
+    return $ case blks of
+      [] -> constant True
+      [_] -> constant True
+      _ -> app L.atMostOne blks
   inv2 <- mapM (\(th,thSt) -> do
                    let tName = threadNames Map.! th
                    blks <- mapM (\blk -> do
@@ -301,7 +304,10 @@ toLispProgram real' = do
                                        (L.NamedVar (T.append (T.pack $ tName++"-") name)
                                         L.State L.boolType) [] []) ()
                                 ) (Map.keys $ latchBlockDesc thSt)
-                   return $ app L.exactlyOne blks
+                   return $ case blks of
+                     [] -> constant True
+                     [_] -> constant True
+                     _ -> app L.atMostOne blks
                ) (Map.toList $ threadStateDesc $ stateAnnotation real)
   let inv3 = if dontStep
              then []
