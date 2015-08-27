@@ -29,8 +29,10 @@ unsigned inc() {
     
     inc__vn = inc__v + 1;
 
+    __atomic_begin();
     inc__casret = __sync_bool_compare_and_swap(&value,inc__v,inc__vn);
     inc_flag = inc_flag||inc__casret;
+    __atomic_end();
   }
   while (inc__casret==0);
   
@@ -57,8 +59,10 @@ unsigned dec() {
     }
     
     dec__vn = dec__v - 1;
+    __atomic_begin();
     dec__casret = __sync_bool_compare_and_swap(&value,dec__v,dec__vn);
     dec_flag = dec_flag||dec__casret;
+    __atomic_end();
   }
   while (dec__casret==0);
   
