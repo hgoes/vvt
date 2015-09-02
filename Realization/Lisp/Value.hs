@@ -60,7 +60,7 @@ instance (Indexable a i,Liftable i,Unit (ArgAnnotation i)) => Indexable (SMTArra
 
 data LispVal = forall t. Indexable t (SMTExpr Integer) => Val (SMTExpr t) deriving (Typeable)
 
-data Size = Size [SizeElement] deriving (Typeable,Show)
+data Size = Size { sizeElements :: [SizeElement] } deriving (Typeable,Show)
 
 data SizeElement = forall t. (Indexable t (SMTExpr Integer),ResultType t ~ Integer)
                    => SizeElement (SMTExpr t)

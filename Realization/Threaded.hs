@@ -688,10 +688,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                                 },real0)
    "__act" -> do
      acts <- parseActArgs call
-     let res (st,_) = case [ case Map.lookup i (threadSliceMapping thread) of
-                              Just blk -> case Map.lookup blk (latchBlocks $
-                                                               getThreadState thId st) of
-                                           Just act -> act
+     let res (st,_) = case [ act
                            | (fun,is) <- acts
                            , (thId,thread) <- (Nothing,mainThread (programInfo real0)):
                                               [ (Just thId,th)
@@ -699,6 +696,12 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                                                              (threads $ programInfo real0) ]
                            , threadFunction thread==fun
                            , i <- is
+                           , act <- case Map.lookup i (threadSliceMapping thread) of
+                              Just blk -> case Map.lookup blk (latchBlocks $
+                                                               getThreadState thId st) of
+                                           Just act' -> [act']
+                                           Nothing -> []
+                              Nothing -> []
                            ] of
                        [] -> constant True
                        xs -> mkOr xs
