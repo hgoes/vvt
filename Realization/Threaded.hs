@@ -649,9 +649,13 @@ realizeDefInstruction thread (castDown -> Just opInst) edge real0 = do
         Mul -> (TpInt,\inp -> let ValInt v1 = symbolicValue valL inp
                                   ValInt v2 = symbolicValue valR inp
                               in ValInt (v1 * v2))
-        And -> (TpBool,\inp -> let ValBool v1 = symbolicValue valL inp
-                                   ValBool v2 = symbolicValue valR inp
-                               in ValBool (v1 .&&. v2))
+        And -> case symbolicType valL of
+          TpBool -> (TpBool,\inp -> let ValBool v1 = symbolicValue valL inp
+                                        ValBool v2 = symbolicValue valR inp
+                                    in ValBool (v1 .&&. v2))
+          TpInt -> case alternative valR of
+            Just (IntConst 1) -> (TpInt,\inp -> let ValInt v1 = symbolicValue valL inp
+                                                in ValInt (mod' v1 2))
         Or -> (TpBool,\inp -> let ValBool v1 = symbolicValue valL inp
                                   ValBool v2 = symbolicValue valR inp
                               in ValBool (v1 .||. v2))
@@ -661,6 +665,11 @@ realizeDefInstruction thread (castDown -> Just opInst) edge real0 = do
         SRem -> (TpInt,\inp -> let ValInt v1 = symbolicValue valL inp
                                    ValInt v2 = symbolicValue valR inp
                                in ValInt (rem' v1 v2))
+        Shl -> case alternative valR of
+                 Nothing -> error "Left shift with non-constant not supported."
+                 Just (IntConst vr)
+                   -> (TpInt,\inp -> let ValInt vl = symbolicValue valL inp
+                                     in ValInt (vl * (2 ^ vr))) 
         _ -> error $ "Unknown operator: "++show op
   return (InstructionValue { symbolicType = tp
                            , symbolicValue = res
