@@ -1531,18 +1531,30 @@ allPtrsOfType tp mem
                  , idx <- allAllocPtrs tp' ]
   where
     allAllocPtrs (TpStatic n tp')
-      = [ StaticAccess i:idx
+      = [ acc:idx
         | idx <- allStructPtrs tp'
-        , i <- [0..n-1] ]
+        , acc <- if n > 1
+                 then DynamicAccess:[ StaticAccess i
+                                    | i <- [0..n-1] ]
+                 else [ StaticAccess i
+                                    | i <- [0..n-1] ]]
     allAllocPtrs (TpDynamic tp')
       = [ DynamicAccess:idx
         | idx <- allStructPtrs tp' ]
     allStructPtrs tp' = if sameStructType tp tp'
                         then [[]]
                         else (case tp' of
-                               Struct tps -> [ StaticAccess n:idx
-                                             | (n,tp') <- zip [0..] tps
-                                             , idx <- allStructPtrs tp' ]
+                               Struct tps
+                                 | allEq tps -> [ DynamicAccess:idx
+                                                | idx <- allStructPtrs (head tps) ]++
+                                                [ StaticAccess n:idx
+                                                | (n,tp') <- zip [0..] tps
+                                                , idx <- allStructPtrs tp' ]
+                                 | otherwise -> [ StaticAccess n:idx
+                                                | (n,tp') <- zip [0..] tps
+                                                , idx <- allStructPtrs tp' ]
                                _ -> [])
-
-      
+    allEq [] = True
+    allEq (tp:xs) = allEq' tp xs
+    allEq' _ [] = True
+    allEq' tp (tp':xs) = tp==tp' && allEq' tp xs
