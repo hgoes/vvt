@@ -20,10 +20,10 @@ data Slicing = Slicing { entryPoints :: Map (Ptr BasicBlock,Int) ()
                        , sliceQueue :: Map (Ptr BasicBlock,Int) [Ptr Instruction]
                        , realizationOrder :: [(Ptr BasicBlock,Int)]
                        , currentSlice :: Maybe (Ptr BasicBlock,Int,[Ptr Instruction])
-                       , sliceMapping :: Map Integer (Ptr BasicBlock,Int)
+                       , sliceMapping :: Map Integer [(Ptr BasicBlock,Int)]
                        }
 
-getSlicing :: Ptr Function -> IO (Map (Ptr BasicBlock,Int) (),[(Ptr BasicBlock,Int)],Map Integer (Ptr BasicBlock,Int))
+getSlicing :: Ptr Function -> IO (Map (Ptr BasicBlock,Int) (),[(Ptr BasicBlock,Int)],Map Integer [(Ptr BasicBlock,Int)])
 getSlicing fun = do
   entry <- getEntryBlock fun
   instrs <- getInstList entry >>= ipListToList
@@ -33,7 +33,7 @@ getSlicing fun = do
                    , sliceQueue = Map.empty
                    , realizationOrder = []
                    , currentSlice = Just (entry,0,instrs)
-                   , sliceMapping = Map.singleton 0 (entry,0) }
+                   , sliceMapping = Map.empty {-Map.singleton 0 [(entry,0)]-} }
   getSlicing' s0
   where
     getSlicing' s = do
@@ -100,8 +100,8 @@ stepSlicing sl = case currentSlice sl of
                                        [] -> Map.insert (blk,sblk+1) is (sliceQueue sl)
                                        (blk,_):_ -> Map.insert (blk,1) is (sliceQueue sl)
                                    , sliceMapping = case blockStack sl of
-                                       [] -> Map.insert rval (blk,sblk+1) (sliceMapping sl)
-                                       (blk,_):_ -> Map.insert rval (blk,1) (sliceMapping sl)
+                                       [] -> Map.insertWith (++) rval [(blk,sblk+1)] (sliceMapping sl)
+                                       (blk,_):_ -> Map.insertWith (++) rval [(blk,1)] (sliceMapping sl)
                                    }
     [(castDown -> Just term)] -> do
       numSuccs <- terminatorInstGetNumSuccessors (term::Ptr TerminatorInst)

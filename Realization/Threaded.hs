@@ -703,12 +703,10 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
                                                              (threads $ programInfo real0) ]
                            , threadFunction thread==fun
                            , i <- is
-                           , act <- case Map.lookup i (threadSliceMapping thread) of
-                              Just blk -> case Map.lookup blk (latchBlocks $
-                                                               getThreadState thId st) of
-                                           Just act' -> [act']
-                                           Nothing -> []
+                           , blk <- case Map.lookup i (threadSliceMapping thread) of
                               Nothing -> []
+                              Just blks -> blks
+                           , let Just act = Map.lookup blk (latchBlocks $ getThreadState thId st)
                            ] of
                        [] -> constant True
                        xs -> mkOr xs

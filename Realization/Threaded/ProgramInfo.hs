@@ -14,7 +14,7 @@ data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , entryPoints :: Map (Ptr BasicBlock,Int) ()
                              , threadFunction :: Ptr Function
                              , threadArg :: Maybe (Ptr Argument,Ptr Type)
-                             , threadSliceMapping :: Map Integer (Ptr BasicBlock,Int)
+                             , threadSliceMapping :: Map Integer [(Ptr BasicBlock,Int)]
                              , spawnQuantity :: Quantity
                              }
 
