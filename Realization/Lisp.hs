@@ -725,7 +725,8 @@ instance TransitionRelation LispProgram where
     where
       expr = case [ InternalObj (LispEq
                                  (NamedVar name State
-                                  (fst $ (programState prog) Map.! name))
+                                  (case Map.lookup name (programState prog) of
+                                     Just (st,_) -> st))
                                  val) ()
                   | (name,val) <- Map.toList (programInit prog) ] of
         [] -> constant True
@@ -794,7 +795,9 @@ instance TransitionRelation LispProgram where
     return (nrsm',fmap (\prop st
                         -> prop (\(name,idx)
                                  -> relativize st Map.empty Map.empty
-                                    (InternalObj (LispVarAccess (NamedVar name State (fst $ (programState prog) Map.! name))
+                                    (InternalObj (LispVarAccess (NamedVar name State
+                                                                 (case Map.lookup name (programState prog) of
+                                                                    Just (v,_) -> v))
                                                   idx []) ()))
                        ) props)
   --extractPredicates _ _ _ _ = return ((),[])

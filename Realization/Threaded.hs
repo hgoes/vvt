@@ -233,7 +233,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
              real2 { events = Map.insert (Map.size (events real2))
                               (WriteEvent { target = Map.mapWithKey
                                                      (\loc _ inp
-                                                      -> let (cond,idx) = (valPtr $ symbolicValue thId' inp) Map.! loc
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue thId' inp) of
+                                                                            Just r -> r
                                                          in ((act inp) .&&. cond,idx)
                                                      ) (tpPtr $ symbolicType thId')
                                           , writeContent = InstructionValue { symbolicType = TpThreadId (Map.singleton call ())
@@ -249,7 +250,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
      thId <- getOperand call 0
      (thId',real1) <- realizeValue thread thId edge real0
      let rthId = memoryRead i thId' edge real1
-         gt inp = mkOr [ cact .&&. (not' $ fst $ (threadState $ fst inp) Map.! call')
+         gt inp = mkOr [ cact .&&. (not' $ fst $ case Map.lookup call' (threadState $ fst inp) of
+                                                   Just r -> r)
                        | (call',cact) <- Map.toList $ valThreadId $
                                          symbolicValue rthId inp ]
          (cond,ngates) = addGate (gateMp real1)
@@ -307,7 +309,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                    , events = Map.insert (Map.size (events real1))
                               (WriteEvent { target = Map.mapWithKey
                                                      (\loc _ inp
-                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr' inp) of
+                                                                            Just r -> r
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
                                           , writeContent = constantBoolValue True
@@ -328,7 +331,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                    , events = Map.insert (Map.size (events real1))
                               (WriteEvent { target = Map.mapWithKey
                                                      (\loc _ inp
-                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr' inp) of
+                                                                            Just r -> r
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
                                           , writeContent = constantBoolValue False
@@ -365,7 +369,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                    , events = Map.insert (Map.size (events real1))
                               (WriteEvent { target = Map.mapWithKey
                                                      (\loc _ inp
-                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr' inp) of
+                                                                            Just r -> r
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
                                           , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
@@ -391,7 +396,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                    , events = Map.insert (Map.size (events real1))
                               (WriteEvent { target = Map.mapWithKey
                                                      (\loc _ inp
-                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr' inp) of
+                                                                            Just r -> r
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
                                           , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
@@ -414,7 +420,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                    , events = Map.insert (Map.size (events real1))
                               (WriteEvent { target = Map.mapWithKey
                                                      (\loc _ inp
-                                                      -> let (cond,idx) = (valPtr $ symbolicValue ptr' inp) Map.! loc
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr' inp) of
+                                                                            Just r -> r
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
                                           , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
@@ -665,8 +672,8 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
    '_':'_':'n':'o':'n':'d':'e':'t':_ -> do
      Singleton tp <- getType i >>= translateType real0
      return (InstructionValue { symbolicType = tp
-                              , symbolicValue = \(_,pi) -> (nondets $ getThreadInput thread pi)
-                                                           Map.! i
+                              , symbolicValue = \(_,pi) -> case Map.lookup i (nondets $ getThreadInput thread pi) of
+                                                             Just r -> r
                               , alternative = Nothing },
              real0 { inputAnnotation = updateThreadInputDesc thread
                                        (\ti -> ti { nondetTypes = Map.insert i tp
@@ -991,7 +998,8 @@ memoryWrite origin act ptr val edge real
      real { events = Map.insert (Map.size (events real))
                      (WriteEvent { target = Map.mapWithKey
                                             (\loc _ inp
-                                             -> let (cond,idx) = (valPtr $ symbolicValue ptr inp) Map.! loc
+                                             -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr inp) of
+                                                                   Just r -> r
                                                 in ((act inp) .&&. cond,idx)
                                             ) (tpPtr $ symbolicType ptr)
                                  , writeContent = val

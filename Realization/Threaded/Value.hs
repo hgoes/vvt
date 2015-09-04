@@ -412,7 +412,9 @@ addSymGate gts TpInt f name
     in (ValInt expr,ngts)
 addSymGate gts (TpPtr trgs tp) f name
   = let (ngts,trgExprs) = Map.mapAccumWithKey
-                          (\gts loc _ -> let gt = Gate { gateTransfer = fst.(Map.! loc).valPtr.f
+                          (\gts loc _ -> let gt = Gate { gateTransfer = \x -> case Map.lookup loc (valPtr $ f x) of
+                                                                                Just (r,_) -> r
+                                                                                Nothing -> constant False
                                                        , gateAnnotation = ()
                                                        , gateName = name }
                                              (cond,gts1) = addGate gts gt
