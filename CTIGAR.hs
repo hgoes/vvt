@@ -615,13 +615,6 @@ abstractConsecution fi abs_st succ = do
                           return (i+1,Map.insert cid i mp)
                       ) (0,Map.empty) (toDomainTerms abs_st (ic3Domain env)
                                        (consecutionNxtState vars))
-    -- Henning: This tries to take the lifted inputs of the successor into account (doesn't do anything yet)
-    case succ of
-     Nothing -> return ()
-     Just s -> do
-       succ' <- liftIO $ readIORef s
-       assert $ app and' $ assignPartial' (consecutionNxtInput vars)
-         (stateLiftedInputs succ')
     res <- checkSat
     if res
       then (do
