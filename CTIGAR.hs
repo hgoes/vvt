@@ -43,6 +43,8 @@ import Data.Maybe (catMaybes)
 import Data.Either (partitionEithers)
 import Data.Time.Clock
 import Control.Exception (Exception,SomeException,finally,catch,throw)
+import System.IO
+import System.Exit
 
 data IC3Config mdl
   = IC3Cfg { ic3Model :: mdl
@@ -302,13 +304,13 @@ runIC3 cfg act = do
               --assert (blockConstraint nxtBlks)
               (asserts1,real2) <- TR.declareAssertions mdl cur inp real1
               (assumps1,real3) <- TR.declareAssumptions mdl cur inp real2
+              mapM_ assert asserts1
               mapM_ assert assumps1
               nxtInp <- TR.createInputVars "nxt." mdl
               (asserts2,real1') <- TR.declareAssertions mdl nxt nxtInp (TR.startingProgress mdl)
               (assumps2,real2') <- TR.declareAssumptions mdl nxt nxtInp real1'
               assert (TR.stateInvariant mdl nxtInp nxt)
               mapM_ assert assumps2
-              mapM_ assert asserts1
               return $ ConsecutionVars { consecutionInput = inp
                                        , consecutionNxtInput = nxtInp
                                        , consecutionState = cur
@@ -1483,10 +1485,27 @@ checkFixpoint abs_fp = do
                              nxtInpSt <- getValues nxt_inp >>= TR.renderInput mdl
                              fpSt <- liftIO $ mapM (\e -> renderDomainTerm e domain
                                                    ) abs_fp
-                             error $ "Fixpoint "++
-                               intercalate ", " fpSt++
-                               " doesn't hold after one transition.\nState:\n"++
-                               curSt++"\nInput:\n"++curInpSt++"\nNext state:\n"++nxtSt++"\nNext input:\n"++nxtInpSt
+                             liftIO $ do
+                               hPutStrLn stderr $ "Fixpoint "++
+                                 intercalate ", " fpSt++
+                                 " doesn't hold after one transition."
+                               hPutStrLn stderr $ "State:"
+                               hPutStrLn stderr $ curSt
+                               hPutStrLn stderr $ "Input:"
+                               hPutStrLn stderr $ curInpSt
+                               hPutStrLn stderr $ "Next state:"
+                               hPutStrLn stderr $ nxtSt
+                               hPutStrLn stderr $ "Next input:"
+                               hPutStrLn stderr $ nxtInpSt
+                             mapM_ (\e -> stack $ do
+                                     assert $ toDomainTerm e domain nxt
+                                     reachable <- checkSat
+                                     when reachable $ liftIO $ do
+                                       cube <- renderDomainTerm e domain
+                                       hPutStrLn stderr $ "Cube reachable:"
+                                       hPutStrLn stderr $ "  "++cube
+                                  ) abs_fp
+                             liftIO exitFailure
                         )
 
 newIC3Stats :: IO IC3Stats
