@@ -1038,7 +1038,7 @@ getInstructionValue thread instr edge real
                                                                                (latchValueDesc ts)
                                                             }) (stateAnnotation real) })
   _ -> do
-    Singleton tp <- getType instr >>= translateType real
+    tp <- fmap structToVector (getType instr >>= translateType real)
     return (InstructionValue { symbolicType = tp
                              , symbolicValue = \(st,_) -> case Map.lookup instr
                                                                (latchValues $ getThreadState thread st) of
@@ -1050,6 +1050,10 @@ getInstructionValue thread instr edge real
                                      (\ts -> ts { latchValueDesc = Map.insert instr tp
                                                                    (latchValueDesc ts) })
                                      (stateAnnotation real) })
+
+structToVector :: Struct SymType -> SymType
+structToVector (Singleton tp) = tp
+structToVector (Struct tps) = TpVector (fmap structToVector tps)
 
 realizeValues :: Maybe (Ptr CallInst) -> [Ptr Value]
               -> Edge (ProgramState,ProgramInput)
@@ -1136,12 +1140,15 @@ translateType real (castDown -> Just ptp) = do
   subType <- sequentialTypeGetElementType (ptp::Ptr PointerType) >>= translateType real
   return $ Singleton $ TpPtr (allPtrsOfType subType (memoryDesc $ stateAnnotation real)) subType
 translateType real (castDown -> Just struct) = do
-  name <- structTypeGetName struct >>= stringRefData
+  hasName <- structTypeHasName struct
+  name <- if hasName
+          then fmap Just (structTypeGetName struct >>= stringRefData)
+          else return Nothing
   case name of
-   "struct.pthread_t" -> return $ Singleton $ TpThreadId (fmap (const ())
+   Just "struct.pthread_t" -> return $ Singleton $ TpThreadId (fmap (const ())
                                                           (threadStateDesc $ stateAnnotation real))
-   "struct.pthread_mutex_t" -> return $ Singleton TpBool
-   "struct.pthread_rwlock_t" -> return $ Singleton $ TpVector [TpBool,TpInt]
+   Just "struct.pthread_mutex_t" -> return $ Singleton TpBool
+   Just "struct.pthread_rwlock_t" -> return $ Singleton $ TpVector [TpBool,TpInt]
    _ -> do
      num <- structTypeGetNumElements struct
      tps <- mapM (\i -> structTypeGetElementType struct i >>= translateType real) [0..num-1]
