@@ -1568,6 +1568,8 @@ getConstant _ (castDown -> Just czero) = do
             "struct.pthread_rwlock_t" -> return $ Just $ Singleton $
                                          ValVector [ValBool $ constant False
                                                    ,ValInt $ constant 0]
+            "struct.pthread_t" -> return $ Just $ Singleton $
+                                  ValThreadId $ Map.empty
             _ -> return Nothing
            else return Nothing
        case specialInit of
