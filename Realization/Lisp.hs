@@ -450,9 +450,12 @@ parseLispExpr :: Map T.Text (LispType,Annotation)
 parseLispExpr state inps gates funs bound dts app sort lvl lisp
   = while (Parsing lisp) $
     case parseLispVarAccess state inps gates lisp of
-     Just acc -> let sort = lispVarAccessType acc
-                 in withSort dts sort $
-                    \(_::t) ann -> Just $ app (InternalObj acc ann :: SMTExpr t)
+     Just acc -> case acc of
+       LispVarAccess (LispConstr (LispValue (Size []) (Singleton (Val v)))) [] []
+         -> Just $ app v
+       _ -> let sort = lispVarAccessType acc
+            in withSort dts sort $
+               \(_::t) ann -> Just $ app (InternalObj acc ann :: SMTExpr t)
      Nothing -> lispToExprWith (parseLispExpr state inps gates) funs bound dts app sort lvl lisp
 
 printLispVar :: DataTypeInfo -> LispVar -> L.Lisp
