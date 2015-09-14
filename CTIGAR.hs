@@ -1241,6 +1241,7 @@ interpolateState j s = do
       = App (SMTDivisible n) (x-y)
     translateToMathSAT (App SMTEq [y,App (SMTIntArith Mod) (x,Const n ())])
       = App (SMTDivisible n) (x-y)
+    translateToMathSAT (App (SMTLogic And) []) = constant True
     translateToMathSAT (App f args)
       = let args1 = fromArgs args
             args2 = fmap (\(UntypedExpr e)
