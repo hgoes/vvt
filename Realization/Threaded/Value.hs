@@ -59,7 +59,12 @@ data AllocType = TpStatic Integer (Struct SymType)
 
 type MemoryLoc = Either (Ptr Instruction) (Ptr GlobalVariable)
 
-data MemoryPtr = MemoryPtr { memoryLoc :: MemoryLoc
+data MemoryTrg = AllocTrg (Ptr Instruction)
+               | GlobalTrg (Ptr GlobalVariable)
+               | LocalTrg (Ptr GlobalVariable)
+               deriving (Eq,Ord,Show,Typeable)
+
+data MemoryPtr = MemoryPtr { memoryLoc :: MemoryTrg
                            , offsetPattern :: [AccessPattern]
                            } deriving (Eq,Ord,Typeable)
 
@@ -157,21 +162,23 @@ derefPointer idx mp
     toAccess [] = ([],[])
 
 
-withOffset :: (Struct b -> c -> (Maybe (a,Struct b),c)) -> Integer
+withOffset :: Show b
+           => (Struct b -> c -> (Maybe (a,Struct b),c)) -> Integer
            -> Struct b -> c -> (Maybe (a,Struct b),c)
 withOffset f n (Struct xs) st = (do
                                     (obj,nxs) <- res
                                     return (obj,Struct nxs),nst)
   where
     (res,nst) = withStruct n xs
-    withStruct 0 (x:xs) = let (res,nst) = f x st
-                          in (do
-                                 (obj,nx) <- res
-                                 return (obj,nx:xs),nst)
-    withStruct n (x:xs) = let (res,nst) = withStruct (n-1) xs
-                          in (do
-                                 (obj,nxs) <- res
-                                 return (obj,x:nxs),nst)
+    withStruct 0 (x:xs') = let (res,nst) = f x st
+                           in (do
+                                  (obj,nx) <- res
+                                  return (obj,nx:xs'),nst)
+    withStruct n (x:xs') = let (res,nst) = withStruct (n-1) xs'
+                           in (do
+                                  (obj,nxs) <- res
+                                  return (obj,x:nxs),nst)
+    withStruct _ [] = error $ "withOffset: "++show xs++" "++show n
 
 symITE :: SMTExpr Bool -> SymVal -> SymVal -> SymVal
 symITE cond (ValBool x) (ValBool y) = ValBool (ite cond x y)
@@ -247,7 +254,8 @@ withDynOffset ite comb f n xs st
                                Nothing -> Nothing):rest)
     it i [] st = (st,[])
 
-accessStruct :: (SMTExpr Bool -> b -> b -> b)
+accessStruct :: Show b
+             => (SMTExpr Bool -> b -> b -> b)
              -> ([(a,SMTExpr Bool)] -> a)
              -> (b -> c -> (Maybe (a,b),c))
              -> [Either Integer (SMTExpr Integer)]
@@ -801,13 +809,27 @@ showMemoryLoc (Right global) = unsafePerformIO $ do
   n <- getNameString global
   return $ showChar '@' . showString n
 
+showMemoryTrg :: MemoryTrg -> ShowS
+showMemoryTrg (AllocTrg alloc) = unsafePerformIO $ do
+  n <- getNameString alloc
+  blk <- instructionGetParent alloc
+  fun <- basicBlockGetParent blk
+  fn <- getNameString fun
+  return $ showChar '#' . showString fn . showChar '.' . showString n
+showMemoryTrg (GlobalTrg global) = unsafePerformIO $ do
+  n <- getNameString global
+  return $ showChar '@' . showString n
+showMemoryTrg (LocalTrg global) = unsafePerformIO $ do
+  n <- getNameString global
+  return $ showString "@@" . showString n
+
 showValue :: ValueC v => Ptr v -> ShowS
 showValue v = unsafePerformIO $ do
   n <- getNameString v
   return $ showString n
 
 instance Show MemoryPtr where
-  showsPrec _ ptr = showMemoryLoc (memoryLoc ptr) .
+  showsPrec _ ptr = showMemoryTrg (memoryLoc ptr) .
                     case offsetPattern ptr of
                      [] -> id
                      xs -> showsPrec 0 xs

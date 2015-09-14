@@ -1,9 +1,10 @@
-{-# LANGUAGE ScopedTypeVariables,TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables,TypeFamilies,ViewPatterns #-}
 module Realization.Threaded.ThreadFinder where
 
 import LLVM.FFI
 import LLVM.FFI.Loop
 import Foreign.Ptr (Ptr,nullPtr)
+import Foreign.Storable (peek)
 
 data Quantity = Finite Integer
               | Infinite
@@ -63,19 +64,32 @@ getThreadSpawns fun loopInfo = do
                                                }):rest
                Nothing -> error "Spawning dynamic functions not supported."
             "malloc" -> do
-              -- XXX: Ignore the size parameter for now...
+              sz <- callInstGetArgOperand call 0
               tp <- usedType i
-              case tp of
-               Nothing -> error $ "Mallocs that aren't casted aren't supported yet."
-               Just rtp -> do
-                 loop <- loopInfoBaseGetLoopFor loopInfo blk
-                 rest <- analyzeInstructions is blk blks
-                 return $ AllocationLocation { allocInstruction = i
-                                             , quantity = if loop==nullPtr
-                                                          then Finite 1
-                                                          else Infinite
-                                             , allocType' = rtp
-                                             , allocSize' = Nothing }:rest
+              rtp <- case tp of
+                Just r -> return r
+                Nothing -> do
+                  ctp <- getType i
+                  case castDown ctp of
+                    Just (ptp::Ptr PointerType) -> sequentialTypeGetElementType ptp
+              rsz <- case castDown sz of
+                Just isz -> do
+                  APInt _ val <- constantIntGetValue isz >>= peek
+                  byteSize <- simpleTypeByteSize rtp
+                  return (Just (val `div` byteSize))
+                Nothing -> return Nothing
+              loop <- loopInfoBaseGetLoopFor loopInfo blk
+              rest <- analyzeInstructions is blk blks
+              let quant = case (loop==nullPtr,rsz) of
+                            (True,Just n) -> Finite n
+                            (False,Just 1) -> Infinite
+                            (True,Nothing) -> Infinite
+              return $ AllocationLocation { allocInstruction = i
+                                          , quantity = quant
+                                          , allocType' = rtp
+                                          , allocSize' = case quant of
+                                                           Infinite -> Just sz
+                                                           _ -> Nothing }:rest
             "calloc" -> do
               -- XXX: Ignore the member size parameter for now...
               num <- callInstGetArgOperand call 0
@@ -97,12 +111,15 @@ getThreadSpawns fun loopInfo = do
           loop <- loopInfoBaseGetLoopFor loopInfo blk
           rest <- analyzeInstructions is blk blks
           tp <- getType (alloc :: Ptr AllocaInst) >>= sequentialTypeGetElementType
+          sz <- allocaInstGetArraySize alloc
           return $ (AllocationLocation { allocInstruction = i
                                        , quantity = if loop==nullPtr
                                                     then Finite 1
                                                     else Infinite
                                        , allocType' = tp
-                                       , allocSize' = Nothing
+                                       , allocSize' = if loop==nullPtr
+                                                      then Nothing
+                                                      else Just sz
                                        }):rest
         Nothing -> analyzeInstructions is blk blks
 
@@ -161,6 +178,11 @@ usedType val = do
          Nothing -> do
            nxt <- valueUseIteratorNext cur
            getUses' tp nxt end
+
+simpleTypeByteSize :: Ptr Type -> IO Integer
+simpleTypeByteSize (castDown -> Just itp) = do
+  sz <- getBitWidth itp
+  return (sz `div` 8)
 
 instance Num Quantity where
   (+) Infinite _ = Infinite

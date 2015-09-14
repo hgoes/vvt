@@ -8,6 +8,7 @@ import Realization.Threaded.ProgramInfo (ProgramInfo(..),ThreadInfo(..),
 import Realization.Threaded.ThreadFinder (Quantity(..))
 import Realization.Threaded.Value
 import Realization.Threaded.State
+import Realization.Threaded.Options
 import Realization.Common (getFunctionName)
 import Gates
 
@@ -60,6 +61,7 @@ data EdgeCondition inp = EdgeCondition { edgeActivation :: inp -> SMTExpr Bool
 
 data Event inp = WriteEvent { target :: Map MemoryPtr (inp -> (SMTExpr Bool,[SMTExpr Integer]))
                             , writeContent :: InstructionValue inp
+                            , eventThread :: Maybe (Ptr CallInst)
                             , eventOrigin :: Ptr Instruction -- For debugging
                             }
 
@@ -83,6 +85,7 @@ data Realization inp = Realization { edges :: Map (Maybe (Ptr CallInst),Ptr Basi
                                    , mainBlock :: Ptr BasicBlock
                                    , threadBlocks :: Map (Ptr CallInst) (Ptr BasicBlock)
                                    , programInfo :: ProgramInfo
+                                   , allMemoryTypes :: Map MemoryTrg AllocType
                                    }
 
 mkAnd :: [SMTExpr Bool] -> SMTExpr Bool
@@ -105,20 +108,23 @@ constantBoolValue n = InstructionValue { symbolicType = TpBool
                                        , symbolicValue = \_ -> ValBool (constant n)
                                        , alternative = Nothing }
 
-realizeProgram :: Ptr Module -> Ptr Function -> IO (Realization (ProgramState,ProgramInput))
-realizeProgram mod fun = do
+realizeProgram :: TranslationOptions -> Ptr Module -> Ptr Function -> IO (Realization (ProgramState,ProgramInput))
+realizeProgram opts mod fun = do
   info <- getProgramInfo mod fun
   globals <- moduleGetGlobalList mod >>= ipListToList
   globSig <- foldlM (\mp glob -> do
                         ptrTp <- getType glob
                         tp <- sequentialTypeGetElementType ptrTp
                         symTp <- translateType0 tp
-                        return $ Map.insert (Right glob) (TpStatic 1 symTp) mp
+                        isLocal <- globalVariableIsThreadLocal glob
+                        return (Map.insert (if isLocal
+                                            then LocalTrg glob
+                                            else GlobalTrg glob) (TpStatic 1 symTp) mp)
                     ) Map.empty globals
   globInit <- foldlM (\mp glob -> do
-                         init <- globalVariableGetInitializer glob
-                         val <- getConstant init
-                         return $ Map.insert glob (ValStatic [val]) mp -- XXX: What about array initializations?
+                        init <- globalVariableGetInitializer glob
+                        val <- getConstant Nothing init
+                        return (Map.insert glob (ValStatic [val]) mp)
                      ) Map.empty globals
   allocSig <- sequence $ Map.mapWithKey
               (\alloc info -> do
@@ -131,8 +137,18 @@ realizeProgram mod fun = do
                      Finite 1 -> return $ TpDynamic tp
                      _ -> error $ "Dynamic allocations in a loop not yet supported."
               ) (allocations info)
-  let allocSig' = Map.mapKeysMonotonic Left allocSig
+  let allocSig' = Map.mapKeysMonotonic AllocTrg allocSig
       sigs = typeBasedReachability (Map.union globSig allocSig')
+      sigs' = threadBasedReachability (fmap (const ()) (threads info)) sigs
+      (globSigs',locSigs') = Map.partitionWithKey (\k _ -> case k of
+                                                     AllocTrg _ -> True
+                                                     GlobalTrg _ -> True
+                                                     LocalTrg _ -> False) sigs'
+      globSigs'' = Map.mapKeysMonotonic (\k -> case k of
+                                            AllocTrg i -> Left i
+                                            GlobalTrg g -> Right g
+                                        ) globSigs'
+      locSigs'' = Map.mapKeysMonotonic (\(LocalTrg g) -> g) locSigs'
   let th0 tinfo = do
         arg <- case threadArg tinfo of
           Nothing -> return Nothing
@@ -141,7 +157,8 @@ realizeProgram mod fun = do
             return (Just (val,TpPtr (allPtrsOfType tp sigs) tp))
         return $ ThreadStateDesc { latchBlockDesc = entryPoints tinfo
                                  , latchValueDesc = Map.empty
-                                 , threadArgumentDesc = arg }
+                                 , threadArgumentDesc = arg
+                                 , threadGlobalDesc = locSigs''}
       th_inp = ThreadInputDesc Map.empty
   mainBlk <- getEntryBlock fun
   thBlks <- sequence $ Map.mapWithKey
@@ -152,14 +169,13 @@ realizeProgram mod fun = do
             ) (threads info)
   mainDesc <- th0 (mainThread info)
   thDesc <- fmap (typeBasedArgumentReachability sigs) $ mapM th0 (threads info)
-  let sigs' = threadBasedReachability (fmap (const ()) (threads info)) sigs
-      real0 = Realization { edges = Map.empty
+  let real0 = Realization { edges = Map.empty
                           , yieldEdges = Map.empty
                           , internalYieldEdges = Map.empty
                           , instructions = Map.empty
                           , stateAnnotation = ProgramStateDesc { mainStateDesc = mainDesc
                                                                , threadStateDesc = thDesc
-                                                               , memoryDesc = sigs' }
+                                                               , memoryDesc = globSigs'' }
                           , inputAnnotation = ProgramInputDesc { mainInputDesc = th_inp
                                                                , threadInputDesc = fmap (const th_inp)
                                                                                    (threads info) }
@@ -172,6 +188,7 @@ realizeProgram mod fun = do
                           , mainBlock = mainBlk
                           , threadBlocks = thBlks
                           , programInfo = info
+                          , allMemoryTypes = sigs'
                           }
   --putStrLn $ "Memory description: "++showMemoryDesc sigs' ""
   --putStrLn $ "Thread description: "++show (fmap (\ts -> do
@@ -183,10 +200,11 @@ realizeProgram mod fun = do
          ) real1 (Map.toList (threads info))
   where
     realizeThread info th tinfo real
-      = foldlM (\creal (blk,sblk) -> realizeBlock th blk sblk info creal) real
+      = foldlM (\creal (blk,sblk) -> realizeBlock opts th blk sblk info creal) real
         (blockOrder tinfo)
 
-realizeInstructions :: Maybe (Ptr CallInst)
+realizeInstructions :: TranslationOptions
+                    -> Maybe (Ptr CallInst)
                     -> Ptr BasicBlock
                     -> Int
                     -> ((ProgramState,ProgramInput) -> SMTExpr Bool)
@@ -194,15 +212,16 @@ realizeInstructions :: Maybe (Ptr CallInst)
                     -> Edge (ProgramState,ProgramInput)
                     -> Realization (ProgramState,ProgramInput)
                     -> IO (Realization (ProgramState,ProgramInput))
-realizeInstructions thread blk sblk act (i:is) edge real = do
+realizeInstructions opts thread blk sblk act (i:is) edge real = do
   --iStr <- valueToString i
   --putStrLn $ "Realizing "++iStr
-  (res,nact,nreal) <- realizeInstruction thread blk sblk act i edge real
+  (res,nact,nreal) <- realizeInstruction opts thread blk sblk act i edge real
   case res of
    Nothing -> return nreal
-   Just nedge -> realizeInstructions thread blk sblk nact is nedge nreal
+   Just nedge -> realizeInstructions opts thread blk sblk nact is nedge nreal
 
-realizeInstruction :: Maybe (Ptr CallInst)
+realizeInstruction :: TranslationOptions
+                   -> Maybe (Ptr CallInst)
                    -> Ptr BasicBlock
                    -> Int
                    -> ((ProgramState,ProgramInput) -> SMTExpr Bool)
@@ -212,7 +231,7 @@ realizeInstruction :: Maybe (Ptr CallInst)
                    -> IO (Maybe (Edge (ProgramState,ProgramInput)),
                           (ProgramState,ProgramInput) -> SMTExpr Bool,
                           Realization (ProgramState,ProgramInput))
-realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
+realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0 = do
   fname <- getFunctionName call
   case fname of
    "pthread_create" -> do
@@ -240,6 +259,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                           , writeContent = InstructionValue { symbolicType = TpThreadId (Map.singleton call ())
                                                                             , symbolicValue = \_ -> ValThreadId $ Map.singleton call (constant True)
                                                                             , alternative = Nothing }
+                                          , eventThread = thread
                                           , eventOrigin = castUp call
                                           }) (events real2)
                    , spawnEvents = Map.insertWith (++) call [(act,arg)] (spawnEvents real2)
@@ -249,7 +269,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
    "pthread_join" -> do
      thId <- getOperand call 0
      (thId',real1) <- realizeValue thread thId edge real0
-     let rthId = memoryRead i thId' edge real1
+     let rthId = memoryRead thread i thId' edge real1
          gt inp = mkOr [ cact .&&. (not' $ fst $ case Map.lookup call' (threadState $ fst inp) of
                                                    Just r -> r)
                        | (call',cact) <- Map.toList $ valThreadId $
@@ -271,7 +291,9 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
      (val',real1) <- realizeValue thread val edge real0
      let dontStep = Map.null (threadStateDesc $ stateAnnotation real1)
      return (Just edge,
-             act,
+             if dedicatedErrorState opts
+             then (\inp -> (act inp) .&&. (valBool $ symbolicValue val' inp))
+             else act,
              real1 { assertions = (\inp -> (if dontStep
                                             then act inp
                                             else act inp .&&. (step $ getThreadInput thread (snd inp)))
@@ -297,7 +319,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
    "pthread_mutex_lock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead i ptr' edge real1
+     let lock = memoryRead thread i ptr' edge real1
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
                                       (edgeValues edge)
                        , observedEvents = Map.insert (Map.size (events real1)) ()
@@ -314,12 +336,13 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
                                           , writeContent = constantBoolValue True
+                                          , eventThread = thread
                                           , eventOrigin = castUp call
                                           }) (events real1) })
    "pthread_mutex_unlock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead i ptr' edge real1
+     let lock = memoryRead thread i ptr' edge real1
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
                                       (edgeValues edge)
                        , observedEvents = Map.insert (Map.size (events real1)) ()
@@ -336,6 +359,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType ptr')
                                           , writeContent = constantBoolValue False
+                                          , eventThread = thread
                                           , eventOrigin = castUp call
                                           }) (events real1) })
    "pthread_rwlock_init" -> do
@@ -357,7 +381,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
    "pthread_rwlock_rdlock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead i ptr' edge real1
+     let lock = memoryRead thread i ptr' edge real1
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
                                       (edgeValues edge)
                        , observedEvents = Map.insert (Map.size (events real1)) ()
@@ -377,12 +401,13 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                                             , symbolicValue = \inp -> case symbolicValue lock inp of
                                                                                ValVector [wr,ValInt rd] -> ValVector [wr,ValInt (rd+1)]
                                                                             , alternative = Nothing }
+                                          , eventThread = thread
                                           , eventOrigin = castUp call
                                           }) (events real1) })
    "pthread_rwlock_wrlock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead i ptr' edge real1
+     let lock = memoryRead thread i ptr' edge real1
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
                                       (edgeValues edge)
                        , observedEvents = Map.insert (Map.size (events real1)) ()
@@ -403,12 +428,13 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                           , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
                                                                             , symbolicValue = \inp -> ValVector [ValBool (constant True),ValInt 0]
                                                                             , alternative = Nothing }
+                                          , eventThread = thread
                                           , eventOrigin = castUp call
                                           }) (events real1) })
    "pthread_rwlock_unlock" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead i ptr' edge real1
+     let lock = memoryRead thread i ptr' edge real1
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act)
                                       (edgeValues edge)
                        , observedEvents = Map.insert (Map.size (events real1)) ()
@@ -430,6 +456,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
                                                                                                          -> ValVector [ValBool (constant False)
                                                                                                                       ,ValInt (ite (rd.==.0) 0 (rd-1))]
                                                                             , alternative = Nothing }
+                                          , eventThread = thread
                                           , eventOrigin = castUp call
                                           }) (events real1) })
    "pthread_yield"
@@ -469,14 +496,14 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge real0 = do
      return (Just edge { edgeValues = Map.insert (thread,i) (AlwaysDefined act) (edgeValues edge) },
              act,
              nreal { instructions = Map.insert (thread,i) val (instructions nreal) })
-realizeInstruction thread blk sblk act (castDown -> Just store) edge real0 = do
+realizeInstruction _ thread blk sblk act (castDown -> Just store) edge real0 = do
   ptr <- storeInstGetPointerOperand store
   val <- storeInstGetValueOperand store
   (ptr',real1) <- realizeValue thread ptr edge real0
   (val',real2) <- realizeValue thread val edge real1
-  let (nedge,real3) = memoryWrite (castUp store) act ptr' val' edge real2
+  let (nedge,real3) = memoryWrite thread (castUp store) act ptr' val' edge real2
   return (Just nedge,act,real3)
-realizeInstruction thread blk sblk act (castDown -> Just br) edge real0 = do
+realizeInstruction _ thread blk sblk act (castDown -> Just br) edge real0 = do
   srcBlk <- instructionGetParent br
   isCond <- branchInstIsConditional br
   if isCond
@@ -509,7 +536,7 @@ realizeInstruction thread blk sblk act (castDown -> Just br) edge real0 = do
                             (edge { edgeConditions = [EdgeCondition { edgeActivation = act
                                                                     , edgePhis = phis }]
                                   }) (edges real1) })
-realizeInstruction thread blk sblk act (castDown -> Just sw) edge real0 = do
+realizeInstruction _ thread blk sblk act (castDown -> Just sw) edge real0 = do
   srcBlk <- instructionGetParent sw
   cond <- switchInstGetCondition sw
   defBlk <- switchInstGetDefaultDest sw
@@ -520,34 +547,34 @@ realizeInstruction thread blk sblk act (castDown -> Just sw) edge real0 = do
     mkSwitch _ [] srcBlk defBlk conds real = do
       (phis,nreal) <- realizePhis thread srcBlk defBlk edge real
       return (Nothing,act,nreal { edges = Map.insertWith mappend (thread,defBlk,0)
-                                          (edge { edgeConditions = [EdgeCondition { edgeActivation = \inp -> mkAnd [ not' (c inp)
-                                                                                                                      | c <- conds ]
+                                          (edge { edgeConditions = [EdgeCondition { edgeActivation = \inp -> mkAnd $ (act inp):[ not' (c inp)
+                                                                                                                               | c <- conds ]
                                                                                   , edgePhis = phis }]
                                                 }) (edges nreal) })
     mkSwitch cond ((cint,blk):trgs) srcBlk defBlk conds real = do
       APInt _ rval <- constantIntGetValue cint >>= peek
       (phis,real1) <- realizePhis thread srcBlk blk edge real
-      let rcond inp = cond inp .==. constant rval
+      let rcond inp = (act inp) .&&. (cond inp .==. constant rval)
           real2 = real1 { edges = Map.insertWith mappend (thread,blk,0)
                                   (edge { edgeConditions = [EdgeCondition { edgeActivation = rcond
                                                                           , edgePhis = phis }]
                                         }) (edges real1) }
       mkSwitch cond trgs srcBlk defBlk (rcond:conds) real2
-realizeInstruction thread blk sblk act (castDown -> Just (_::Ptr PHINode)) edge real
+realizeInstruction _ thread blk sblk act (castDown -> Just (_::Ptr PHINode)) edge real
   = return (Just edge,act,real)
-realizeInstruction thread blk sblk act (castDown -> Just (_::Ptr ReturnInst)) edge real
+realizeInstruction _ thread blk sblk act (castDown -> Just (_::Ptr ReturnInst)) edge real
   = case thread of
      Nothing -> return (Nothing,act,real)
      Just th -> return (Nothing,act,
                         real { termEvents = Map.insertWith (++) th [act] (termEvents real) })
-realizeInstruction thread blk sblk act instr@(castDown -> Just cmpxchg) edge real0 = do
+realizeInstruction _ thread blk sblk act instr@(castDown -> Just cmpxchg) edge real0 = do
   ptr <- atomicCmpXchgInstGetPointerOperand cmpxchg
   cmp <- atomicCmpXchgInstGetCompareOperand cmpxchg
   new <- atomicCmpXchgInstGetNewValOperand  cmpxchg
   (ptr',real1) <- realizeValue thread ptr edge real0
   (cmp',real2) <- realizeValue thread cmp edge real1
   (new',real3) <- realizeValue thread new edge real2
-  let oldval = memoryRead instr ptr' edge real3
+  let oldval = memoryRead thread instr ptr' edge real3
       (oldval',gates1) = addSymGate (gateMp real3) (symbolicType oldval)
                          (symbolicValue oldval) (Just "atomic-read")
       isEq inp = valEq (symbolicValue oldval inp) (symbolicValue cmp' inp)
@@ -555,7 +582,7 @@ realizeInstruction thread blk sblk act instr@(castDown -> Just cmpxchg) edge rea
                                             , gateAnnotation = ()
                                             , gateName = Just "atomic-cmp" })
       real4 = real3 { gateMp = gates2 }
-      (nedge,real5) = memoryWrite instr act ptr'
+      (nedge,real5) = memoryWrite thread instr act ptr'
                       (InstructionValue { symbolicType = symbolicType oldval
                                         , symbolicValue = \inp -> argITE (isEq inp)
                                                                   (symbolicValue new' inp)
@@ -572,14 +599,14 @@ realizeInstruction thread blk sblk act instr@(castDown -> Just cmpxchg) edge rea
                                     (edgeValues nedge) },
           act,
           real5 { instructions = Map.insert (thread,instr) res (instructions real5) })
-realizeInstruction thread blk sblk act instr@(castDown -> Just atomic) edge real0 = do
+realizeInstruction _ thread blk sblk act instr@(castDown -> Just atomic) edge real0 = do
   name <- getNameString atomic
   op <- atomicRMWInstGetOperation atomic
   ptr <- atomicRMWInstGetPointerOperand atomic
   val <- atomicRMWInstGetValOperand atomic
   (ptr',real1) <- realizeValue thread ptr edge real0
   (val',real2) <- realizeValue thread val edge real1
-  let oldval = memoryRead instr ptr' edge real2
+  let oldval = memoryRead thread instr ptr' edge real2
       newval = case op of
         RMWXchg -> val'
         RMWAdd -> InstructionValue { symbolicType = TpInt
@@ -592,7 +619,7 @@ realizeInstruction thread blk sblk act instr@(castDown -> Just atomic) edge real
                                      \inp -> ValInt (valInt (symbolicValue oldval inp) -
                                                      valInt (symbolicValue val' inp))
                                    , alternative = Nothing }
-      (nedge,real3) = memoryWrite instr act ptr' newval edge real2
+      (nedge,real3) = memoryWrite thread instr act ptr' newval edge real2
       (oldval',ngates) = addSymGate (gateMp real3) (symbolicType oldval)
                          (symbolicValue oldval) (Just name)
   return (Just nedge { edgeValues = Map.insert (thread,instr) (AlwaysDefined act) (edgeValues nedge) },
@@ -601,7 +628,7 @@ realizeInstruction thread blk sblk act instr@(castDown -> Just atomic) edge real
                                  (oldval { symbolicValue = const oldval' })
                                  (instructions real3)
                 , gateMp = ngates })
-realizeInstruction thread blk sblk act instr edge real = do
+realizeInstruction _ thread blk sblk act instr edge real = do
   name <- getNameString instr
   (val,nreal) <- realizeDefInstruction thread instr edge real
   let (val',ngates) = addSymGate (gateMp nreal) (symbolicType val)
@@ -726,13 +753,13 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
    "pthread_mutex_locked" -> do
      ptr <- getOperand call 0
      (ptr',real1) <- realizeValue thread ptr edge real0
-     let lock = memoryRead i ptr' edge real1
+     let lock = memoryRead thread i ptr' edge real1
      return (lock,real1)
    _ -> error $ "Unknown function call: "++fname
   where
-    ptrLoc = MemoryPtr { memoryLoc = Left i
+    ptrLoc = MemoryPtr { memoryLoc = AllocTrg i
                        , offsetPattern = [StaticAccess 0] }
-    ptrLocDyn = MemoryPtr { memoryLoc = Left i
+    ptrLocDyn = MemoryPtr { memoryLoc = AllocTrg i
                           , offsetPattern = [DynamicAccess] }
     parseActArgs :: Ptr CallInst -> IO [(Ptr Function,[Integer])]
     parseActArgs call = do
@@ -844,7 +871,7 @@ realizeDefInstruction thread i@(castDown -> Just alloc) edge real0 = do
                                                            (constant True,[])) tp
                            , alternative = Nothing },real0)
   where
-    ptrLoc = MemoryPtr { memoryLoc = Left i
+    ptrLoc = MemoryPtr { memoryLoc = AllocTrg i
                        , offsetPattern = [StaticAccess 0] }
 realizeDefInstruction thread i@(castDown -> Just (trunc::Ptr TruncInst)) edge real0 = do
   val <- getOperand trunc 0
@@ -897,7 +924,7 @@ realizeDefInstruction thread instr@(castDown -> Just load) edge real0 = do
   name <- getNameString load
   ptr <- loadInstGetPointerOperand load
   (ptr',real1) <- realizeValue thread ptr edge real0
-  return (memoryRead instr ptr' edge real1,real1)
+  return (memoryRead thread instr ptr' edge real1,real1)
 realizeDefInstruction thread (castDown -> Just bitcast) edge real = do
   -- Ignore bitcasts for now, just assume that everything will work out
   arg <- getOperand (bitcast :: Ptr BitCastInst) 0
@@ -927,14 +954,15 @@ realizeDefInstruction _ i _ _ = do
   str <- valueToString i
   error $ "Unknown instruction: "++str
      
-memoryRead :: Ptr Instruction
+memoryRead :: Maybe (Ptr CallInst)
+           -> Ptr Instruction
            -> InstructionValue (ProgramState,ProgramInput)
            -> Edge (ProgramState,ProgramInput)
            -> Realization (ProgramState,ProgramInput)
            -> InstructionValue (ProgramState,ProgramInput)
-memoryRead origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
-                                    , symbolicValue = f
-                                    }) edge real
+memoryRead th origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
+                                       , symbolicValue = f
+                                       }) edge real
   = InstructionValue { symbolicType = tp
                      , symbolicValue = val
                      , alternative = Nothing
@@ -943,22 +971,27 @@ memoryRead origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
     allEvents = Map.intersection (events real) (observedEvents edge)
     startVal inp@(ps,_)
       = let ValPtr trgs _ = f inp
-            condMp = Map.mapWithKey (\trg (cond,dyn)
-                                     -> let idx = idxList (offsetPattern trg) dyn
-                                            (res,_,_) = accessAllocTyped tp symITEs
-                                                        (\val _ -> (val,val,()))
-                                                        idx
-                                                        (case Map.lookup (memoryLoc trg) (memory ps) of
-                                                          Just r -> r
-                                                          Nothing -> error $ "Memory location "++show (memoryLoc trg)++" not defined.") ()
-                                        in (res,cond)
-                                    ) trgs
+            condMp = Map.mapWithKey
+                     (\trg (cond,dyn)
+                      -> let idx = idxList (offsetPattern trg) dyn
+                             (res,_,_) = accessAllocTyped tp symITEs
+                                         (\val _ -> (val,val,()))
+                                         idx
+                                         (case (case memoryLoc trg of
+                                                  AllocTrg i -> Map.lookup (Left i) (memory ps)
+                                                  GlobalTrg g -> Map.lookup (Right g) (memory ps)
+                                                  LocalTrg l
+                                                    -> Map.lookup l (threadGlobals $ getThreadState th ps)) of
+                                           Just r -> r
+                                           Nothing -> error $ "Memory location "++show (memoryLoc trg)++" not defined.") ()
+                         in (res,cond)
+                     ) trgs
         in case Map.elems condMp of
             [] -> error $ "Pointer has zero targets."
             xs -> symITEs xs
     val inp = let ValPtr trgs _ = f inp
               in foldl (\cval ev -> case ev of
-                         WriteEvent trg cont writeOrigin
+                         WriteEvent trg cont th' writeOrigin
                            -> case [ mkAnd (cond1:cond2:match)
                                    | (ptr1,(cond1,idx1)) <- Map.toList trgs
                                    , (ptr2,info2) <- Map.toList trg
@@ -992,14 +1025,15 @@ memoryRead origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp)
         Just t -> trace ("offsetAlloc "++show (offsetPattern l)++" "++show t) $
                   firstType $ offsetAlloc (offsetPattern l) t-}
 
-memoryWrite :: Ptr Instruction
+memoryWrite :: Maybe (Ptr CallInst)
+            -> Ptr Instruction
             -> (inp -> SMTExpr Bool)
             -> InstructionValue inp
             -> InstructionValue inp
             -> Edge inp
             -> Realization inp
             -> (Edge inp,Realization inp)
-memoryWrite origin act ptr val edge real
+memoryWrite th origin act ptr val edge real
   = (edge { observedEvents = Map.insert (Map.size (events real)) ()
                              (observedEvents edge) },
      real { events = Map.insert (Map.size (events real))
@@ -1010,6 +1044,7 @@ memoryWrite origin act ptr val edge real
                                                 in ((act inp) .&&. cond,idx)
                                             ) (tpPtr $ symbolicType ptr)
                                  , writeContent = val
+                                 , eventThread = th
                                  , eventOrigin = origin })
                      (events real) })
 
@@ -1086,6 +1121,14 @@ realizeValue thread (castDown -> Just i) edge real = do
                                   , symbolicValue = const $ ValInt $ constant $ fromIntegral rv
                                   , alternative = Just (IntConst $ fromIntegral rv)
                                   },real)
+realizeValue thread (castDown -> Just (null::Ptr ConstantPointerNull)) edge real = do
+  nullTp <- getType null >>= sequentialTypeGetElementType >>= translateType real
+  return (InstructionValue { symbolicType = TpPtr { tpPtr = Map.empty
+                                                  , tpPtrType = nullTp }
+                           , symbolicValue = const $ ValPtr { valPtr = Map.empty
+                                                            , valPtrType = nullTp }
+                           , alternative = Nothing
+                           },real)
 realizeValue thread (castDown -> Just undef) edge real = do
   tp <- getType (undef::Ptr UndefValue)
   res <- defaultValue tp
@@ -1099,17 +1142,24 @@ realizeValue thread (castDown -> Just undef) edge real = do
                                                 then const $ ValBool $ constant False
                                                 else const $ ValInt $ constant 0
                               , alternative = Just (IntConst 0) }
-realizeValue thread (castDown -> Just glob) edge real
-  = return (InstructionValue { symbolicType = TpPtr (Map.singleton ptr ()) tp
-                             , symbolicValue = \_ -> ValPtr (Map.singleton ptr (constant True,[])) tp
-                             , alternative = Nothing
-                             },real)
-  where
-    ptr = MemoryPtr { memoryLoc = Right glob
-                    , offsetPattern = [] }
-    tp = case Map.lookup (Right glob) (memoryDesc $ stateAnnotation real) of
-      Just (TpStatic _ t) -> t
-      Just (TpDynamic t) -> t
+realizeValue thread (castDown -> Just glob) edge real = do
+  isLocal <- globalVariableIsThreadLocal glob
+  let ptr = MemoryPtr { memoryLoc = if isLocal then LocalTrg glob else GlobalTrg glob
+                      , offsetPattern = [] }
+      tp = if isLocal
+           then case Map.lookup glob (threadGlobalDesc $
+                                      getThreadStateDesc thread $
+                                      stateAnnotation real) of
+                  Just (TpStatic _ t) -> t
+                  Just (TpDynamic t) -> t
+           else case Map.lookup (Right glob) (memoryDesc $ stateAnnotation real) of
+                  Just (TpStatic _ t) -> t
+                  Just (TpDynamic t) -> t
+  return (InstructionValue { symbolicType = TpPtr (Map.singleton ptr ()) tp
+                           , symbolicValue = \_ -> ValPtr (Map.singleton ptr (constant True,[])) tp
+                           , alternative = Nothing
+                           },real)
+    
 realizeValue thread (castDown -> Just cexpr) edge real = do
   instr <- constantExprAsInstruction (cexpr::Ptr ConstantExpr)
   realizeDefInstruction thread instr edge real
@@ -1138,7 +1188,7 @@ translateType _ (castDown -> Just itp) = do
     _ -> return $ Singleton TpInt
 translateType real (castDown -> Just ptp) = do
   subType <- sequentialTypeGetElementType (ptp::Ptr PointerType) >>= translateType real
-  return $ Singleton $ TpPtr (allPtrsOfType subType (memoryDesc $ stateAnnotation real)) subType
+  return $ Singleton $ TpPtr (allPtrsOfType subType (allMemoryTypes real)) subType
 translateType real (castDown -> Just struct) = do
   hasName <- structTypeHasName struct
   name <- if hasName
@@ -1189,13 +1239,14 @@ translateType0 tp = do
   typeDump tp
   error "Cannot translate type"
 
-typeBasedReachability :: Map MemoryLoc AllocType -> Map MemoryLoc AllocType
+typeBasedReachability :: Map MemoryTrg AllocType
+                      -> Map MemoryTrg AllocType
 typeBasedReachability mem
   = Map.mapWithKey
     (\loc tp -> mapTypes (mapPointer (\stp _ -> allPtrsOfType stp mem)) tp
     ) mem  
 
-typeBasedArgumentReachability :: Map MemoryLoc AllocType
+typeBasedArgumentReachability :: Map MemoryTrg AllocType
                               -> Map (Ptr CallInst) ThreadStateDesc
                               -> Map (Ptr CallInst) ThreadStateDesc
 typeBasedArgumentReachability mem
@@ -1205,8 +1256,8 @@ typeBasedArgumentReachability mem
            _ -> ts)
 
 threadBasedReachability :: Map (Ptr CallInst) ()
-                        -> Map MemoryLoc AllocType
-                        -> Map MemoryLoc AllocType
+                        -> Map MemoryTrg AllocType
+                        -> Map MemoryTrg AllocType
 threadBasedReachability threads
   = fmap (mapTypes (\tp -> case tp of
                      TpThreadId _ -> TpThreadId threads
@@ -1232,11 +1283,12 @@ instance Monoid (Edge inp) where
                     AlwaysDefined act -> SometimesDefined act
                     _ -> ev)
 
-realizeBlock :: Maybe (Ptr CallInst) -> Ptr BasicBlock -> Int
+realizeBlock :: TranslationOptions
+             -> Maybe (Ptr CallInst) -> Ptr BasicBlock -> Int
              -> ProgramInfo
              -> Realization (ProgramState,ProgramInput)
              -> IO (Realization (ProgramState,ProgramInput))
-realizeBlock thread blk sblk info real = do
+realizeBlock opts thread blk sblk info real = do
   name <- subBlockName blk sblk
   instrs <- getSubBlockInstructions blk sblk
   let dontStep = Map.null $ threadStateDesc $ stateAnnotation real
@@ -1303,7 +1355,7 @@ realizeBlock thread blk sblk info real = do
       real1 = real { gateMp = gates2
                    , instructions = instrs1
                    , edges = Map.delete (thread,blk,sblk) (edges real) }
-  realizeInstructions thread blk sblk (const act) instrs edge1 real1
+  realizeInstructions opts thread blk sblk (const act) instrs edge1 real1
   where
     edge = case Map.lookup (thread,blk,sblk) (edges real) of
       Nothing -> mempty
@@ -1426,30 +1478,47 @@ outputValues real = mp2
           Nothing -> error $ "outputValues: Cannot find old value of "++show instr
 
 outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInput)
-          -> (Map MemoryLoc AllocVal,Realization (ProgramState,ProgramInput))
+          -> (Map MemoryLoc AllocVal,Map (Maybe (Ptr CallInst)) (Map (Ptr GlobalVariable) AllocVal),Realization (ProgramState,ProgramInput))
 outputMem real inp
   = Map.foldlWithKey
-    (\(mem,real) n ev -> case ev of
-      WriteEvent trgs cont _
+    (\(mem,lmem,real) n ev -> case ev of
+      WriteEvent trgs cont wth _
         -> Map.foldlWithKey
-           (\(mem,real) trg cond
+           (\(mem,lmem,real) trg cond
             -> let (cond',dyn) = cond inp
                    idx = idxList (offsetPattern trg) dyn
-                   val = case Map.lookup (memoryLoc trg) mem of
-                          Just v -> v
-                   (_,nval,ngates) = accessAllocTyped (symbolicType cont) (const ())
-                                     (\old gates -> let (new,ngates) = addSymGate gates
-                                                                       (symbolicType cont)
-                                                                       (\inp -> symITE cond'
-                                                                                (symbolicValue cont inp)
-                                                                                old)
-                                                                       (Just $ "write"++show n)
-                                                    in ((),new,ngates)
-                                     ) idx val (gateMp real)
-               in (Map.insert (memoryLoc trg) nval mem,
-                   real { gateMp = ngates })
-           ) (mem,real) trgs
-    ) (memory (fst inp),real) (events real)
+               in case memoryLoc trg of
+                    LocalTrg g
+                      -> let Just vals = Map.lookup wth lmem
+                             Just val = Map.lookup g vals
+                             (_,nval,ngates) = accessWrite cont n idx cond' val (gateMp real)
+                             nlmem = Map.insert wth (Map.insert g nval vals) lmem
+                         in (mem,nlmem,real { gateMp = ngates })
+                    _ -> let loc = case memoryLoc trg of
+                                     AllocTrg i -> Left i
+                                     GlobalTrg g -> Right g
+                             val = case Map.lookup loc mem of
+                                     Just v -> v
+                             (_,nval,ngates) = accessWrite cont n idx cond' val (gateMp real)
+                         in (Map.insert loc nval mem,lmem,
+                             real { gateMp = ngates })
+           ) (mem,lmem,real) trgs
+    ) (memory (fst inp),
+       Map.union (Map.singleton Nothing (threadGlobals $ mainState $ fst inp))
+                 (Map.mapKeysMonotonic Just $
+                  fmap (\(_,ts) -> threadGlobals ts) (threadState $ fst inp)),
+       real) (events real)
+  where
+    accessWrite cont n idx cond' val gates
+      = accessAllocTyped (symbolicType cont) (const ())
+        (\old gates -> let (new,ngates) = addSymGate gates
+                                          (symbolicType cont)
+                                          (\inp -> symITE cond'
+                                                   (symbolicValue cont inp)
+                                                   old)
+                                          (Just $ "write"++show n)
+                       in ((),new,ngates)
+        ) idx val gates
 
 {-outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInput) -> Map MemoryLoc AllocVal
 outputMem real inp
@@ -1469,8 +1538,8 @@ outputMem real inp
   where
     mem0 = memory (fst inp)-}
 
-getConstant :: Ptr Constant -> IO (Struct SymVal)
-getConstant (castDown -> Just cint) = do
+getConstant :: Maybe (Realization inp) -> Ptr Constant -> IO (Struct SymVal)
+getConstant _ (castDown -> Just cint) = do
   tp <- getType cint
   bw <- getBitWidth tp
   v <- constantIntGetValue cint
@@ -1478,7 +1547,7 @@ getConstant (castDown -> Just cint) = do
   if bw==1
     then return $ Singleton $ ValBool $ constant $ rv/=0
     else return $ Singleton $ ValInt $ constant $ fromIntegral rv
-getConstant (castDown -> Just czero) = do
+getConstant _ (castDown -> Just czero) = do
   tp <- getType (czero::Ptr ConstantAggregateZero)
   zeroInit tp
   where
@@ -1515,11 +1584,10 @@ getConstant (castDown -> Just czero) = do
        num <- arrayTypeGetNumElements arrTp
        zeroEl <- zeroInit stp
        return (Struct $ genericReplicate num zeroEl)
-
-getConstant (castDown -> Just cstruct) = do
+getConstant real (castDown -> Just cstruct) = do
   tp <- getType (cstruct::Ptr ConstantStruct)
   num <- structTypeGetNumElements tp
-  vals <- mapM (\i -> constantGetAggregateElement cstruct i >>= getConstant
+  vals <- mapM (\i -> constantGetAggregateElement cstruct i >>= getConstant real
                ) [0..num-1]
   return $ Struct vals
 {-getConstant (castDown -> Just cstruct) = do
@@ -1527,11 +1595,26 @@ getConstant (castDown -> Just cstruct) = do
   name <- structTypeGetName tp >>= stringRefData
   case name of
    "struct.pthread_mutex_t" -> return $ ValBool (constant False)-}
-getConstant c = do
+getConstant real (castDown -> Just (ptr::Ptr ConstantPointerNull)) = do
+  tp <- getType ptr
+  stp <- sequentialTypeGetElementType tp
+  rtp <- case real of
+    Just real' -> translateType real' stp
+    Nothing -> translateType0 stp
+  return (Singleton (ValPtr { valPtr = Map.empty
+                            , valPtrType = rtp }))
+getConstant real (castDown -> Just (cvec::Ptr ConstantDataArray)) = do
+  sz <- constantDataSequentialGetNumElements cvec
+  els <- mapM (\i -> do
+                 c <- constantDataSequentialGetElementAsConstant cvec i
+                 getConstant real c
+              ) [0..sz-1]
+  return $ Struct els
+getConstant _ c = do
   str <- valueToString c
   error $ "getConstant: "++str
 
-allPtrsOfType :: Struct SymType -> Map MemoryLoc AllocType -> Map MemoryPtr ()
+allPtrsOfType :: Struct SymType -> Map MemoryTrg AllocType -> Map MemoryPtr ()
 allPtrsOfType tp mem
   = Map.fromList [ (MemoryPtr loc idx,())
                  | (loc,tp') <- Map.toList mem

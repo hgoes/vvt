@@ -3,15 +3,20 @@ module Main where
 --import Realization.Common
 import Realization.Threaded
 import Realization.Threaded.Translation
+import Realization.Threaded.Options
 import Realization.Lisp
 
 import LLVM.FFI
 import Foreign.Ptr
 
+defaultOptions :: TranslationOptions
+defaultOptions = TranslationOptions { dedicatedErrorState = True
+                                    , safeSteps = True }
+
 main = do
   (mod,fun) <- getProgram "main"
-  real <- realizeProgram mod fun
-  lisp <- toLispProgram real
+  real <- realizeProgram defaultOptions mod fun
+  lisp <- toLispProgram defaultOptions real
   print $ programToLisp lisp
 
 getProgram :: String -> IO (Ptr Module,Ptr Function)

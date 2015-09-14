@@ -12,15 +12,18 @@ import qualified Data.Map as Map
 import Data.Typeable
 import Text.Show
 import System.IO.Unsafe
+import Data.List (zipWith4)
 
 data ThreadState = ThreadState { latchBlocks :: Map (Ptr BasicBlock,Int) (SMTExpr Bool)
                                , latchValues :: Map (Ptr Instruction) SymVal
                                , threadArgument :: Maybe (Ptr Argument,SymVal)
+                               , threadGlobals :: Map (Ptr GlobalVariable) AllocVal
                                } deriving (Typeable,Eq,Ord,Show)
 
 data ThreadStateDesc = ThreadStateDesc { latchBlockDesc :: Map (Ptr BasicBlock,Int) ()
                                        , latchValueDesc :: Map (Ptr Instruction) SymType
                                        , threadArgumentDesc :: Maybe (Ptr Argument,SymType)
+                                       , threadGlobalDesc :: Map (Ptr GlobalVariable) AllocType
                                        } deriving (Typeable,Eq,Ord,Show)
 
 data ProgramState = ProgramState { mainState :: ThreadState
@@ -139,7 +142,8 @@ instance Args ThreadState where
         (ns,res) <- foldExprs f s2 (case threadArgument ts of
                                      Just l -> snd l) tp
         return (ns,Just (val,res))
-    return (s3,ThreadState blk instrs arg)
+    (s4,mem) <- foldExprs f s3 (threadGlobals ts) (threadGlobalDesc ann)
+    return (s4,ThreadState blk instrs arg mem)
   foldsExprs f s lst ann = do
     (s1,blks,blk) <- foldsExprs f s [ (latchBlocks ts,b) | (ts,b) <- lst ]
                      (latchBlockDesc ann)
@@ -151,13 +155,16 @@ instance Args ThreadState where
         (ns,args,arg) <- foldsExprs f s2 [ (case threadArgument ts of
                                              Just v -> snd v,b) | (ts,b) <- lst ] tp
         return (ns,fmap (\v -> Just (val,v)) args,Just (val,arg))
-    return (s3,zipWith3 ThreadState blks instrs args,ThreadState blk instr arg)
+    (s4,mems,mem) <- foldsExprs f s3 [ (threadGlobals ts,b) | (ts,b) <- lst ]
+                     (threadGlobalDesc ann)
+    return (s4,zipWith4 ThreadState blks instrs args mems,ThreadState blk instr arg mem)
   extractArgAnnotation ts = ThreadStateDesc
                             (extractArgAnnotation (latchBlocks ts))
                             (extractArgAnnotation (latchValues ts))
                             (case threadArgument ts of
                               Nothing -> Nothing
                               Just (val,v) -> Just (val,extractArgAnnotation v))
+                            (extractArgAnnotation (threadGlobals ts))
   toArgs ann exprs = do
     (blk,es1) <- toArgs (latchBlockDesc ann) exprs
     (instr,es2) <- toArgs (latchValueDesc ann) es1
@@ -166,18 +173,21 @@ instance Args ThreadState where
       Just (val,tp) -> do
         (v,nes) <- toArgs tp es2
         return (Just (val,v),nes)
-    return (ThreadState blk instr arg,es3)
+    (mem,es4) <- toArgs (threadGlobalDesc ann) es3
+    return (ThreadState blk instr arg mem,es4)
   fromArgs ts = fromArgs (latchBlocks ts) ++
                 fromArgs (latchValues ts) ++
                 (case threadArgument ts of
                   Nothing -> []
-                  Just (_,v) -> fromArgs v)
+                  Just (_,v) -> fromArgs v)++
+                fromArgs (threadGlobals ts)
   getTypes ts ann = getTypes (latchBlocks ts) (latchBlockDesc ann) ++
                     getTypes (latchValues ts) (latchValueDesc ann) ++
                     (case threadArgumentDesc ann of
                       Nothing -> []
                       Just (_,tp) -> getTypes (case threadArgument ts of
-                                                Just (_,v) -> v) tp)
+                                                Just (_,v) -> v) tp)++
+                    getTypes (threadGlobals ts) (threadGlobalDesc ann)
 
 instance Args ProgramState where
   type ArgAnnotation ProgramState = ProgramStateDesc
@@ -230,6 +240,7 @@ data RevVar = LatchBlock (Maybe (Ptr CallInst)) (Ptr BasicBlock) Int
             | ThreadActivation (Ptr CallInst)
             | ThreadStep (Maybe (Ptr CallInst))
             | MemoryValue MemoryLoc RevAlloc
+            | LocalMemoryValue (Maybe (Ptr CallInst)) (Ptr GlobalVariable) RevAlloc
             | SizeValue MemoryLoc
             deriving (Typeable,Eq,Ord)
 
@@ -270,6 +281,9 @@ instance Show RevVar where
   show (ThreadActivation th) = "thread-act()"
   show (ThreadStep th) = "thread-step()"
   show (MemoryValue loc rev) = "mem("++showMemoryLoc loc ""++" ~> "++show rev++")"
+  show (LocalMemoryValue th loc rev) = unsafePerformIO $ do
+    n <- getNameString loc
+    return $ "loc_mem("++n++" ~> "++show rev++")"
   show (SizeValue loc) = "size("++showMemoryLoc loc ""++")"
 
 instance Show RevValue where
@@ -311,6 +325,7 @@ debugInputs psd isd = (ps,is)
       = ThreadState { latchBlocks = lb
                     , latchValues = lv
                     , threadArgument = ta
+                    , threadGlobals = tm
                     }
       where
         lb = Map.mapWithKey (\(blk,sblk) _ -> InternalObj (LatchBlock th blk sblk) ()
@@ -320,6 +335,7 @@ debugInputs psd isd = (ps,is)
         ta = case threadArgumentDesc tsd of
           Nothing -> Nothing
           Just (arg,tp) -> Just (arg,debugValue (ThreadArgument th arg) tp)
+        tm = Map.mapWithKey (debugLocalAllocVal th) (threadGlobalDesc tsd)
     debugThreadInput th tsd
       = ThreadInput { step = InternalObj (ThreadStep th) ()
                     , nondets = Map.mapWithKey
@@ -362,3 +378,14 @@ debugInputs psd isd = (ps,is)
                                             (\rev -> MemoryValue loc (RevDynamic idx rev)) tp
                                 ) [] tp)
         (InternalObj (SizeValue loc) ())
+    debugLocalAllocVal th loc (TpStatic n tp)
+      = ValStatic [ debugStruct (\idx tp -> debugValue
+                                            (\rev -> LocalMemoryValue th loc
+                                                     (RevStatic i idx rev)) tp
+                                ) [] tp | i <- [0..n-1]]
+    debugLocalAllocVal th loc (TpDynamic tp)
+      = ValDynamic (debugStruct (\idx tp -> debugArr
+                                            (\rev -> LocalMemoryValue th loc
+                                                     (RevDynamic idx rev)) tp
+                                ) [] tp)
+        (InternalObj (SizeValue (Right loc)) ())
