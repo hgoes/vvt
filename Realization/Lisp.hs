@@ -42,7 +42,7 @@ data LispProgram
                 , programGates :: Map T.Text (LispType,LispVar)
                 , programNext :: Map T.Text LispVar
                 , programProperty :: [SMTExpr Bool]
-                , programInit :: Map T.Text LispVar
+                , programInit :: Map T.Text LispValue
                 , programInvariant :: [SMTExpr Bool]
                 , programAssumption :: [SMTExpr Bool]
                 , programPredicates :: [SMTExpr Bool]
@@ -124,7 +124,9 @@ parseLispProgram descr = case descr of
            initAssign = case Map.lookup "init" mp of
              Nothing -> Map.empty
              Just xs -> Map.fromList [ case parseLispTopVar Map.empty Map.empty Map.empty def of
-                                        Just v -> (name,v)
+                                        Just v -> case v of
+                                          LispConstr val -> (name,val)
+                                          _ -> error $ "Init cannot be an expression: "++show def
                                         Nothing -> error $ "Cannot parse init value: "++show def
                                      | L.List [L.Symbol name,def] <- xs ]
            invar = case Map.lookup "invariant" mp of
@@ -209,7 +211,7 @@ programToLisp prog = L.List ([L.Symbol "program"]++
     propLst = fmap (printLispExpr (programDataTypes prog)
                    ) (programProperty prog)
     initAssignLst = [ L.List [L.Symbol name
-                             ,printLispVar (programDataTypes prog) def]
+                             ,printLispValue (programDataTypes prog) def]
                     | (name,def) <- Map.toList (programInit prog) ]
     invarLst = fmap (printLispExpr (programDataTypes prog)
                     ) (programInvariant prog)
@@ -730,7 +732,7 @@ instance TransitionRelation LispProgram where
                                  (NamedVar name State
                                   (case Map.lookup name (programState prog) of
                                      Just (st,_) -> st))
-                                 val) ()
+                                 (LispConstr val)) ()
                   | (name,val) <- Map.toList (programInit prog) ] of
         [] -> constant True
         [e] -> e

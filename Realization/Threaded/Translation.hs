@@ -267,7 +267,7 @@ toLispProgram opts real' = do
   nxt4 <- foldlM (\mp (loc,val) -> do
                      let Just tp = Map.lookup loc (memoryDesc $ stateAnnotation real)
                      name <- memLocName loc
-                     return $ Map.insert name (toLispAllocExpr gateTrans tp val) mp
+                     return $ Map.insert name (L.LispConstr $ toLispAllocExpr gateTrans tp val) mp
                  ) nxt3 (Map.toList mem)
   nxt5 <- foldlM (\mp (th,vals) -> do
                      let tName = case th of
@@ -279,7 +279,7 @@ toLispProgram opts real' = do
                                 let Just tp = Map.lookup glob (threadGlobalDesc $ thd)
                                 name <- instrName glob
                                 return $ Map.insert (T.append tName name)
-                                         (toLispAllocExpr gateTrans tp val) mp
+                                         (L.LispConstr $ toLispAllocExpr gateTrans tp val) mp
                             ) mp (Map.toList vals)
                  ) nxt4 (Map.toList lmem)
   nxt6 <- foldlM (\mp th -> do
@@ -322,9 +322,8 @@ toLispProgram opts real' = do
                               ) old acts) mp
                  ) nxt6 (Map.toList $ threadStateDesc $ stateAnnotation real)
   let init0' = if dedicatedErrorState opts
-               then [("error",L.LispConstr
-                              (L.LispValue (L.Size [])
-                               (L.Singleton (L.Val (constant False)))))]
+               then [("error",L.LispValue (L.Size [])
+                               (L.Singleton (L.Val (constant False))))]
                else []
   init1' <- mapM (\(glob,val) -> do
                     isLocal <- globalVariableIsThreadLocal glob
@@ -347,22 +346,22 @@ toLispProgram opts real' = do
   init2' <- mapM (\th -> do
                      let Just name = Map.lookup th threadNames
                      return (T.pack $ "run-"++name,
-                             L.LispConstr (L.LispValue (L.Size [])
-                                           (L.Singleton (L.Val (constant False)))))
+                             L.LispValue (L.Size [])
+                              (L.Singleton (L.Val (constant False))))
                  ) (Map.keys $ threadStateDesc $ stateAnnotation real)
   init3' <- mapM (\blk -> do
                      name <- blockName blk
                      return (T.append "main-" name,
-                             L.LispConstr (L.LispValue (L.Size [])
-                                           (L.Singleton (L.Val (constant $ blk==(mainBlock real,0))))))
+                             L.LispValue (L.Size [])
+                              (L.Singleton (L.Val (constant $ blk==(mainBlock real,0)))))
                  ) (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
   init4' <- mapM (\(th,blk) -> do
                      let Just tName = Map.lookup th threadNames
                      mapM (\blk' -> do
                               name <- blockName blk'
                               return (T.append (T.pack $ tName++"-") name,
-                                      L.LispConstr (L.LispValue (L.Size [])
-                                                    (L.Singleton (L.Val (constant $ blk'==(blk,0))))))
+                                      L.LispValue (L.Size [])
+                                       (L.Singleton (L.Val (constant $ blk'==(blk,0)))))
                           ) (Map.keys $ latchBlockDesc $
                              case Map.lookup th (threadStateDesc $ stateAnnotation real) of
                                Just r -> r)
@@ -760,12 +759,12 @@ toLispExprs' trans (Singleton (TpVector tps)) (Singleton (ValVector vals))
 toLispExprs' trans (Struct tps) (Struct fs)
   = L.Struct (zipWith (toLispExprs' trans) tps fs)
 
-toLispAllocExpr :: GateTranslation -> AllocType -> AllocVal -> L.LispVar
+toLispAllocExpr :: GateTranslation -> AllocType -> AllocVal -> L.LispValue
 toLispAllocExpr trans (TpStatic n tp) (ValStatic vals)
-  = L.LispConstr $ L.LispValue (L.Size [])
+  = L.LispValue (L.Size [])
     (L.Struct $ fmap (toLispExprs' trans tp) vals)
 toLispAllocExpr trans (TpDynamic tp) (ValDynamic vals sz)
-  = L.LispConstr $ L.LispValue (L.Size [L.SizeElement $ toLispExpr trans sz])
+  = L.LispValue (L.Size [L.SizeElement $ toLispExpr trans sz])
     (toLispArray vals)
   where
     toLispArray (Singleton (ArrBool arr)) = L.Singleton $ L.Val (toLispExpr trans arr)

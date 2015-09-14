@@ -63,7 +63,7 @@ linearExpressions prog = lin5
                  ) lin1 (programNext prog)
     lin3 = foldl (\lin prop -> linearExpr prop lin
                  ) lin2 (programProperty prog)
-    lin4 = foldl (\lin init -> linearVar init lin
+    lin4 = foldl (\lin init -> linearValue init lin
                  ) lin3 (programInit prog)
     lin5 = foldl (\lin inv -> linearExpr inv lin
                  ) lin4 (programInvariant prog)

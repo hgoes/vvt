@@ -58,7 +58,7 @@ bottomUp deps prog = bottomUp' initTodo initFacts
     initTodo = Set.union
                (Map.keysSet (programState prog))
                (Map.keysSet (programGates prog))
-    initFacts = fmap (\v -> propagateUp (const empty) v
+    initFacts = fmap (\v -> propagateUp (const empty) (LispConstr v)
                      ) (programInit prog)
     bottomUp' todo facts = let (ntodo,nfacts) = bottomUp'' (Set.toList todo) Set.empty facts
                            in if Set.null ntodo

@@ -271,7 +271,7 @@ makeInitState prog extr
   = mapM (\(name,init) -> do
              let expr = InternalObj (LispEq (NamedVar name State
                                              (fst $ (programState prog) Map.! name))
-                                     init) ()
+                                     (LispConstr init)) ()
              (init',_) <- translateNonLinExpr prog extr expr
              return init'
          ) (Map.toList $ programInit prog)
@@ -282,7 +282,7 @@ makeInitPCs prog extr = do
   let pcs = Map.intersection (programInit prog) (pcVars extr)
   runStateT (mapM (\val -> do
                       extr <- get
-                      (nval,nextr) <- lift $ translateVar prog extr val
+                      (nval,nextr) <- lift $ translateValue prog extr val
                       put nextr
                       rval <- lift $ toNonLinValue nval
                       lift $ unliftArgs rval getValue
@@ -294,7 +294,7 @@ makeInitLins prog extr
   = runStateT (do
                   base <- mapM (\val -> do
                                    extr <- get
-                                   (nval,nextr) <- lift $ translateVar prog extr val
+                                   (nval,nextr) <- lift $ translateValue prog extr val
                                    put nextr
                                    return nval
                                ) (programInit prog)  >>=
