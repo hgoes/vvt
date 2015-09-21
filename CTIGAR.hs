@@ -106,6 +106,7 @@ data IC3Stats = IC3Stats { startTime :: UTCTime
 data InterpolationState mdl = InterpolationState { interpCur :: TR.State mdl
                                                  , interpNxt :: TR.State mdl
                                                  , interpInputs :: TR.Input mdl
+                                                 , interpNxtInputs :: TR.Input mdl
                                                  , interpAsserts :: [SMTExpr Bool]
                                                  , interpAnte :: Either InterpolationGroup [SMTExpr Bool]
                                                  , interpPost :: Maybe InterpolationGroup
@@ -328,7 +329,7 @@ runIC3 cfg act = do
     inp' <- TR.createInputVars "inp.nxt." mdl
     (asserts,real1') <- TR.declareAssertions mdl nxt inp' (TR.startingProgress mdl)
     (assumps2,real2') <- TR.declareAssumptions mdl nxt inp' real1'
-    --assert (TR.stateInvariant mdl inp' nxt)
+    assert (TR.stateInvariant mdl inp' nxt)
     mapM_ assert assumps2
     return $ LiftingState cur inp nxt inp' asserts
   initiation <- createSMTPool initiationBackend $ do
@@ -346,6 +347,7 @@ runIC3 cfg act = do
       post <- interpolationGroup
       cur <- TR.createStateVars "" mdl
       inp <- TR.createInputVars "" mdl
+      nxtInp <- TR.createInputVars "" mdl
       (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) (TR.startingProgress mdl)
       (asserts,real2) <- TR.declareAssertions mdl cur inp real1
       (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
@@ -353,10 +355,12 @@ runIC3 cfg act = do
       mapM_ (\asump -> assertInterp asump ante) assumps
       mapM_ (\assert -> assertInterp assert ante) asserts
       assertInterp (TR.stateInvariant mdl inp cur) ante
+      assertInterp (TR.stateInvariant mdl nxtInp nxt') post
       assertInterp (argEq nxt' nxt) ante
       return $ InterpolationState { interpCur = cur
                                   , interpNxt = nxt'
                                   , interpInputs = inp
+                                  , interpNxtInputs = nxtInp
                                   , interpAsserts = asserts
                                   , interpAnte = Left ante
                                   , interpPost = Just post
@@ -366,6 +370,7 @@ runIC3 cfg act = do
       else do
       cur <- TR.createStateVars "" mdl
       inp <- TR.createInputVars "" mdl
+      nxtInp <- TR.createInputVars "" mdl
       (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
       (asserts,real2) <- TR.declareAssertions mdl cur inp real1
       (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
@@ -380,15 +385,18 @@ runIC3 cfg act = do
                          assert ass'
                          return name
                      ) asserts
-      (invExpr,namedInvExpr) <- named "invariant" (TR.stateInvariant mdl inp cur)
+      (invExpr1,namedInvExpr1) <- named "invariant1" (TR.stateInvariant mdl inp cur)
+      (invExpr2,namedInvExpr2) <- named "invariant2" (TR.stateInvariant mdl nxtInp nxt)
       (eqExpr,namedEqExpr) <- named "equality" (argEq nxt' nxt)
-      assert invExpr
+      assert invExpr1
+      assert invExpr2
       assert eqExpr
       return $ InterpolationState { interpCur = cur
                                   , interpNxt = nxt'
                                   , interpInputs = inp
+                                  , interpNxtInputs = nxtInp
                                   , interpAsserts = exprs2
-                                  , interpAnte = Right (exprs1++exprs2++[namedInvExpr,namedEqExpr])
+                                  , interpAnte = Right (exprs1++exprs2++[namedInvExpr1,namedInvExpr2,namedEqExpr])
                                   , interpPost = Nothing
                                   , interpReverse = rev
                                   , interpUsingMathSAT = False
@@ -444,9 +452,9 @@ liftState lifting st = do
       succ'' <- readIORef succ'
       return $ \lft -> (not' $ app and' [ cond
                                         | Just cond <- assignPartial (liftNxt lft) (stateLifted succ'')
-                                        ]) .&&.
-                       (app and' [ cond
-                                 | Just cond <- assignPartial (liftNxtInputs lft) (stateLiftedInputs succ'')])
+                                        ]) {-.||.
+                       (not' $ app and' [ cond
+                                        | Just cond <- assignPartial (liftNxtInputs lft) (stateLiftedInputs succ'')])-}
   (part,partInp) <- withSMTPool lifting $
                     \vars' -> lift' ((liftCur vars'),
                                      liftInputs vars',
@@ -461,12 +469,14 @@ lift' :: (PartialArgs st,PartialArgs inp) => (st,inp,inp)
 lift' (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
   let assignedCur = assignPartial cur (unmaskValue cur vcur)
       assignedInp = assignPartial inp (unmaskValue inp vinp)
+  comment "State:"
   (cmp1,len_st) <- foldlM (\(mp,n) cond -> case cond of
                             Nothing -> return (mp,n+1)
                             Just cond' -> do
                               cid <- assertId cond'
                               return (Map.insert cid (Left n) mp,n+1)
                           ) (Map.empty,0) assignedCur
+  comment "Input:"
   (cmp2,len_inp) <- foldlM (\(mp,n) cond -> case cond of
                              Nothing -> return (mp,n+1)
                              Just cond' -> do
@@ -474,7 +484,8 @@ lift' (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
                                return (Map.insert cid (Right n) mp,n+1)
                            ) (cmp1,0) assignedInp
   --assert $ argEq inp (liftArgs vinp (extractArgAnnotation inp))
-  assert $ argEq inp' (liftArgs vinp' (extractArgAnnotation inp'))
+  --assert $ argEq inp' (liftArgs vinp' (extractArgAnnotation inp'))
+  comment "Next state:"
   assert vnxt
   res <- checkSat
   when res $ error $ "The model appears to be non-deterministic."
@@ -564,10 +575,10 @@ lift toLift inps nxtInps succ = do
                           return (i+1,Map.insert cid i mp)
                       ) (0,Map.empty) (toDomainTerms toLift domain (liftCur st))
     assert $ argEq (liftInputs st) (liftArgs inps (TR.annotationInput mdl))
-    assert $ argEq (liftNxtInputs st) (liftArgs nxtInps (TR.annotationInput mdl))
+    --assert $ argEq (liftNxtInputs st) (liftArgs nxtInps (TR.annotationInput mdl))
     case succ of
       Nothing -> assert $ app and' (liftNxtAsserts st)
-      Just succ_abstr -> assert $ toDomainTerm succ_abstr domain (liftCur st)
+      Just succ_abstr -> assert $ not' $ toDomainTerm succ_abstr domain (liftNxt st)
     res <- checkSat
     if res
       then return Nothing
@@ -617,6 +628,13 @@ abstractConsecution fi abs_st succ = do
                           return (i+1,Map.insert cid i mp)
                       ) (0,Map.empty) (toDomainTerms abs_st (ic3Domain env)
                                        (consecutionNxtState vars))
+    -- Henning: This tries to take the lifted inputs of the successor into account (doesn't do anything yet)
+    {-case succ of
+     Nothing -> return ()
+     Just s -> do
+       succ' <- liftIO $ readIORef s
+       assert $ app and' $ assignPartial' (consecutionNxtInput vars)
+         (stateLiftedInputs succ')-}
     res <- checkSat
     if res
       then (do
@@ -649,10 +667,10 @@ concreteConsecution fi st succ = do
   env <- get
   res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
     assert (app or' $ fmap not' $ assignPartial' (consecutionState vars) st)
-    do
+    {-do
       succ' <- liftIO $ readIORef succ
       assert $ app and' $ assignPartial' (consecutionNxtInput vars)
-        (stateLiftedInputs succ')
+        (stateLiftedInputs succ')-}
     mapM_ assert (assignPartial' (consecutionNxtState vars) st)
     sat <- checkSat
     if sat
@@ -1091,7 +1109,7 @@ elimSpuriousTrans st level = do
   updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
                                , numAddPreds = (numAddPreds stats)+(length props) })
   put $ env { ic3PredicateExtractor = nextr }
-  interp <- interpolateState level (stateLifted rst)
+  interp <- interpolateState level (stateLifted rst) (stateLiftedInputs rst)
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm
                      -> do
@@ -1101,9 +1119,11 @@ elimSpuriousTrans st level = do
   --liftIO $ domainDump ndomain >>= putStrLn
   modify $ \env -> env { ic3Domain = ndomain }
 
-interpolateState :: TR.TransitionRelation mdl => Int -> PartialValue (TR.State mdl)
-               -> IC3 mdl [TR.State mdl -> SMTExpr Bool]
-interpolateState j s = do
+interpolateState :: TR.TransitionRelation mdl => Int
+                 -> PartialValue (TR.State mdl)
+                 -> PartialValue (TR.Input mdl)
+                 -> IC3 mdl [TR.State mdl -> SMTExpr Bool]
+interpolateState j s inp = do
   env <- get
   cfg <- ask
   liftIO $ withSMTPool (ic3Interpolation env) $
@@ -1128,8 +1148,12 @@ interpolateState j s = do
                          ) frames)
         assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial' (interpCur st) s)
           ante -- (interpAnte st)
+        --assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial' (interpInputs st) inp)
+        --  ante
         assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxt st) s)
           post -- (interpPost st)
+        --assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxtInputs st) inp)
+        --  post
         res <- checkSat
         when res $ do
           curSt <- getValues (interpCur st) >>= TR.renderState (ic3Model cfg)
