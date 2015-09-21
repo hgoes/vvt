@@ -11,7 +11,8 @@ import Foreign.Ptr
 
 defaultOptions :: TranslationOptions
 defaultOptions = TranslationOptions { dedicatedErrorState = True
-                                    , safeSteps = True }
+                                    , safeSteps = True
+                                    , defaultInit = True }
 
 main = do
   (mod,fun) <- getProgram "main"
