@@ -466,6 +466,7 @@ printLispVar dts (LispStore var stat dyn val)
   = L.List (L.List (L.Symbol "_":
                     L.Symbol "store":
                     fmap (\i -> L.Number $ fromIntegral i) stat):
+            printLispVar dts var:
             printLispExpr dts val:
             fmap (printLispExpr dts) dyn)
 printLispVar dts (LispITE cond ifT ifF)
