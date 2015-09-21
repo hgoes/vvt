@@ -1,3 +1,4 @@
+# svcomp pthread-ext category
 01_inc_true-unreach-call
 02_inc_cas_true-unreach-call
 03_incdec_true-unreach-call
@@ -19,7 +20,7 @@
 19_time_var_mutex_true-unreach-call
 20_lamport_true-unreach-call
 23_lu-fig2.fixed_true-unreach-call
-#25_stack_longer_false-unreach-call
+25_stack_longer_false-unreach-call
 29_conditionals_vs_true-unreach-call
 31_simple_loop5_vs_true-unreach-call
 32_pthread5_vs_false-unreach-call
@@ -37,3 +38,27 @@
 46_monabsex2_vs_true-unreach-call
 47_ticket_lock_hc_backoff_vs_true-unreach-call
 48_ticket_lock_low_contention_vs_true-unreach-call
+# svcomp pthread-atomic category
+dekker_true-unreach-call
+lamport_true-unreach-call
+peterson_true-unreach-call
+#qrcu_false-unreach-call
+#qrcu_true-unreach-call
+read_write_lock_false-unreach-call
+read_write_lock_true-unreach-call
+scull_true-unreach-call
+szymanski_true-unreach-call
+#time_var_mutex_true-unreach-call
+# svcomp pthread category
+bigshot_p_false-unreach-call
+bigshot_s2_true-unreach-call
+bigshot_s_true-unreach-call
+fib_bench_false-unreach-call
+fib_bench_longer_false-unreach-call
+fib_bench_longer_true-unreach-call
+fib_bench_longest_false-unreach-call
+fib_bench_longest_true-unreach-call
+fib_bench_true-unreach-call
+#indexer_true-unreach-call
+lazy01_false-unreach-call
+queue_false-unreach-call

@@ -63,7 +63,9 @@ void init(){
 }
 
 void __VERIFIER_atomic_assert(int r) {
+  __atomic_begin();
   assert(r && isEmpty());
+  __atomic_end();
 }
 
 void push_loop(){

@@ -14,7 +14,7 @@ volatile unsigned t = 0; //next ticket
 
 #define spin_lock(l,t,s)\
 {\
-  __sync_fetch_and_add(&l,1); \
+  l = __sync_fetch_and_add(&t,1); \
   while(1) { \
     pause(l - s); \
     /* consume this many units of time */ \

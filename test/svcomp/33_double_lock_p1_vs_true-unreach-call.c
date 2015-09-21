@@ -8,12 +8,16 @@ int count = 0;
 
 void __VERIFIER_atomic_inc()
 {
+  __atomic_begin();
   count++;
+  __atomic_end();
 }
 
 void __VERIFIER_atomic_dec()
 {
+  __atomic_begin();
   count--;
+  __atomic_end();
 }
 
 pthread_mutex_t mutexa,mutexb;

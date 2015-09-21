@@ -28,75 +28,87 @@ __thread bool COND = false;
 #define is_locked(m) pthread_mutex_locked(&m)
 
 int sysmon_queue_power_event(){
-	KASSERT(is_locked(MTX));
+  KASSERT(is_locked(MTX));
   assert(1);
-	if (__nondet_int())
-		return 0;
-	return 1; }
+  if (__nondet_int())
+    return 0;
+  return 1;
+}
 
 int sysmon_get_power_event(){
-	KASSERT(is_locked(MTX));
+  KASSERT(is_locked(MTX));
   assert(1);
-	if (__nondet_int())	
-		return 0;
-	return 1; }
+  if (__nondet_int())	
+    return 0;
+  return 1;
+}
 
 int sysmon_power_daemon_task(){
-	if (__nondet_int()) return __nondet_int();
-	mutex_enter(MTX);
-	switch (__nondet_int()) {
-	case PSWITCH_EVENT_RELEASED:
-		KASSERT(is_locked(MTX));
-		if (__nondet_int()) {
-			mutex_exit(MTX);
-			goto out;}
-		break;
-	case PENVSYS_EVENT_NORMAL:
-		KASSERT(is_locked(MTX));
-		if (__nondet_int()) {
-			mutex_exit(MTX);
-			goto out;}
-		break;
-	default:
-		mutex_exit(MTX);
-		goto out;}
-	sysmon_queue_power_event();
-	if (__nondet_int()) {
-		mutex_exit(MTX);
-		goto out;} 
-	else {
-		cv_broadcast(COND);
-		mutex_exit(MTX);}
-	out:
+  if (__nondet_int()) return __nondet_int();
+  mutex_enter(MTX);
+  switch (__nondet_int()) {
+  case PSWITCH_EVENT_RELEASED:
+    KASSERT(is_locked(MTX));
+    if (__nondet_int()) {
+      mutex_exit(MTX);
+      goto out;
+    }
+    break;
+  case PENVSYS_EVENT_NORMAL:
+    KASSERT(is_locked(MTX));
+    if (__nondet_int()) {
+      mutex_exit(MTX);
+      goto out;
+    }
+    break;
+  default:
+    mutex_exit(MTX);
+    goto out;
+  }
+  sysmon_queue_power_event();
+  if (__nondet_int()) {
+    mutex_exit(MTX);
+    goto out;
+  } 
+  else {
+    cv_broadcast(COND);
+    mutex_exit(MTX);
+  }
+ out:
   assert(1);
-	return __nondet_int(); }
+  return __nondet_int();
+}
 
 void sysmonopen_power(){
-	mutex_enter(MTX);
-	if (__nondet_int())
-		KASSERT(is_locked(MTX));
-	mutex_exit(MTX);
+  mutex_enter(MTX);
+  if (__nondet_int())
+    KASSERT(is_locked(MTX));
+  mutex_exit(MTX);
   assert(1);
 }
 
 void sysmonclose_power(){
-	mutex_enter(MTX);
-	KASSERT(is_locked(MTX));
-	mutex_exit(MTX);
+  mutex_enter(MTX);
+  KASSERT(is_locked(MTX));
+  mutex_exit(MTX);
   assert(1);
 }
 
 void sysmonread_power(){
-	if (__nondet_int()){
-		mutex_enter(MTX);
-		for (;;) {
-			if (sysmon_get_power_event()) {
-				break;}
-			if (__nondet_int()) {
-				break;}
-			cv_wait(COND,MTX);
-      assert(COND); }
-		mutex_exit(MTX); }
+  if (__nondet_int()){
+    mutex_enter(MTX);
+    for (;;) {
+      if (sysmon_get_power_event()) {
+	break;
+      }
+      if (__nondet_int()) {
+	break;
+      }
+      cv_wait(COND,MTX);
+      assert(COND);
+    }
+    mutex_exit(MTX);
+  }
   assert(1);
 }
 
@@ -108,34 +120,36 @@ void sysmonpoll_power(){
 }
 
 void filt_sysmon_power_rdetach(){
-	mutex_enter(MTX);
-	mutex_exit(MTX);
+  mutex_enter(MTX);
+  mutex_exit(MTX);
   assert(1);
 }
 
 void filt_sysmon_power_read(){
-	mutex_enter(MTX);
-	mutex_exit(MTX);
+  mutex_enter(MTX);
+  mutex_exit(MTX);
   assert(1);
 }
 
 void sysmonkqfilter_power(){
-	mutex_enter(MTX);
-	mutex_exit(MTX);
+  mutex_enter(MTX);
+  mutex_exit(MTX);
   assert(1);
 }
 
 void sysmonioctl_power(){
-	switch (__nondet_int()) {
-	case POWER_EVENT_RECVDICT:
-		mutex_enter(MTX);
-		if (__nondet_int()) {
-			mutex_exit(MTX);
-			break;}
-		mutex_exit(MTX);
-		mutex_enter(MTX);
-		mutex_exit(MTX);
-		break; }
+  switch (__nondet_int()) {
+  case POWER_EVENT_RECVDICT:
+    mutex_enter(MTX);
+    if (__nondet_int()) {
+      mutex_exit(MTX);
+      break;
+    }
+    mutex_exit(MTX);
+    mutex_enter(MTX);
+    mutex_exit(MTX);
+    break;
+  }
   assert(1);
 }
 
@@ -150,7 +164,9 @@ void* thr1(void* arg){
     case 5: filt_sysmon_power_rdetach(); break;
     case 6: filt_sysmon_power_read(); break;
     case 7: sysmonkqfilter_power(); break;
-    case 8: sysmonioctl_power(); break; }}
+    case 8: sysmonioctl_power(); break;
+    }
+}
 
 int main(){
   pthread_t t1,t2;
