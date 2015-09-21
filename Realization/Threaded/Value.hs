@@ -81,6 +81,18 @@ defaultIf cond (ValPtr ptr tp) = ValPtr (fmap (\(c,idx) -> (constant False,
 defaultIf cond (ValThreadId mp) = ValThreadId $ fmap (const $ constant False) mp
 defaultIf cond (ValVector vals) = ValVector $ fmap (defaultIf cond) vals
 
+defaultValue :: SymType -> SymVal
+defaultValue TpBool = ValBool (constant False)
+defaultValue TpInt = ValInt (constant 0)
+defaultValue (TpPtr mp tp)
+  = ValPtr (Map.mapWithKey
+            (\trg _ -> (constant False,[constant 0
+                                       | DynamicAccess <- offsetPattern trg ])
+            ) mp) tp
+defaultValue (TpThreadId mp)
+  = ValThreadId (fmap (const $ constant False) mp)
+defaultValue (TpVector tps) = ValVector (fmap defaultValue tps)
+
 valEq :: SymVal -> SymVal -> SMTExpr Bool
 valEq (ValBool x) (ValBool y) = x .==. y
 valEq (ValInt x) (ValInt y) = x .==. y

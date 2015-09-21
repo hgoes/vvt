@@ -17,17 +17,20 @@ import Data.Typeable
 import Data.Constraint
 import Prelude hiding (mapM,foldl,and,concat)
 
+import Debug.Trace
+
 data LispStruct a = Singleton a
                   | Struct [LispStruct a]
                   deriving (Eq,Ord,Typeable,Functor,Foldable,Traversable)
 
-class (SMTType t,SMTValue (ResultType t),Unit (SMTAnnotation t))
+class (SMTType t,SMTValue (ResultType t),Unit (SMTAnnotation t),Unit (SMTAnnotation (ResultType t)))
       => Indexable t i where
   type ResultType t
   canIndex :: t -> Bool
   index :: (forall p. (Indexable p i,ResultType p ~ ResultType t) => SMTExpr p -> (a,SMTExpr p))
         -> SMTExpr t -> i -> (a,SMTExpr t)
   deref :: i -> SMTExpr t -> SMTExpr (ResultType t)
+  derefConst :: i -> t -> ResultType t
   reref :: i -> SMTExpr (ResultType t) -> SMTExpr t
   recIndexable :: t -> i -> Dict (Indexable (ResultType t) i,
                                   ResultType (ResultType t) ~ ResultType t)
@@ -37,6 +40,7 @@ instance Indexable Integer i where
   canIndex _ = False
   index _ _ _ = error "Cannot index integer type."
   deref _ = id
+  derefConst _ = id
   reref _ = id
   recIndexable _ _ = Dict
 
@@ -45,6 +49,7 @@ instance Indexable Bool i where
   canIndex _ = False
   index _ _ _ = error "Cannot index bool type."
   deref _ = id
+  derefConst _ = id
   reref _ = id
   recIndexable _ _ = Dict
 
@@ -54,6 +59,7 @@ instance (Indexable a i,Liftable i,Unit (ArgAnnotation i)) => Indexable (SMTArra
   index f arr idx = let (res,el) = f (select arr idx)
                     in (res,store arr idx el)
   deref _ _ = error "Cannot deref array type."
+  derefConst _ _ = error "Cannot deref array type."
   reref _ _ = error "Cannot reref array type."
   recIndexable (_::SMTArray i a) ui = case recIndexable (undefined::a) ui of
     Dict -> Dict
@@ -326,7 +332,8 @@ foldStruct f s ~(Struct xs) (Struct ys) = do
       (s2,nxs) <- foldStruct' s1 xs ys
       return (s2,nx:nxs)
 
-foldsStruct :: Monad m => (s -> [(a,c)] -> b -> m (s,[a],a))
+foldsStruct :: (Monad m,Show a,Show b)
+            => (s -> [(a,c)] -> b -> m (s,[a],a))
             -> s -> [(LispStruct a,c)] -> LispStruct b
             -> m (s,[LispStruct a],LispStruct a)
 foldsStruct f s lst (Singleton x) = do
@@ -596,6 +603,14 @@ instance Show LispPValue where
   showsPrec p LispPEmpty = showChar '*'
   showsPrec p (LispPValue val) = showsPrec p val
   showsPrec p (LispPArray vals) = showList vals
+
+instance Eq LispPValue where
+  (==) LispPEmpty LispPEmpty = True
+  (==) (LispPValue x) (LispPValue y) = case cast y of
+    Just y' -> x==y'
+    Nothing -> False
+  (==) (LispPArray xs) (LispPArray ys) = xs==ys
+  (==) _ _ = False
 
 instance Show a => Show (LispStruct a) where
   showsPrec p (Struct ps) = showList ps

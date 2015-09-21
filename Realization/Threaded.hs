@@ -1041,6 +1041,9 @@ memoryWrite th origin act ptr val edge real
                                             (\loc _ inp
                                              -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr inp) of
                                                                    Just r -> r
+                                                                   Nothing -> (constant False,
+                                                                               [ constant 0
+                                                                               | DynamicAccess <- offsetPattern loc])
                                                 in ((act inp) .&&. cond,idx)
                                             ) (tpPtr $ symbolicType ptr)
                                  , writeContent = val
@@ -1417,21 +1420,21 @@ allPhis src trg = do
 
 outputValues :: Realization (ProgramState,ProgramInput)
              -> Map (Maybe (Ptr CallInst),Ptr Instruction)
-                ((ProgramState,ProgramInput) -> SymVal)
+                (SymType,(ProgramState,ProgramInput) -> SymVal)
 outputValues real = mp2
   where
     dontStep = Map.null (threadStateDesc $ stateAnnotation real)
-    mp1 = Map.foldlWithKey (\mp instr _
+    mp1 = Map.foldlWithKey (\mp instr tp
                             -> Map.insert (Nothing,instr)
-                               (getExpr Nothing instr) mp
+                               (tp,getExpr Nothing instr) mp
                            ) Map.empty
           (latchValueDesc $ mainStateDesc $ stateAnnotation real)
     mp2 = Map.foldlWithKey
           (\mp th thSt
            -> Map.foldlWithKey
-              (\mp instr _
+              (\mp instr tp
                 -> Map.insert (Just th,instr)
-                   (getExpr (Just th) instr) mp
+                   (tp,getExpr (Just th) instr) mp
               ) mp (latchValueDesc thSt)
           ) mp1 (threadStateDesc $ stateAnnotation real)
     finEdge = foldl mappend (foldl mappend mempty (edges real)) (Map.union (yieldEdges real) (internalYieldEdges real))

@@ -249,7 +249,7 @@ toLispProgram opts real' = do
                            ) mp (Map.keys $ latchBlockDesc thSt)
                  ) nxt1 (Map.toList $ threadStateDesc $ stateAnnotation real)
   let outValues = outputValues real
-  nxt3 <- foldlM (\mp ((th,instr),val) -> do
+  nxt3 <- foldlM (\mp ((th,instr),(_,val)) -> do
                      name <- instrName instr
                      let tName = case th of
                            Nothing -> "main-"
@@ -366,6 +366,18 @@ toLispProgram opts real' = do
                              case Map.lookup th (threadStateDesc $ stateAnnotation real) of
                                Just r -> r)
                 ) (Map.toList $ threadBlocks real)
+  init5' <- if defaultInit opts
+            then mapM (\((th,instr),(tp,_)) -> do
+                          name <- instrName instr
+                          let tName = case th of
+                                Nothing -> "main-"
+                                Just th' -> case Map.lookup th' threadNames of
+                                  Just th'' -> T.pack $ th''++"-"
+                              name1 = T.append tName name
+                          return (name1,toLispValue gateTrans (Singleton tp)
+                                        (Singleton (defaultValue tp)))
+                      ) (Map.toList outValues)
+            else return []
   inv1 <- do
     blks <- mapM (\blk -> do
                      name <- blockName blk
@@ -425,7 +437,7 @@ toLispProgram opts real' = do
                                                       (L.NamedVar "error" L.State L.boolType) [] []) ()]
                                                else asserts
                          , L.programInit = Map.fromList (init0'++concat init1'++init2'++init3'++
-                                                         concat init4')
+                                                         concat init4'++init5')
                          , L.programInvariant = inv1:inv2++inv3++inv4
                          , L.programAssumption = []
                          , L.programPredicates = [] }
@@ -715,6 +727,7 @@ makeAllocVar name cat rtp@(TpDynamic tp)
     makeStruct idx (Struct tps)
       = Struct [ makeStruct (idx++[i]) tp
                | (i,tp) <- zip [0..] tps ]
+    makeStruct idx str = error $ "Make struct for dynamic type "++show tp++" with "++show idx++" "++show str
 
 toLispExprs :: GateTranslation -> Struct SymType -> Struct SymVal -> L.LispVar
 toLispExprs trans tp val = L.LispConstr $ toLispValue trans tp val
@@ -728,24 +741,24 @@ toLispExprs' trans (Singleton TpBool) (Singleton (ValBool x))
 toLispExprs' trans (Singleton TpInt) (Singleton (ValInt x))
   = L.Singleton (L.Val $ toLispExpr trans x)
 toLispExprs' trans (Singleton (TpPtr locs _)) (Singleton (ValPtr trgs _))
-  = if Map.null diff
-    then L.Struct [ L.Struct (L.Singleton (L.Val $ toLispExpr trans cond):
+  = {-if Map.null diff
+    then-} L.Struct [ L.Struct (L.Singleton (L.Val $ toLispExpr trans cond):
                               [ L.Singleton (L.Val $ toLispExpr trans i) | i <- idx ])
                   | (trg,pat) <- Map.toList locs
                   , let (cond,idx) = case Map.lookup trg trgs of
                           Just r -> r
-                          Nothing -> (constant False,[]{-[ constant 0
-                                                         | DynamicAccess <- pat ]-}) ]
-    else unsafePerformIO $ do
+                          Nothing -> (constant False,[ constant 0
+                                                     | DynamicAccess <- offsetPattern trg ]) ]
+    {-else unsafePerformIO $ do
       allowed <- mapM (\ptr -> do
-                          name <- memLocName (memoryLoc ptr)
+                          name <- memTrgName (memoryLoc ptr)
                           return $ "\n"++(T.unpack name)++" "++show (offsetPattern ptr)
                       ) (Map.keys locs)
       forbidden <- mapM (\ptr -> do
-                            name <- memLocName (memoryLoc ptr)
+                            name <- memTrgName (memoryLoc ptr)
                             return $ "\n"++(T.unpack name)++" "++show (offsetPattern ptr)
                         ) (Map.keys diff)
-      error $ "Incomplete: Pointer pointing to unexpected location:\nAllowed:"++concat allowed++"\nForbidden:"++concat forbidden
+      error $ "Incomplete: Pointer pointing to unexpected location:\nAllowed:"++concat allowed++"\nForbidden:"++concat forbidden-}
   where
     diff = Map.difference trgs locs
 toLispExprs' trans (Singleton (TpThreadId trgs)) (Singleton (ValThreadId ths))
@@ -758,6 +771,7 @@ toLispExprs' trans (Singleton (TpVector tps)) (Singleton (ValVector vals))
   = L.Struct $ zipWith (\tp val -> toLispExprs' trans (Singleton tp) (Singleton val)) tps vals
 toLispExprs' trans (Struct tps) (Struct fs)
   = L.Struct (zipWith (toLispExprs' trans) tps fs)
+toLispExprs' _ tp val = error $ "toLispExprs': Cannot translate value "++show val++" of type "++show tp
 
 toLispAllocExpr :: GateTranslation -> AllocType -> AllocVal -> L.LispValue
 toLispAllocExpr trans (TpStatic n tp) (ValStatic vals)
