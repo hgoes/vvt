@@ -9,3 +9,5 @@ dist
 *.out
 *.l
 *.s
+test/svcomp/*.l
+test/svcomp/*.ll
