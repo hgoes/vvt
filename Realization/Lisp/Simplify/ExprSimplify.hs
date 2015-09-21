@@ -48,24 +48,30 @@ simplifyExpr :: SMTExpr t -> SMTExpr t
 simplifyExpr (App fun args) = optimizeFun fun nargs
   where
     (_,nargs) = foldExprsId (\_ e _ -> ((),simplifyExpr e)) () args (extractArgAnnotation args)
-simplifyExpr (InternalObj (cast -> Just acc) ann) = case acc of
-  LispVarAccess (LispConstr (LispValue (Size []) (Singleton (Val v)))) [] []
-    -> case cast v of
-        Just e -> simplifyExpr e
-  _ -> InternalObj (simplifyAccess acc) ann
+simplifyExpr (InternalObj (cast -> Just acc) ann) = simplifyAccess ann acc
 simplifyExpr (UntypedExpr e) = UntypedExpr (simplifyExpr e)
 simplifyExpr (UntypedExprValue e) = UntypedExprValue (simplifyExpr e)
 simplifyExpr e = e
 
-simplifyAccess :: LispVarAccess -> LispVarAccess
-simplifyAccess (LispVarAccess var sidx didx)
-  = LispVarAccess (simplifyVar var) sidx (fmap simplifyExpr didx)
-simplifyAccess (LispSizeAccess var idx)
-  = LispSizeAccess (simplifyVar var) (fmap simplifyExpr idx)
-simplifyAccess (LispSizeArrAccess var idx)
-  = LispSizeArrAccess (simplifyVar var) idx
-simplifyAccess (LispEq lhs rhs)
-  = LispEq (simplifyVar lhs) (simplifyVar rhs)
+simplifyAccess :: SMTType t => SMTAnnotation t -> LispVarAccess -> SMTExpr t
+simplifyAccess ann (LispVarAccess var sidx didx)
+  = simplify (simplifyVar var) sidx (fmap simplifyExpr didx)
+  where
+    simplify v@(LispStore var sidx' didx' e) sidx didx
+      | sidx==sidx' = if null didx
+                      then castUntypedExpr e
+                      else InternalObj (LispVarAccess v sidx didx) ann
+      | otherwise = simplify var sidx didx
+    simplify (LispConstr (LispValue (Size []) (Singleton (Val v)))) [] []
+      = case cast v of
+          Just e -> e
+    simplify v sidx didx = InternalObj (LispVarAccess v sidx didx) ann
+simplifyAccess ann (LispSizeAccess var idx)
+  = InternalObj (LispSizeAccess (simplifyVar var) (fmap simplifyExpr idx)) ann
+simplifyAccess ann (LispSizeArrAccess var idx)
+  = InternalObj (LispSizeArrAccess (simplifyVar var) idx) ann
+simplifyAccess ann (LispEq lhs rhs)
+  = InternalObj (LispEq (simplifyVar lhs) (simplifyVar rhs)) ann
 
 optimizeFun :: (Args arg,SMTType res) => SMTFunction arg res -> arg -> SMTExpr res
 optimizeFun SMTITE (cond,lhs,rhs)
