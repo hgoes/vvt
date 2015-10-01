@@ -15,8 +15,8 @@ module Domain
 
 import Language.SMTLib2
 import SMTPool
-import Language.SMTLib2.Internals (SMTExpr(..),SMTFunction(..))
-import Language.SMTLib2.Internals.Operators
+--import Language.SMTLib2.Internals (SMTExpr(..),SMTFunction(..))
+--import Language.SMTLib2.Internals.Operators
 
 import Data.Graph.Inductive
 import Data.Map (Map)
@@ -36,19 +36,21 @@ import Data.Typeable
 import Language.SMTLib2.Pipe
 import "mtl" Control.Monad.Trans (liftIO)
 
+newtype Predicate a = Predicate (forall b. Backend b => a -> SMT b (Expr b BoolType))
+
 -- | Stores a lattice of abstractions.
 --   An edge from A to B signifies that A includes B
-data Domain a = Domain { domainAnnotation :: ArgAnnotation a
-                       , domainGArg :: a
-                       , domainGraph :: Gr (a -> SMTExpr Bool,SMTExpr Bool,Set Integer) ()
-                       , domainNodesRev :: Map (SMTExpr Bool) Node
-                       , domainNextNode :: Node
-                       , domainPool :: SMTPool (DomainInstance a) a
-                       , domainVerbosity :: Int
-                       , domainTimeout :: Maybe Integer
-                       }
+data Domain a = forall b. (SMTBackend b,SMTMonad b ~ IO)
+                => Domain { domainGArg :: a
+                          , domainGraph :: Gr (Predicate a,Expr b BoolType,Set Integer) ()
+                          , domainNodesRev :: Map (Expr b BoolType) Node
+                          , domainNextNode :: Node
+                          , domainPool :: SMTPool (DomainInstance a) b a
+                          , domainVerbosity :: Int
+                          , domainTimeout :: Maybe Integer
+                          }
 
-data DomainInstance a = DomainInstance { domainNodes :: Map Node (SMTExpr Bool)
+data DomainInstance e = DomainInstance { domainNodes :: Map Node (e BoolType)
                                        , domainInstNext :: Node
                                        , domainIsFresh :: Bool
                                        }

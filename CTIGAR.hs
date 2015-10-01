@@ -12,13 +12,13 @@ import LitOrder
 import BackendOptions
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
-import Language.SMTLib2.Internals.Operators
+--import Language.SMTLib2.Internals
+--import Language.SMTLib2.Internals.Operators
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
-import Language.SMTLib2.Timing
-import Language.SMTLib2.DatatypeEmulator
-import Language.SMTLib2.ModulusEmulator
+--import Language.SMTLib2.Timing
+--import Language.SMTLib2.DatatypeEmulator
+--import Language.SMTLib2.ModulusEmulator
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set

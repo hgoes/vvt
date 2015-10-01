@@ -6,6 +6,7 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Language.SMTLib2
+import qualified Language.SMTLib2.LowLevel as SMT
 import "mtl" Control.Monad.State (runStateT,modify)
 import "mtl" Control.Monad.Trans (lift,liftIO,MonadIO)
 import Prelude hiding (mapM,sequence)
@@ -17,9 +18,9 @@ data RSMState loc var = RSMState { rsmLocations :: Map loc (RSMLoc var)
 data RSMLoc var = RSMLoc { rsmClasses :: Map (Set var) (Set (Map var Integer))
                          }
 
-data Coeffs var = Coeffs { coeffsVar :: Map var (SMTExpr Integer)
-                         , coeffsConst :: SMTExpr Integer
-                         }
+data Coeffs b var = Coeffs { coeffsVar :: Map var (SMTExpr b IntType)
+                           , coeffsConst :: SMTExpr b IntType
+                           }
 
 emptyRSM :: RSMState loc var
 emptyRSM = RSMState Map.empty
@@ -36,30 +37,33 @@ addRSMState loc instrs st
     joinLoc l1 l2 = RSMLoc { rsmClasses = Map.unionWith Set.union (rsmClasses l1) (rsmClasses l2)
                            }
 
-createCoeffs :: (Monad m,Ord var) => Set var -> SMT' m (Coeffs var)
+createCoeffs :: (Backend b,Ord var) => Set var -> SMT b (Coeffs b var)
 createCoeffs instrs = do
   coeffs <- mapM (\instr -> do
-                     c <- varNamed "coeff"
+                     c <- SMT.varNamed "coeff"
                      return (instr,c)
                  ) (Set.toAscList instrs)
-  c <- varNamed "c"
+  c <- SMT.varNamed "c"
   return $ Coeffs { coeffsVar = Map.fromAscList coeffs
                   , coeffsConst = c
                   }
 
-notAllZero :: Coeffs var -> SMTExpr Bool
-notAllZero coeffs = app or' [ not' (c .==. 0) | c <- Map.elems (coeffsVar coeffs) ]
+notAllZero :: Backend b => Coeffs b var -> SMTExpr b BoolType
+notAllZero coeffs = let args = [ [expr| (not (= c 0)) |] | c <- Map.elems (coeffsVar coeffs) ]
+                     in [expr| (or # args) |]
 
-createLine :: Ord var => Coeffs var -> Map var Integer -> SMTExpr Bool
+createLine :: (Backend b,Ord var) => Coeffs b var -> Map var Integer -> SMTExpr b BoolType
 createLine coeffs vars
-  = (case Map.elems $ Map.intersectionWith (\c i -> c * (constant i)) (coeffsVar coeffs) vars of
+  = (case Map.elems $ Map.intersectionWith (\c i -> let i' = constant i
+                                                    in [expr| (* c i') |]
+                                           ) (coeffsVar coeffs) vars of
       [x] -> x
-      xs -> app plus xs)
+      xs -> [expr| (+ # xs) |])
     .==.
     (coeffsConst coeffs)
 
-createLines :: (Monad m,Ord var) => Coeffs var -> Set (Map var Integer)
-               -> SMT' m (Map ClauseId (Map var Integer))
+createLines :: (Backend b,Ord var) => Coeffs b var -> Set (Map var Integer)
+               -> SMT b (Map (ClauseId b) (Map var Integer))
 createLines coeffs points = do
   res <- mapM (\point -> do
                   cid <- assertId (createLine coeffs point)
@@ -67,7 +71,7 @@ createLines coeffs points = do
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: (Monad m,Ord var) => Coeffs var -> SMT' m [(var -> SMTExpr Integer) -> SMTExpr Bool]
+extractLine :: (Backend b,Ord var) => Coeffs b var -> SMT b [(var -> SMTExpr b IntType) -> SMTExpr b BoolType]
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
   let rcoeffs' = Map.mapMaybe (\c -> if c==0
@@ -81,15 +85,15 @@ extractLine coeffs = do
                                    _ -> (constant co)*(vals instr)
                                  ) rcoeffs') of
                   [x] -> x
-                  xs -> app plus xs
+                  xs -> [expr| (+ # xs) |]
   rconst <- getValue (coeffsConst coeffs)
   return [\vals -> (lhs vals)
                    .<=. (constant rconst)
          ,\vals -> (lhs vals)
                    .<. (constant rconst)]
 
-mineStates :: (MonadIO m,SMTBackend b IO,Ord var) => IO b -> RSMState loc var
-              -> m (RSMState loc var,[(var -> SMTExpr Integer) -> SMTExpr Bool])
+mineStates :: (Backend b,SMTMonad b ~ IO,Ord var) => IO b -> RSMState loc var
+              -> IO (RSMState loc var,[(var -> SMTExpr b IntType) -> SMTExpr b BoolType])
 mineStates backend st
   = runStateT
     (do
@@ -113,23 +117,23 @@ mineStates backend st
       | Set.size cls <= 2 = return Nothing
       | Set.size cls > 6 = return $ Just (Set.empty,[])
     mineClass vars cls = do
-      b <- liftIO backend
-      res <- liftIO $ withSMTBackendExitCleanly b $ do
+      b <- backend
+      res <- SMT.withBackendExitCleanly b $ do
         setOption (ProduceUnsatCores True)
         setOption (ProduceModels True)
         coeffs <- createCoeffs vars
         assert $ notAllZero coeffs
         revMp <- createLines coeffs cls
         res <- checkSat
-        if res
-          then (do
+        case res of
+          Sat -> do
                    lines <- extractLine coeffs
-                   return $ Right lines)
-          else (do
-                   core <- getUnsatCore
-                   let coreMp = Map.fromList [ (cid,()) | cid <- core ]
-                       coreLines = Set.fromList $ Map.elems $ Map.intersection revMp coreMp
-                   return $ Left coreLines)
+                   return $ Right lines
+          Unsat -> do
+                     core <- getUnsatCore
+                     let coreMp = Map.fromList [ (cid,()) | cid <- core ]
+                         coreLines = Set.fromList $ Map.elems $ Map.intersection revMp coreMp
+                     return $ Left coreLines
       case res of
         Right lines -> return (Just (Set.empty,lines))
         Left coreLines -> do

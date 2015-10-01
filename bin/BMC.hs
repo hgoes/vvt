@@ -4,17 +4,23 @@ import Realization
 import Realization.Lisp
 import Realization.Lisp.Value
 import System.IO
-import System.Console.GetOpt
+import System.Console.GetOpt hiding (NoArg)
+import qualified System.Console.GetOpt as Opt
 import System.Environment
-import Language.SMTLib2.Pipe
-import Language.SMTLib2
+import Language.SMTLib2.LowLevel
 import Language.SMTLib2.Debug
-import Language.SMTLib2.DatatypeEmulator
+import Language.SMTLib2.Pipe (createPipe)
+import Language.SMTLib2.Z3
+import Language.SMTLib2.Internals.Expression
+import qualified Language.SMTLib2.Internals.Backend as B
+--import Language.SMTLib2.DatatypeEmulator
 import PartialArgs
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Control.Monad.Trans (liftIO)
+import Control.Monad.Trans (MonadIO,liftIO)
 import qualified Data.Text as T
+import Data.Proxy
+import Data.GADT.Show
 
 data Options = Options { showHelp :: Bool
                        , solver :: String
@@ -32,13 +38,13 @@ defaultOptions = Options { showHelp = False
                          , debug = False }
 
 optDescr :: [OptDescr (Options -> Options)]
-optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
+optDescr = [Option ['h'] ["help"] (Opt.NoArg $ \opt -> opt { showHelp = True }) "Show this help"
            ,Option ['d'] ["depth"] (ReqArg (\str opt -> opt { bmcDepth = read str }) "n") "The BMC depth"
            ,Option ['s'] ["solver"] (ReqArg (\str opt -> let solv:args = words str
                                                          in opt { solver = solv
                                                                 , solverArgs = args }) "bin") "The SMT solver executable"
-           ,Option ['i'] ["incremental"] (NoArg $ \opt -> opt { incremental = True }) "Run in incremental mode"
-           ,Option [] ["debug"] (NoArg $ \opt -> opt { debug = True }) "Output the SMT stream"]
+           ,Option ['i'] ["incremental"] (Opt.NoArg $ \opt -> opt { incremental = True }) "Run in incremental mode"
+           ,Option [] ["debug"] (Opt.NoArg $ \opt -> opt { debug = True }) "Output the SMT stream"]
 
 main = do
   args <- getArgs
@@ -53,62 +59,84 @@ main = do
   if showHelp opts
     then putStrLn $ usageInfo "Usage:\n\n    vvt-bmc [OPTIONS]\n\nAvailable options:" optDescr
     else (do
-             prog <- fmap parseLispProgram $ readLispFile stdin
-             pipe <- createSMTPipe (solver opts) (solverArgs opts)
-             let act = do
-                   st0 <- createStateVars "" prog
-                   inp0 <- createInputVars "" prog
-                   assert $ initialState prog st0
+             prog <- fmap parseProgram $ readLispFile stdin
+             pipe <- createPipe (solver opts) (solverArgs opts)
+             --let pipe = z3Solver
+             let act :: forall b. (Backend b,MonadIO (B.SMTMonad b))
+                     => SMT b (Maybe [Unpacked (State LispProgram) (B.Constr b)])
+                 act = do
+                   st0 <- createState (\name -> updateBackend $ \b -> do
+                                          (v,b1) <- B.declareVar b name
+                                          B.toBackend b1 (Var v)
+                                      ) prog ""
+                   inp0 <- createInput (\name -> updateBackend $ \b -> do
+                                          (v,b1) <- B.declareVar b name
+                                          B.toBackend b1 (Var v)
+                                       ) prog ""
+                   init <- initialState prog st0
+                   updateBackend' $ \b -> B.assert b init
                    bmc prog (incremental opts) (bmcDepth opts) 0 st0 inp0 []
              res <- if debug opts
-                    then (withSMTBackend ({-emulateDataTypes $-} namedDebugBackend "bmc" $ pipe) act)
-                    else (withSMTBackend ({-emulateDataTypes-} pipe) act)
+                    then (withBackend (namedDebugBackend "bmc" $ pipe) act)
+                    else (withBackend pipe act)
              case res of
               Nothing -> putStrLn "No bug found."
               Just bug -> do
-                pbug <- mapM (\st -> renderPartialState prog
-                                     (unmaskValue (undefined::State LispProgram) st)
-                             ) bug
-                putStrLn $ "Bug found:"
-                mapM_ putStrLn pbug)
+                mapM_ (\p -> putStrLn $ showsPrec 0 p "") bug)
   where
-    bmc :: LispProgram -> Bool -> Integer -> Integer
-        -> Map T.Text LispValue -> Map T.Text LispValue
-        -> [(Map T.Text LispValue,SMTExpr Bool)]
-        -> SMT (Maybe [Map T.Text (LispStruct LispUValue)])
+    bmc :: (TransitionRelation t,Backend b,MonadIO (B.SMTMonad b))
+        => t -> Bool -> Integer -> Integer
+        -> State t (B.Expr b) -> Input t (B.Expr b)
+        -> [(State t (B.Expr b),B.Expr b BoolType)]
+        -> SMT b (Maybe [Unpacked (State t) (B.Constr b)])
     bmc prog inc l n st inp sts
       | n>=l = do
           if inc
-            then assert $ not' $ snd $ head sts
-            else assert $ app or' $ fmap (not'.snd) sts
+            then do
+              cond <- toBackend $ App Not $ Arg (snd $ head sts) NoArg
+              updateBackend' $ \b -> B.assert b cond
+            else do
+              cond <- allEqFromList (fmap snd sts) $ \arg -> toBackend $ App (Logic Or) arg
+              cond' <- toBackend $ App Not (Arg cond NoArg)
+              updateBackend' $ \b -> B.assert b cond'
           res <- checkSat
-          if res
-            then fmap Just $
-                 mapM (\(st,_) -> unliftArgs st getValue
-                      ) sts
-            else return Nothing
+          case res of
+            Sat -> fmap Just $
+                   mapM (\(st,_) -> unliftComp (\e -> updateBackend $ \b -> B.getValue b e)
+                                               (defLifting id) st
+                        ) sts
+            Unsat -> return Nothing
     bmc prog inc l n st inp sts = do
-      assert $ stateInvariant prog inp st
-      (assumps,gts1) <- declareAssumptions prog st inp Map.empty
-      mapM_ assert assumps
+      invar <- stateInvariant prog inp st
+      updateBackend' $ \b -> B.assert b invar
+      gts0 <- startingProgress prog
+      (assumps,gts1) <- declareAssumptions prog st inp gts0
+      mapM_ (\e -> updateBackend' $ \b -> B.assert b e) assumps
       (asserts,gts2) <- declareAssertions prog st inp gts1
       res <- if inc
              then stack $ do
                liftIO $ putStrLn $ "Level "++show n
-               assert $ app or' $ fmap not' asserts
+               negProp <- mapM (\e -> toBackend $ App Not (Arg e NoArg)) asserts
+                          >>= \lst -> allEqFromList lst $
+                                      \arg -> toBackend $ App (Logic Or) arg
+               updateBackend' $ \b -> B.assert b negProp
                r <- checkSat
-               if r
-                 then (do
-                          vals <- mapM (\st -> unliftArgs st getValue
+               case r of
+                 Sat -> do
+                          vals <- mapM (\st -> unliftComp (\e -> updateBackend $
+                                                                 \b -> B.getValue b e)
+                                               (defLifting id) st
                                        ) (st:(fmap fst sts))
-                          return $ Just vals)
-                 else return Nothing
+                          return $ Just vals
+                 Unsat -> return Nothing
              else return Nothing
       case res of
        Just bug -> return $ Just bug
        Nothing -> do
-         (nxt,gts3) <- declareNextState prog st inp Nothing gts2
-         ninp <- createInputVars "" prog
-         bmc prog inc l (n+1) nxt ninp ((st,app and' asserts):sts)
-
-               
+         (nxt,gts3) <- declareNextState prog st inp gts2
+         ninp <- createInput (\name -> updateBackend $ \b -> do
+                                 (v,b1) <- B.declareVar b name
+                                 B.toBackend b1 (Var v)
+                             ) prog ""
+         conjAss <- allEqFromList asserts $ \arg -> toBackend $ App (Logic And) arg
+         bmc prog inc l (n+1) nxt ninp ((st,conjAss):sts)

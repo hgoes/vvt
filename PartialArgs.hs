@@ -1,104 +1,75 @@
 {-# LANGUAGE TypeFamilies,ScopedTypeVariables #-}
 module PartialArgs where
 
-import Language.SMTLib2
+import Args
+
+import Language.SMTLib2.LowLevel
+import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Type hiding (Constr,Field)
+import qualified Language.SMTLib2.Internals.Backend as B
 
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Traversable
 import Data.Typeable
+import Data.Dependent.Map (DMap)
+import qualified Data.Dependent.Map as DMap
 
-class LiftArgs a => PartialArgs a where
-  type PartialValue a
-  maskValue :: a -> PartialValue a -> [Bool] -> (PartialValue a,[Bool])
-  unmaskValue :: a -> Unpacked a -> PartialValue a
-  assignPartial :: a -> PartialValue a -> [Maybe (SMTExpr Bool)]
+type Lifting m e con = (forall v qv fun field fv t. GetType t
+                         => Expression v qv fun con field fv e t -> m (e t))
 
-assignPartial' :: PartialArgs a => a -> PartialValue a -> [SMTExpr Bool]
-assignPartial' v p = [ cond
-                     | Just cond <- assignPartial v p ]
+defLifting :: (Backend b,Monad m) => (forall a. SMT b a -> m a)
+           -> Lifting m (B.Expr b) (B.Constr b)
+defLifting lift e = do
+  e' <- mapExpr err err err return err err return e
+  lift $ updateBackend $ \b -> B.toBackend b e'
+  where
+    err = error "PartialArgs.defLifting: Can't be used on expression with variables/functions/etc."
 
-instance SMTValue t => PartialArgs (SMTExpr t) where
-  type PartialValue (SMTExpr t) = Maybe t
-  maskValue _ val (x:xs) = (if x
-                            then val
-                            else Nothing,xs)
-  unmaskValue _ val = Just val
-  assignPartial _ Nothing = [Nothing]
-  assignPartial expr (Just v) = [Just $ expr .==. (constantAnn v (extractAnnotation expr))]
+class Composite a => LiftComp a where
+  type Unpacked a :: (([Type],*) -> *) -> *
+  liftComp :: Monad m => Lifting m e con
+           -> Unpacked a con
+           -> m (a e)
+  unliftComp :: Monad m => (forall t. GetType t => e t -> m (Value con t))
+             -> Lifting m e con
+             -> a e
+             -> m (Unpacked a con)
 
-instance (PartialArgs a1,PartialArgs a2) => PartialArgs (a1,a2) where
-  type PartialValue (a1,a2) = (PartialValue a1,PartialValue a2)
-  maskValue (_::(a1,a2)) (v1,v2) xs = let (r1,rest1) = maskValue (undefined::a1) v1 xs
-                                          (r2,rest2) = maskValue (undefined::a2) v2 rest1
-                                      in ((r1,r2),rest2)
-  unmaskValue (_::(a1,a2)) (v1,v2) = (unmaskValue (undefined::a1) v1,
-                                      unmaskValue (undefined::a2) v2)
-  assignPartial (e1,e2) (v1,v2) = (assignPartial e1 v1)++
-                                  (assignPartial e2 v2)
+newtype UArgs' tps con = UArgs' (Args (Value con) tps)
 
-instance (PartialArgs a1,PartialArgs a2,PartialArgs a3)
-         => PartialArgs (a1,a2,a3) where
-  type PartialValue (a1,a2,a3) = (PartialValue a1,PartialValue a2,PartialValue a3)
-  maskValue (_::(a1,a2,a3)) (v1,v2,v3) xs
-    = let (r1,rest1) = maskValue (undefined::a1) v1 xs
-          (r2,rest2) = maskValue (undefined::a2) v2 rest1
-          (r3,rest3) = maskValue (undefined::a3) v3 rest2
-      in ((r1,r2,r3),rest3)
-  unmaskValue (_::(a1,a2,a3)) (v1,v2,v3)
-    = (unmaskValue (undefined::a1) v1,
-       unmaskValue (undefined::a2) v2,
-       unmaskValue (undefined::a3) v3)
-  assignPartial (e1,e2,e3) (v1,v2,v3)
-    = (assignPartial e1 v1)++
-      (assignPartial e2 v2)++
-      (assignPartial e3 v3)
+instance GetTypes tps => LiftComp (Args' tps) where
+  type Unpacked (Args' tps) = UArgs' tps
+  liftComp f (UArgs' NoArg) = return (Args' NoArg)
+  liftComp f (UArgs' (Arg x xs)) = do
+    x' <- f (Const x)
+    Args' xs' <- liftComp f (UArgs' xs)
+    return (Args' (Arg x' xs'))
+  unliftComp f _ (Args' NoArg) = return (UArgs' NoArg)
+  unliftComp f g (Args' (Arg x xs)) = do
+    x' <- f x
+    UArgs' xs' <- unliftComp f g (Args' xs)
+    return $ UArgs' (Arg x' xs')
 
-instance (PartialArgs a1,PartialArgs a2,PartialArgs a3,PartialArgs a4)
-         => PartialArgs (a1,a2,a3,a4) where
-  type PartialValue (a1,a2,a3,a4) = (PartialValue a1,PartialValue a2,PartialValue a3,PartialValue a4)
-  maskValue (_::(a1,a2,a3,a4)) (v1,v2,v3,v4) xs
-    = let (r1,rest1) = maskValue (undefined::a1) v1 xs
-          (r2,rest2) = maskValue (undefined::a2) v2 rest1
-          (r3,rest3) = maskValue (undefined::a3) v3 rest2
-          (r4,rest4) = maskValue (undefined::a4) v4 rest3
-      in ((r1,r2,r3,v4),rest4)
-  unmaskValue (_::(a1,a2,a3,a4)) (v1,v2,v3,v4)
-    = (unmaskValue (undefined::a1) v1,
-       unmaskValue (undefined::a2) v2,
-       unmaskValue (undefined::a3) v3,
-       unmaskValue (undefined::a4) v4)
-  assignPartial (e1,e2,e3,e4) (v1,v2,v3,v4)
-    = (assignPartial e1 v1)++
-      (assignPartial e2 v2)++
-      (assignPartial e3 v3)++
-      (assignPartial e4 v4)
+class LiftComp a => PartialComp a where
+  type Partial a :: (([Type],*) -> *) -> *
+  maskValue :: Proxy a -> Partial a con -> [Bool] -> (Partial a con,[Bool])
+  unmaskValue :: Proxy a -> Unpacked a con -> Partial a con
+  assignPartial :: Monad m => (forall t. GetType t => e t -> Value con t -> m p)
+                -> Lifting m e con
+                -> a e -> Partial a con -> m [Maybe p]
 
-instance (Typeable a,Ord a,Show a,PartialArgs b) => PartialArgs (Map a b) where
-  type PartialValue (Map a b) = Map a (PartialValue b)
-  maskValue (_::Map a b) mpPart mask
-    = let (rmask,rmp) = mapAccumL
-                        (\cmask pval -> let (pval',nmask) = maskValue (undefined::b) pval cmask
-                                        in (nmask,pval')
-                        ) mask mpPart
-      in (rmp,rmask)
-  unmaskValue (_::Map a b) mp = fmap (unmaskValue (undefined::b)) mp
-  assignPartial mp mpPart = concat $ Map.elems $ Map.intersectionWith assignPartial mp mpPart
+data PValue con t = NoPValue
+                  | PValue (Value con t)
 
-instance (PartialArgs a) => PartialArgs (Maybe a) where
-  type PartialValue (Maybe a) = Maybe (PartialValue a)
-  maskValue _ Nothing mask = (Nothing,mask)
-  maskValue (_::Maybe a) (Just x) mask = let (nx,nmask) = maskValue (undefined::a) x mask
-                                         in (Just nx,nmask)
-  unmaskValue (_::Maybe a) v = fmap (unmaskValue (undefined::a)) v
-  assignPartial Nothing Nothing = []
-  assignPartial (Just x) (Just vx) = assignPartial x vx
+newtype PArgs' tps con = PArgs' (Args (PValue con) tps)
 
-instance (PartialArgs a) => PartialArgs [a] where
-  type PartialValue [a] = [PartialValue a]
-  maskValue _ [] mask = ([],mask)
-  maskValue (_::[a]) (x:xs) mask = let (x',mask1) = maskValue (undefined::a) x mask
-                                       (xs',mask2) = maskValue (undefined::[a]) xs mask1
-                                   in (x':xs',mask2)
-  unmaskValue (_::[a]) xs = fmap (unmaskValue (undefined::a)) xs
-  assignPartial xs ys = concat $ zipWith assignPartial xs ys
+instance GetTypes tps => PartialComp (Args' tps) where
+  type Partial (Args' tps) = PArgs' tps
+  maskValue _ = mask'
+    where
+      mask' :: PArgs' tps' con -> [Bool] -> (PArgs' tps' con,[Bool])
+      mask' (PArgs' NoArg) xs = (PArgs' NoArg,xs)
+      mask' (PArgs' (Arg v vs)) (x:xs)
+        = let (PArgs' vs',xs') = mask' (PArgs' vs) xs
+          in (PArgs' (Arg (if x then v else NoPValue) vs'),xs')
