@@ -36,21 +36,6 @@ class Composite a => LiftComp a where
              -> a e
              -> m (Unpacked a con)
 
-newtype UArgs' tps con = UArgs' (Args (Value con) tps)
-
-instance GetTypes tps => LiftComp (Args' tps) where
-  type Unpacked (Args' tps) = UArgs' tps
-  liftComp f (UArgs' NoArg) = return (Args' NoArg)
-  liftComp f (UArgs' (Arg x xs)) = do
-    x' <- f (Const x)
-    Args' xs' <- liftComp f (UArgs' xs)
-    return (Args' (Arg x' xs'))
-  unliftComp f _ (Args' NoArg) = return (UArgs' NoArg)
-  unliftComp f g (Args' (Arg x xs)) = do
-    x' <- f x
-    UArgs' xs' <- unliftComp f g (Args' xs)
-    return $ UArgs' (Arg x' xs')
-
 class LiftComp a => PartialComp a where
   type Partial a :: (([Type],*) -> *) -> *
   maskValue :: Proxy a -> Partial a con -> [Bool] -> (Partial a con,[Bool])
@@ -61,15 +46,3 @@ class LiftComp a => PartialComp a where
 
 data PValue con t = NoPValue
                   | PValue (Value con t)
-
-newtype PArgs' tps con = PArgs' (Args (PValue con) tps)
-
-instance GetTypes tps => PartialComp (Args' tps) where
-  type Partial (Args' tps) = PArgs' tps
-  maskValue _ = mask'
-    where
-      mask' :: PArgs' tps' con -> [Bool] -> (PArgs' tps' con,[Bool])
-      mask' (PArgs' NoArg) xs = (PArgs' NoArg,xs)
-      mask' (PArgs' (Arg v vs)) (x:xs)
-        = let (PArgs' vs',xs') = mask' (PArgs' vs) xs
-          in (PArgs' (Arg (if x then v else NoPValue) vs'),xs')

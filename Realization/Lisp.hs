@@ -733,26 +733,21 @@ newtype LispValue' e sig = LispValue' (LispValue sig e)
 
 newtype LispState e = LispState (DMap LispName (LispValue' e))
 
+data LispRev tp where
+  LispRev :: LispName '(lvl,tps)
+          -> RevValue '(lvl,tps) tp
+          -> LispRev tp
+
 instance TransitionRelation LispProgram where
   type State LispProgram = LispState 
   type Input LispProgram = LispState
   type RealizationProgress LispProgram = LispState
-  createState mkVar prog pref = do
-    xs <- mapM (\(name@(LispName name') :=> ann) -> do
-                  e <- createComposite (mkVar $ Just (pref++T.unpack name'))
-                  return (name :=> LispValue' e)
-               ) (DMap.toAscList (programState prog))
-    return $ LispState $ DMap.fromAscList xs
-  createInput mkVar prog pref = do
-    xs <- mapM (\(name@(LispName name') :=> ann) -> do
-                  e <- createComposite (mkVar $ Just (pref++T.unpack name'))
-                  return (name :=> LispValue' e)
-               ) (DMap.toAscList (programInput prog))
-    return $ LispState $ DMap.fromAscList xs
-  --initialState mkExpr 
-  initialState prog st = while CreateInvariant $
-                         runIdentityT $ relativize st (LispState DMap.empty)
-                                                      (error "Realization.Lisp: initial state references gates.") expr
+  stateAnnotation = programState
+  inputAnnotation = programInput
+  initialState mkExpr prog st
+    = relativize mkExpr st (LispState DMap.empty)
+                           (error "Realization.Lisp: initial state references gates.")
+        expr
     where
       expr = case [ LispEq
                      (NamedVar name State)
@@ -761,203 +756,255 @@ instance TransitionRelation LispProgram where
         [] -> LispExpr (Const (BoolValue True))
         [e] -> e
         xs -> allEqFromList xs (\arg -> LispExpr (App (Logic And) arg))
-  stateInvariant prog inp st = do
-    invars <- runIdentityT $ mapM (relativize st inp
-                                   (error "Realization.Lisp: invariant references gates.")
-                                  ) (programInvariant prog)
+  stateInvariant mkExpr prog st inp = do
+    invars <- mapM (relativize mkExpr st inp
+                    (error "Realization.Lisp: invariant references gates.")
+                   ) (programInvariant prog)
     case invars of
-      [] -> updateBackend $ \b -> B.toBackend b (Const (BoolValue True))
+      [] -> mkExpr (Const (BoolValue True))
       [x] -> return x
-      xs -> allEqFromList xs $ \arg -> updateBackend $ \b -> B.toBackend b (App (Logic And) arg)
-  startingProgress _ = return $ LispState DMap.empty
-  declareAssumptions prog st inp gts
-    = runStateT (mapM (relativize st inp (declareGate prog st inp)
+      xs -> allEqFromList xs $ \arg -> mkExpr (App (Logic And) arg)
+  startingProgress _ = LispState DMap.empty
+  declareAssumptions mkExpr mkGate prog st inp gts
+    = runStateT (mapM (relativize (lift . mkExpr) st inp (declareGate mkExpr mkGate prog st inp)
                       ) (programAssumption prog)
                 ) gts
-  declareAssertions prog st inp gts
-    = runStateT (mapM (relativize st inp (declareGate prog st inp)
+  declareAssertions mkExpr mkGate prog st inp gts
+    = runStateT (mapM (relativize (lift . mkExpr) st inp (declareGate mkExpr mkGate prog st inp)
                       ) (programProperty prog)
                 ) gts
-  declareNextState prog st inp gts = do
+  declareNextState mkExpr mkGate prog st inp gts = do
     let lst = DMap.toAscList (programNext prog)
     (nlst,ngts) <- runStateT
                    (mapM (\(name@(LispName name') :=> var) -> do
-                            nvar <- relativizeVar st inp (declareGate prog st inp) var >>= lift.defineGate (T.unpack name')
+                            nvar <- relativizeVar (lift . mkExpr) st inp
+                                      (declareGate mkExpr mkGate prog st inp) var >>=
+                                      defineGate (\n e -> lift $ mkGate n e) (T.unpack name')
                             return $ name :=> (LispValue' nvar)
                          ) lst) gts
     return (LispState $ DMap.fromAscList nlst,ngts)
 
-declareGate :: Backend b => LispProgram -> LispState (Expr b) -> LispState (Expr b)
+declareGate :: (Monad m,Typeable con)
+            => (forall t. GetType t
+                => Expression v qv fun con field fv e t
+                -> m (e t))
+            -> (forall t. GetType t => Maybe String -> e t -> m (e t))
+            -> LispProgram -> LispState e -> LispState e
             -> LispName '(lvl,tp)
-            -> StateT (LispState (Expr b)) (SMT b) (LispValue '(lvl,tp) (Expr b))
-declareGate prog st inp name@(LispName name') = do
+            -> StateT (LispState e) m (LispValue '(lvl,tp) e)
+declareGate mkExpr mkGate prog st inp name@(LispName name') = do
   LispState mp <- get
   case DMap.lookup name mp of
     Just (LispValue' r) -> return r
     Nothing -> case DMap.lookup name (programGates prog) of
       Just var -> do
-        val <- relativizeVar st inp (declareGate prog st inp) var
-        gt <- lift $ defineGate (T.unpack name') val
+        val <- relativizeVar (lift . mkExpr) st inp (declareGate mkExpr mkGate prog st inp) var
+        gt <- lift $ defineGate mkGate (T.unpack name') val
         LispState mp' <- get
         put $ LispState $ DMap.insert name (LispValue' gt) mp'
         return gt
 
-defineGate :: Backend b => String -> LispValue '(lvl,tp) (Expr b)
-           -> SMT b (LispValue '(lvl,tp) (Expr b))
-defineGate name val = do
-  sz <- defineSize name (size val)
-  v <- mapLispStructM (\(Val e) -> do
-                         e' <- updateBackend $ \b -> B.defineVar b (Just name) e
-                         e'' <- toBackend $ Var e'
-                         return (Val e'')
+defineGate :: Monad m
+           => (forall t. GetType t => Maybe String -> e t -> m (e t))
+           -> String -> LispValue '(lvl,tp) e
+           -> m (LispValue '(lvl,tp) e)
+defineGate mkGate name val = do
+  sz <- defineSize mkGate name (size val)
+  v <- mapLispStructM (\_ (Val e) -> do
+                         e' <- mkGate (Just name) e
+                         return (Val e')
                       ) (value val)
   return (LispValue sz v)
   where
-    defineSize :: Backend b => String -> Size (Expr b) lvl' -> SMT b (Size (Expr b) lvl')
-    defineSize _ NoSize = return NoSize
-    defineSize name (Size i is) = do
-      i' <- updateBackend $ \b -> B.defineVar b (Just name) i
-      is' <- defineSize name is
-      i'' <- toBackend $ Var i'
-      return (Size i'' is')
+    defineSize :: Monad m
+               => (forall t. GetType t => Maybe String -> e t -> m (e t))
+               -> String -> Size e lvl' -> m (Size e lvl')
+    defineSize _ _ NoSize = return NoSize
+    defineSize mkGate name (Size i is) = do
+      i' <- mkGate (Just name) i
+      is' <- defineSize mkGate name is
+      return (Size i' is')
 
-relativize :: (Backend b,GetType t,MonadTrans m,Monad (m (SMT b)))
-           => LispState (Expr b)
-           -> LispState (Expr b)
-           -> (forall lvl tp. LispName '(lvl,tp) -> m (SMT b) (LispValue '(lvl,tp) (Expr b)))
+relativize :: (Monad m,Typeable con,GetType t)
+           => (forall t'. GetType t'
+               => Expression v qv fun con field fv e t'
+               -> m (e t'))
+           -> LispState e
+           -> LispState e
+           -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
            -> LispExpr t
-           -> m (SMT b) (Expr b t)
-relativize st inp gts (LispExpr e) = do
+           -> m (e t)
+relativize mkExpr st inp gts (LispExpr e) = do
   e' <- mapExpr err err err err err err
-        (relativize st inp gts) e
-  lift $ updateBackend $ \b -> B.toBackend b e'
+        (relativize mkExpr st inp gts) e
+  mkExpr e'
   where
     err = error "Realization.Lisp.relativize: LispExpr shouldn't have any user defined entities."
-relativize st inp gts (LispRef var stat dyn) = do
-  val <- relativizeVar st inp gts var
-  dyn' <- relativizeIndex st inp gts dyn
+relativize mkExpr st inp gts (LispRef var stat dyn) = do
+  val <- relativizeVar mkExpr st inp gts var
+  dyn' <- relativizeIndex mkExpr st inp gts dyn
   (Val res,_) <- accessVal stat (value val) $
-                 \val' -> accessArray (defLifting lift) dyn' val' $
+                 \val' -> accessArray mkExpr dyn' val' $
                     \val'' -> return (val'',val'')
   return res
-relativize st inp gts (LispEq v1 v2) = do
-  val1 <- relativizeVar st inp gts v1
-  val2 <- relativizeVar st inp gts v2
-  c1 <- lift $ eqSize (size val1) (size val2)
-  c2 <- lift $ eqVal (value val1) (value val2)
+relativize mkExpr st inp gts (LispEq v1 v2) = do
+  val1 <- relativizeVar mkExpr st inp gts v1
+  val2 <- relativizeVar mkExpr st inp gts v2
+  c1 <- eqSize mkExpr (size val1) (size val2)
+  c2 <- eqVal mkExpr (value val1) (value val2)
   case c1++c2 of
-    [] -> lift $ updateBackend $ \b -> B.toBackend b $ Const $ BoolValue True
+    [] -> mkExpr $ Const $ BoolValue True
     [x] -> return x
-    xs -> lift $ allEqFromList xs $
-          \arg -> updateBackend $
-          \b -> B.toBackend b $ App (Logic And) arg
+    xs -> allEqFromList xs $
+          \arg -> mkExpr $ App (Logic And) arg
   where
-    eqSize :: Backend b => Size (Expr b) sig -> Size (Expr b) sig -> SMT b [Expr b BoolType]
-    eqSize NoSize NoSize = return []
-    eqSize (Size i is) (Size j js) = do
-      c <- updateBackend $ \b -> B.toBackend b $ App Eq $ Arg i $ Arg j NoArg
-      cs <- eqSize is js
+    eqSize :: Monad m
+           => (forall t'. GetType t'
+               => Expression v qv fun con field fv e t'
+               -> m (e t'))
+           -> Size e sig -> Size e sig
+           -> m [e BoolType]
+    eqSize _ NoSize NoSize = return []
+    eqSize mkExpr (Size i is) (Size j js) = do
+      c <- mkExpr $ App Eq $ Arg i $ Arg j NoArg
+      cs <- eqSize mkExpr is js
       return (c:cs)
 
-    eqVal :: Backend b => LispStruct (LispVal (Expr b) lvl) tps
-          -> LispStruct (LispVal (Expr b) lvl) tps
-          -> SMT b [Expr b BoolType]
-    eqVal (LSingleton (Val v1)) (LSingleton (Val v2)) = do
-      c <- updateBackend $ \b -> B.toBackend b $ App Eq $ Arg v1 $ Arg v2 NoArg
+    eqVal :: Monad m
+          => (forall t'. GetType t'
+              => Expression v qv fun con field fv e t'
+              -> m (e t'))
+          -> LispStruct (LispVal e lvl) tps
+          -> LispStruct (LispVal e lvl) tps
+          -> m [e BoolType]
+    eqVal mkExpr (LSingleton (Val v1)) (LSingleton (Val v2)) = do
+      c <- mkExpr $ App Eq $ Arg v1 $ Arg v2 NoArg
       return [c]
-    eqVal (LStruct xs) (LStruct ys) = eqVal' xs ys
+    eqVal mkExpr (LStruct xs) (LStruct ys) = eqVal' mkExpr xs ys
 
-    eqVal' :: Backend b => StructArgs (LispVal (Expr b) lvl) tps
-           -> StructArgs (LispVal (Expr b) lvl) tps
-           -> SMT b [Expr b BoolType]
-    eqVal' NoSArg NoSArg = return []
-    eqVal' (SArg x xs) (SArg y ys) = do
-      c1 <- eqVal x y
-      c2 <- eqVal' xs ys
+    eqVal' :: Monad m
+           => (forall t'. GetType t'
+               => Expression v qv fun con field fv e t'
+               -> m (e t'))
+           -> StructArgs (LispVal e lvl) tps
+           -> StructArgs (LispVal e lvl) tps
+           -> m [e BoolType]
+    eqVal' _ NoSArg NoSArg = return []
+    eqVal' mkExpr (SArg x xs) (SArg y ys) = do
+      c1 <- eqVal mkExpr x y
+      c2 <- eqVal' mkExpr xs ys
       return $ c1++c2
-relativize st inp gts (ExactlyOne es) = do
-  es' <- mapM (relativize st inp gts) es
-  lift $ oneOf es'
-relativize st inp gts (AtMostOne es) = do
-  es' <- mapM (relativize st inp gts) es
-  lift $ atMostOneOf es'
-relativize st inp gts e = error $ "Realization.Lisp.relativize: Cannot relativize: "++show e
+relativize mkExpr st inp gts (ExactlyOne es) = do
+  es' <- mapM (relativize mkExpr st inp gts) es
+  oneOf mkExpr es'
+relativize mkExpr st inp gts (AtMostOne es) = do
+  es' <- mapM (relativize mkExpr st inp gts) es
+  atMostOneOf mkExpr es'
+relativize mkExpr st inp gts e = error $ "Realization.Lisp.relativize: Cannot relativize: "++show e
 
-oneOf :: Backend b => [Expr b BoolType] -> SMT b (Expr b BoolType)
-oneOf [] = toBackend $ Const (BoolValue True)
-oneOf [x] = return x
-oneOf xs = do
-  disj <- oneOf' [] xs
-  allEqFromList disj $ \arg -> toBackend $ App (Logic Or) arg
+oneOf :: Monad m
+      => (forall t'. GetType t'
+          => Expression v qv fun con field fv e t'
+          -> m (e t'))
+      -> [e BoolType] -> m (e BoolType)
+oneOf mkExpr [] = mkExpr $ Const (BoolValue True)
+oneOf _ [x] = return x
+oneOf mkExpr xs = do
+  disj <- oneOf' mkExpr  [] xs
+  allEqFromList disj $ \arg -> mkExpr $ App (Logic Or) arg
   where
-    oneOf' :: Backend b => [Expr b BoolType] -> [Expr b BoolType] -> SMT b [Expr b BoolType]
-    oneOf' _ [] = return []
-    oneOf' xs (y:ys) = do
-      negs <- mapM (\e -> toBackend $ App Not (Arg e NoArg)) (xs++ys)
-      conj <- allEqFromList (y:negs) $ \arg -> toBackend $ App (Logic And) arg
-      rest <- oneOf' (y:xs) ys
+    oneOf' :: Monad m
+           => (forall t'. GetType t'
+               => Expression v qv fun con field fv e t'
+               -> m (e t'))
+           -> [e BoolType] -> [e BoolType] -> m [e BoolType]
+    oneOf' _ _ [] = return []
+    oneOf' mkExpr xs (y:ys) = do
+      negs <- mapM (\e -> mkExpr $ App Not (Arg e NoArg)) (xs++ys)
+      conj <- allEqFromList (y:negs) $ \arg -> mkExpr $ App (Logic And) arg
+      rest <- oneOf' mkExpr (y:xs) ys
       return (conj:rest)
 
-atMostOneOf :: Backend b => [Expr b BoolType] -> SMT b (Expr b BoolType)
-atMostOneOf [] = toBackend $ Const (BoolValue True)
-atMostOneOf [x] = toBackend $ Const (BoolValue True)
-atMostOneOf xs = do
-  disj <- oneOf' [] xs
-  allEqFromList disj $ \arg -> toBackend $ App (Logic Or) arg
+atMostOneOf :: Monad m
+            => (forall t'. GetType t'
+                => Expression v qv fun con field fv e t'
+                -> m (e t'))
+            -> [e BoolType] -> m (e BoolType)
+atMostOneOf mkExpr [] = mkExpr $ Const (BoolValue True)
+atMostOneOf mkExpr [x] = mkExpr $ Const (BoolValue True)
+atMostOneOf mkExpr xs = do
+  disj <- oneOf' mkExpr [] xs
+  allEqFromList disj $ \arg -> mkExpr $ App (Logic Or) arg
   where
-    oneOf' :: Backend b => [Expr b BoolType] -> [Expr b BoolType] -> SMT b [Expr b BoolType]
-    oneOf' xs [] = do
-      negs <- mapM (\e -> toBackend $ App Not (Arg e NoArg)) xs
-      conj <- allEqFromList negs $ \arg -> toBackend $ App (Logic And) arg
+    oneOf' :: Monad m
+           => (forall t'. GetType t'
+               => Expression v qv fun con field fv e t'
+               -> m (e t'))
+           -> [e BoolType] -> [e BoolType] -> m [e BoolType]
+    oneOf' mkExpr xs [] = do
+      negs <- mapM (\e -> mkExpr $ App Not (Arg e NoArg)) xs
+      conj <- allEqFromList negs $ \arg -> mkExpr $ App (Logic And) arg
       return [conj]
-    oneOf' xs (y:ys) = do
-      negs <- mapM (\e -> toBackend $ App Not (Arg e NoArg)) (xs++ys)
-      conj <- allEqFromList (y:negs) $ \arg -> toBackend $ App (Logic And) arg
-      rest <- oneOf' (y:xs) ys
+    oneOf' mkExpr xs (y:ys) = do
+      negs <- mapM (\e -> mkExpr $ App Not (Arg e NoArg)) (xs++ys)
+      conj <- allEqFromList (y:negs) $ \arg -> mkExpr $ App (Logic And) arg
+      rest <- oneOf' mkExpr (y:xs) ys
       return (conj:rest)
 
-relativizeVar :: (Backend b,MonadTrans m,Monad (m (SMT b)))
-              => LispState (Expr b)
-              -> LispState (Expr b)
-              -> (forall lvl tp. LispName '(lvl,tp) -> m (SMT b) (LispValue '(lvl,tp) (Expr b)))
+relativizeVar :: (Monad m,Typeable con)
+              => (forall t. GetType t
+                  => Expression v qv fun con field fv e t
+                  -> m (e t))
+              -> LispState e
+              -> LispState e
+              -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
               -> LispVar LispExpr sig
-              -> m (SMT b) (LispValue sig (Expr b))
-relativizeVar (LispState st) (LispState inp) gts (NamedVar name@(LispName _) cat)
+              -> m (LispValue sig e)
+relativizeVar mkExpr (LispState st) (LispState inp) gts (NamedVar name@(LispName _) cat)
   = case cat of
       Input -> case DMap.lookup name inp of
         Just (LispValue' r) -> return r
       State -> case DMap.lookup name st of
         Just (LispValue' r) -> return r
       Gate -> gts name
-relativizeVar st inp gts (LispConstr val) = do
-  sz <- relativizeSize st inp gts (size val)
-  val <- mapLispStructM (\(Val e) -> fmap Val (relativize st inp gts e)) (value val)
+relativizeVar mkExpr st inp gts (LispConstr val) = do
+  sz <- relativizeSize mkExpr st inp gts (size val)
+  val <- mapLispStructM (\_ (Val e) -> fmap Val (relativize mkExpr st inp gts e)
+                        ) (value val)
   return $ LispValue sz val
   where
-    relativizeSize :: (Backend b,MonadTrans m,Monad (m (SMT b)))
-                   => LispState (Expr b) -> LispState (Expr b)
-                   -> (forall lvl tp. LispName '(lvl,tp) -> m (SMT b) (LispValue '(lvl,tp) (Expr b)))
+    relativizeSize :: (Monad m,Typeable con)
+                   => (forall t. GetType t
+                       => Expression v qv fun con field fv e t
+                       -> m (e t))
+                   -> LispState e -> LispState e
+                   -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
                    -> Size LispExpr lvl
-                   -> m (SMT b) (Size (Expr b) lvl)
-    relativizeSize _ _ _ NoSize = return NoSize
-    relativizeSize st inp gts (Size i is) = do
-      i' <- relativize st inp gts i
-      is' <- relativizeSize st inp gts is
+                   -> m (Size e lvl)
+    relativizeSize _ _ _ _ NoSize = return NoSize
+    relativizeSize mkExpr st inp gts (Size i is) = do
+      i' <- relativize mkExpr st inp gts i
+      is' <- relativizeSize mkExpr st inp gts is
       return $ Size i' is'
 
-relativizeIndex :: (Backend b,MonadTrans m,Monad (m (SMT b)))
-                => LispState (Expr b)
-                -> LispState (Expr b)
-                -> (forall lvl tp. LispName '(lvl,tp) -> m (SMT b) (LispValue '(lvl,tp) (Expr b)))
+relativizeIndex :: (Monad m,Typeable con)
+                => (forall t. GetType t
+                    => Expression v qv fun con field fv e t
+                    -> m (e t))
+                -> LispState e
+                -> LispState e
+                -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
                 -> LispArrayIndex LispExpr lvl rlvl tp
-                -> m (SMT b) (LispArrayIndex (Expr b) lvl rlvl tp)
-relativizeIndex st inp gts ArrGet = return ArrGet
-relativizeIndex st inp gts (ArrIdx i is) = do
-  i' <- relativize st inp gts i
-  is' <- relativizeIndex st inp gts is
+                -> m (LispArrayIndex e lvl rlvl tp)
+relativizeIndex mkExpr st inp gts ArrGet = return ArrGet
+relativizeIndex mkExpr st inp gts (ArrIdx i is) = do
+  i' <- relativize mkExpr st inp gts i
+  is' <- relativizeIndex mkExpr st inp gts is
   return (ArrIdx i' is')
 
 instance Composite LispState where
+  type CompDescr LispState = DMap LispName Annotation
+  type RevComp LispState = LispRev
   foldExprs f (LispState mp) = do
     let lst = DMap.toAscList mp
     nlst <- mapM (\(name@(LispName _) :=> (LispValue' val)) -> do
@@ -965,6 +1012,14 @@ instance Composite LispState where
                     return (name :=> (LispValue' nval))
                  ) lst
     return $ LispState $ DMap.fromAscList nlst
+  createComposite mkVar ann = do
+    lst' <- mapM (\(name@(LispName _) :=> _) -> do
+                    res <- createComposite (\rev -> mkVar (LispRev name rev)) ()
+                    return $ name :=> (LispValue' res)
+                 ) lst
+    return $ LispState (DMap.fromAscList lst')
+    where
+      lst = DMap.toAscList ann
 
 newtype LispUVal' e sig = LispUVal' (LispUVal sig e)
 

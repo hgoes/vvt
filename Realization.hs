@@ -1,47 +1,65 @@
 {-# LANGUAGE TypeFamilies,MultiParamTypeClasses,FlexibleContexts,ScopedTypeVariables #-}
 module Realization where
 
+import Args
 import PartialArgs
 
 import Language.SMTLib2.LowLevel
 import Control.Monad.State (MonadIO)
 import Data.Proxy
+import Data.Typeable
 
 class (PartialComp (State t),PartialComp (Input t))
       => TransitionRelation t where
   type State t :: (Type -> *) -> *
   type Input t :: (Type -> *) -> *
-  type RevState t
   type PredicateExtractor t
   type RealizationProgress t :: (Type -> *) -> *
-  createState :: Monad m
-              => (forall t. GetType t => Maybe String -> m (e t))
-              -> t
-              -> String
-              -> m (State t e)
-  createInput :: Monad m
-              => (forall t. GetType t => Maybe String -> m (e t))
-              -> t
-              -> String
-              -> m (Input t e)
-  initialState :: Backend b => t -> State t (Expr b) -> SMT b (Expr b BoolType)
-  {-initialState :: Monad m
+  stateAnnotation :: t -> CompDescr (State t)
+  inputAnnotation :: t -> CompDescr (Input t)
+  initialState :: (Monad m,Typeable con)
                => (forall t. GetType t
                    => Expression v qv fun con field fv e t
                    -> m (e t))
                -> t
                -> State t e
-               -> m (e BoolType)-}
-  stateInvariant :: Backend b => t -> Input t (Expr b) -> State t (Expr b) -> SMT b (Expr b BoolType)
-  declareNextState :: Backend b => t -> State t (Expr b) -> Input t (Expr b)
-                   -> RealizationProgress t (Expr b)
-                   -> SMT b (State t (Expr b),RealizationProgress t (Expr b))
-  declareAssertions :: Backend b => t -> State t (Expr b) -> Input t (Expr b)
-                    -> RealizationProgress t (Expr b)
-                    -> SMT b ([Expr b BoolType],RealizationProgress t (Expr b))
-  declareAssumptions :: Backend b => t -> State t (Expr b) -> Input t (Expr b)
-                     -> RealizationProgress t (Expr b)
-                     -> SMT b ([Expr b BoolType],RealizationProgress t (Expr b))
+               -> m (e BoolType)
+  stateInvariant :: (Monad m,Typeable con)
+                 => (forall t. GetType t
+                     => Expression v qv fun con field fv e t
+                     -> m (e t))
+                 ->t -> State t e -> Input t e
+                 -> m (e BoolType)
+  declareNextState :: (Monad m,Typeable con)
+                   => (forall t. GetType t
+                       => Expression v qv fun con field fv e t
+                       -> m (e t))
+                   -> (forall t. GetType t
+                       => Maybe String -> e t -> m (e t))
+                   -> t
+                   -> State t e -> Input t e
+                   -> RealizationProgress t e
+                   -> m (State t e,RealizationProgress t e)
+  declareAssumptions :: (Monad m,Typeable con)
+                     => (forall t. GetType t
+                         => Expression v qv fun con field fv e t
+                         -> m (e t))
+                     -> (forall t. GetType t
+                         => Maybe String -> e t -> m (e t))
+                     -> t
+                     -> State t e -> Input t e
+                     -> RealizationProgress t e
+                     -> m ([e BoolType],RealizationProgress t e)
+  declareAssertions :: (Monad m,Typeable con)
+                    => (forall t. GetType t
+                        => Expression v qv fun con field fv e t
+                        -> m (e t))
+                    -> (forall t. GetType t
+                        => Maybe String -> e t -> m (e t))
+                    -> t
+                    -> State t e -> Input t e
+                    -> RealizationProgress t e
+                    -> m ([e BoolType],RealizationProgress t e)
   {-createRevState :: Backend b => String -> t -> SMT b (State t (Expr b),RevState t)
   relativizeExpr :: (GetType a,Backend b) => t -> RevState t -> Expr b a -> (State t (Expr b) -> SMT b (Expr b a))
   renderPartialState :: Backend b => t -> Partial (State t) (Constr b) -> SMT b String
@@ -55,7 +73,7 @@ class (PartialComp (State t),PartialComp (Input t))
                        -> PartialValue (State t e)
                        -> m (PredicateExtractor t,
                              [State t e -> e BoolType])-}
-  startingProgress :: Backend b => t -> SMT b (RealizationProgress t (Expr b))
+  startingProgress :: t -> RealizationProgress t e
 
 {-renderState :: (TransitionRelation t,MonadIO m) => t -> Unpacked (State t) -> m String
 renderState (mdl::t) st = renderPartialState mdl

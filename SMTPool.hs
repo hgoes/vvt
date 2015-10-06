@@ -20,20 +20,22 @@ createSMTPool :: (Backend b,SMTMonad b ~ IO)
               => IO b
               -> SMT b (a (Expr b))
               -> IO (SMTPool () b a)
-createSMTPool backend act = createSMTPool' backend () act
+createSMTPool backend act = createSMTPool' backend (return ()) act
 
 createSMTPool' :: (Backend b,SMTMonad b ~ IO)
                => IO b
-               -> info
+               -> SMT b info
                -> SMT b (a (Expr b))
                -> IO (SMTPool info b a)
-createSMTPool' createBackend info (SMT act)
+createSMTPool' createBackend (SMT info) (SMT act)
   = createPool (do
                    b <- createBackend
                    let st0 = SMTState b emptyDatatypeInfo
-                   (vars,st1) <- (runStateT act st0) `onException`
+                   (info',st1) <- (runStateT info st0) `onException`
+                                  (exit b)
+                   (vars,st2) <- (runStateT act st1) `onException`
                                  (exit b)
-                   return $ SMTInstance st1 vars info)
+                   return $ SMTInstance st2 vars info')
     (\(SMTInstance { instanceState = st }) -> exit (backend st))
     1 5 10
 

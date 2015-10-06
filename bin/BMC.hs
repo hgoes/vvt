@@ -14,6 +14,7 @@ import Language.SMTLib2.Z3
 import Language.SMTLib2.Internals.Expression
 import qualified Language.SMTLib2.Internals.Backend as B
 --import Language.SMTLib2.DatatypeEmulator
+import Args
 import PartialArgs
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -65,15 +66,17 @@ main = do
              let act :: forall b. (Backend b,MonadIO (B.SMTMonad b))
                      => SMT b (Maybe [Unpacked (State LispProgram) (B.Constr b)])
                  act = do
-                   st0 <- createState (\name -> updateBackend $ \b -> do
-                                          (v,b1) <- B.declareVar b name
-                                          B.toBackend b1 (Var v)
-                                      ) prog ""
-                   inp0 <- createInput (\name -> updateBackend $ \b -> do
-                                          (v,b1) <- B.declareVar b name
-                                          B.toBackend b1 (Var v)
-                                       ) prog ""
-                   init <- initialState prog st0
+                   st0 <- createComposite (\(LispRev (LispName name) _)
+                                           -> updateBackend $ \b -> do
+                                              (v,b1) <- B.declareVar b (Just $ T.unpack name)
+                                              B.toBackend b1 (Var v)
+                                          ) (programState prog)
+                   inp0 <- createComposite (\(LispRev (LispName name) _)
+                                            -> updateBackend $ \b -> do
+                                               (v,b1) <- B.declareVar b (Just $ T.unpack name)
+                                               B.toBackend b1 (Var v)
+                                           ) (programInput prog)
+                   init <- initialState (\e -> updateBackend $ \b -> B.toBackend b e) prog st0
                    updateBackend' $ \b -> B.assert b init
                    bmc prog (incremental opts) (bmcDepth opts) 0 st0 inp0 []
              res <- if debug opts
@@ -107,12 +110,22 @@ main = do
                         ) sts
             Unsat -> return Nothing
     bmc prog inc l n st inp sts = do
-      invar <- stateInvariant prog inp st
+      invar <- stateInvariant (\e -> updateBackend $ \b -> B.toBackend b e) prog st inp
       updateBackend' $ \b -> B.assert b invar
-      gts0 <- startingProgress prog
-      (assumps,gts1) <- declareAssumptions prog st inp gts0
+      let gts0 = startingProgress prog
+      (assumps,gts1) <- declareAssumptions
+                        (\e -> updateBackend $ \b -> B.toBackend b e)
+                        (\name e -> updateBackend $ \b -> do
+                           (v,b1) <- B.defineVar b name e
+                           B.toBackend b1 (Var v))
+                        prog st inp gts0
       mapM_ (\e -> updateBackend' $ \b -> B.assert b e) assumps
-      (asserts,gts2) <- declareAssertions prog st inp gts1
+      (asserts,gts2) <- declareAssertions
+                        (\e -> updateBackend $ \b -> B.toBackend b e)
+                        (\name e -> updateBackend $ \b -> do
+                           (v,b1) <- B.defineVar b name e
+                           B.toBackend b1 (Var v))
+                        prog st inp gts1
       res <- if inc
              then stack $ do
                liftIO $ putStrLn $ "Level "++show n
@@ -133,10 +146,16 @@ main = do
       case res of
        Just bug -> return $ Just bug
        Nothing -> do
-         (nxt,gts3) <- declareNextState prog st inp gts2
-         ninp <- createInput (\name -> updateBackend $ \b -> do
-                                 (v,b1) <- B.declareVar b name
-                                 B.toBackend b1 (Var v)
-                             ) prog ""
+         (nxt,gts3) <- declareNextState
+                       (\e -> updateBackend $ \b -> B.toBackend b e)
+                       (\name e -> updateBackend $ \b -> do
+                          (v,b1) <- B.defineVar b name e
+                          B.toBackend b1 (Var v))
+                       prog st inp gts2
+         ninp <- createComposite (\_ --(LispRev (LispName name) _)
+                                  -> updateBackend $ \b -> do
+                                       (v,b1) <- B.declareVar b Nothing --(Just $ T.unpack name)
+                                       B.toBackend b1 (Var v)
+                                 ) (inputAnnotation prog)
          conjAss <- allEqFromList asserts $ \arg -> toBackend $ App (Logic And) arg
          bmc prog inc l (n+1) nxt ninp ((st,conjAss):sts)

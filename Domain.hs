@@ -1,6 +1,6 @@
 {-# LANGUAGE ExistentialQuantification,FlexibleContexts,PackageImports,GADTs,ScopedTypeVariables #-}
 module Domain
-       (Domain()
+      {- (Domain()
        ,AbstractState()
        ,initialDomain
        ,toDomainTerm
@@ -11,13 +11,18 @@ module Domain
        ,domainHash
        ,renderDomainTerm
        ,renderDomain
-       ) where
+       )-} where
 
-import Language.SMTLib2
+import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Backend hiding (setOption,getInfo,toBackend,checkSat,getValue)
+import qualified Language.SMTLib2.Internals.Backend as B
+import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.LowLevel hiding (assert)
+
+import Args
 import SMTPool
---import Language.SMTLib2.Internals (SMTExpr(..),SMTFunction(..))
---import Language.SMTLib2.Internals.Operators
 
+import Control.Monad.Identity
 import Data.Graph.Inductive
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -31,21 +36,40 @@ import Control.Monad (when)
 import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 import Data.Typeable
+import Data.GADT.Compare
 
 -- Test Modules
-import Language.SMTLib2.Pipe
+--import Language.SMTLib2.Pipe
 import "mtl" Control.Monad.Trans (liftIO)
 
-newtype Predicate a = Predicate (forall b. Backend b => a -> SMT b (Expr b BoolType))
+newtype Predicate a
+  = Predicate (forall m e v qv fun con field fv. Monad m
+               => (forall t. GetType t
+                   => Expression v qv fun con field fv e t
+                   -> m (e t)) -> a e -> m (e BoolType))
+
+newtype DomainExpr a t
+  = DomainExpr (Expression (RevComp a) NoVar NoFun NoCon NoField NoVar (DomainExpr a) t)
+
+instance Composite a => GEq (DomainExpr a) where
+  geq (DomainExpr x) (DomainExpr y) = geq x y
+instance Composite a => GCompare (DomainExpr a) where
+  gcompare (DomainExpr x) (DomainExpr y) = gcompare x y
+instance Composite a => Eq (DomainExpr a t) where
+  (==) = defaultEq
+instance Composite a => Ord (DomainExpr a t) where
+  compare = defaultCompare
+
+data DomainVar a = forall t. GetType t => DomainVar (RevComp a t)
 
 -- | Stores a lattice of abstractions.
 --   An edge from A to B signifies that A includes B
-data Domain a = forall b. (SMTBackend b,SMTMonad b ~ IO)
-                => Domain { domainGArg :: a
-                          , domainGraph :: Gr (Predicate a,Expr b BoolType,Set Integer) ()
-                          , domainNodesRev :: Map (Expr b BoolType) Node
+data Domain a = forall b. (Backend b,SMTMonad b ~ IO)
+                => Domain { domainGArg :: a (RevComp a)
+                          , domainGraph :: Gr (Predicate a,DomainExpr a BoolType,Set (DomainVar a)) ()
+                          , domainNodesRev :: Map (DomainExpr a BoolType) Node
                           , domainNextNode :: Node
-                          , domainPool :: SMTPool (DomainInstance a) b a
+                          , domainPool :: SMTPool (DomainInstance (Expr b)) b a
                           , domainVerbosity :: Int
                           , domainTimeout :: Maybe Integer
                           }
@@ -59,50 +83,61 @@ data DomainInstance e = DomainInstance { domainNodes :: Map Node (e BoolType)
 type AbstractState a = Vector (Node,Bool)
 
 -- | Create the initial domain containing only true and false.
-initialDomain :: (Args a,SMTBackend b IO) => Int -- ^ How verbose the domain should be (0 = no output)
+initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
+              => Int -- ^ How verbose the domain should be (0 = no output)
               -> IO b -- ^ A function to create SMT backends
-              -> ArgAnnotation a -- ^ The annotation for the data type abstracted by the domain
-              -> SMT a -- ^ An SMT action to create an instance of the abstracted data type
+              -> CompDescr a -- ^ The annotation for the data type abstracted by the domain
+              -> (forall m e. Monad m
+                  => (forall t. GetType t
+                      => RevComp a t -> m (e t)) -> m (a e)
+                 ) -- ^ An SMT action to create an instance of the abstracted data type
               -> IO (Domain a)
-initialDomain verb backend ann (alloc::SMT a) = do
-  let initInst = DomainInstance { domainNodes = Map.fromList
-                                                [(domainTop,constant True)
-                                                ,(domainBot,constant False)]
+initialDomain verb backend ann alloc = do
+  let initInst = do
+        top <- toBackend (Const (BoolValue True))
+        bot <- toBackend (Const (BoolValue False))
+        return DomainInstance { domainNodes = Map.fromList
+                                                [(domainTop,top)
+                                                ,(domainBot,bot)]
                                 , domainInstNext = 2
                                 , domainIsFresh = True }
-      Just (gArg,[]) = toArgs ann
-                       [InternalObj (i::Integer) tp
-                       | (i,tp) <- zip [0..] (getTypes (undefined::a) ann)]
+      gArg = runIdentity $ alloc (\rev -> return rev)
   supportsTimeouts <- do
     back <- backend
-    withSMTBackendExitCleanly back $ do
+    withBackendExitCleanly back $ do
       name <- getInfo SMTSolverName
       return $ name=="Z3"
   pool <- createSMTPool' backend initInst $ do
     setOption (ProduceModels True)
-    alloc
+    alloc (\_ -> updateBackend $ \b -> do
+                   (v,b1) <- declareVar b Nothing
+                   B.toBackend b1 (Var v)
+          )
   return $ Domain { domainGraph = mkGraph
-                                  [(domainTop,(const $ constant True,constant True,Set.empty))
-                                  ,(domainBot,(const $ constant False,constant False,Set.empty))]
+                                  [(domainTop,(Predicate $ \f _ -> f (Const (BoolValue True)),
+                                               DomainExpr (Const (BoolValue True)),Set.empty))
+                                  ,(domainBot,(Predicate $ \f _ -> f (Const (BoolValue False)),
+                                               DomainExpr (Const (BoolValue False)),Set.empty))]
                                   [(domainTop,domainBot,())]
                   , domainGArg = gArg
                   , domainNodesRev = Map.fromList
-                                     [(constant True,domainTop)
-                                     ,(constant False,domainBot)]
+                                     [(DomainExpr (Const (BoolValue True)),domainTop)
+                                     ,(DomainExpr (Const (BoolValue False)),domainBot)]
                   , domainNextNode = 2
                   , domainPool = pool
                   , domainVerbosity = verb
-                  , domainAnnotation = ann
                   , domainTimeout = if supportsTimeouts
                                     then Just 2000
                                     else Nothing
                   }
 
-updateInstance :: Domain a -> DomainInstance a -> a -> SMT (DomainInstance a)
+updateInstance :: Backend b => Domain a -> DomainInstance (Expr b) -> a (Expr b)
+               -> SMT b (DomainInstance (Expr b))
 updateInstance dom inst vars
   = foldlM (\cinst nd -> do
-               let Just (prop,_,_) = lab (domainGraph dom) nd
-               cprop <- defConstNamed ("pred"++show nd) (prop vars)
+               let Just (Predicate prop,_,_) = lab (domainGraph dom) nd
+               cprop <- prop toBackend vars
+               cprop' <- updateBackend $ \b -> defineVar b (Just "pred") cprop
                return (cinst { domainNodes = Map.insert nd cprop (domainNodes cinst)
                              })
            ) (inst { domainInstNext = domainNextNode dom })
@@ -111,7 +146,7 @@ updateInstance dom inst vars
 domainTop,domainBot :: Node
 domainTop = 0
 domainBot = 1
-
+{-
 generalizePredicate :: Domain a -> (a -> SMTExpr Bool) -> (SMTExpr Bool,Set Integer)
 generalizePredicate dom pred = (qpred,vars)
   where
@@ -279,15 +314,15 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                    xs -> return $ Just (Set.unions xs))
 
 -- | Create an abstract state from a concrete state.
-domainAbstract :: (a -> SMTExpr Bool)  -- ^ An expression which describes the concrete state
-                  -> Node -- ^ A property that must be considered
-                  -> Domain a -- ^ The domain to use for the abstraction
-                  -> IO (AbstractState a)
+domainAbstract :: (a -> SMT b (Expr b BoolType))  -- ^ An expression which describes the concrete state
+               -> Node -- ^ A property that must be considered
+               -> Domain a -- ^ The domain to use for the abstraction
+               -> IO (AbstractState a)
 domainAbstract expr mustUse dom = do
   Right res <- withSMTPool' (domainPool dom) $ \inst vars -> do
     ninst <- updateInstance dom inst vars
     lst <- stack $ do
-      assert (expr vars)
+      updateBackend' $ \b -> assert b (expr vars)
       let reprs = filter (\(nd,_) -> nd/=domainTop && nd/=domainBot) $
                   Map.toList $ domainNodes ninst
       sol <- checkSat
@@ -305,29 +340,46 @@ domainAbstract expr mustUse dom = do
   return (Vec.fromList res)
   where
     (_,exprVars) = generalizePredicate dom expr
-
+-}
 -- | Create an SMT expression that represents an abstract state.
-toDomainTerm :: AbstractState a -- ^ The abstract state to represent
+toDomainTerm :: Backend b
+             => AbstractState a -- ^ The abstract state to represent
              -> Domain a -- ^ The domain to use (The abstract state must have been created using this domain)
-             -> a -- ^ An instance of the abstracted data type
-             -> SMTExpr Bool
-toDomainTerm state dom vars
-  = app and' [ if act
-               then term vars
-               else not' (term vars)
-             | (nd,act) <- Vec.toList state,
-               let Just (term,_,_) = lab (domainGraph dom) nd]
-
+             -> a (Expr b) -- ^ An instance of the abstracted data type
+             -> SMT b (Expr b BoolType)
+toDomainTerm state dom vars = do
+  conj <- mapM (\(nd,act) -> do
+                  let Just (Predicate term,_,_) = lab (domainGraph dom) nd
+                  pr <- term toBackend vars
+                  if act
+                    then return pr
+                    else (do
+                      npr <- toBackend (App Not (Arg pr NoArg))
+                      return npr)
+               ) (Vec.toList state)
+  case conj of
+    [] -> toBackend (Const (BoolValue True))
+    [x] -> return x
+    xs -> allEqFromList xs $ \arg -> toBackend (App (Logic And) arg)
+{-
 toDomainTerms :: AbstractState a -> Domain a -> a -> Vector (Node,SMTExpr Bool,Bool)
 toDomainTerms state dom vars
   = fmap (\(nd,act) -> let Just (term,_,_) = lab (domainGraph dom) nd
                        in (nd,term vars,act)
          ) state
-
+-}
 -- | Since a domain can only grow, we can hash its "version" using its size.
 domainHash :: Domain a -> Int
 domainHash dom = domainNextNode dom
 
+domainRelativize :: (forall v qv fun con field fv t.
+                     Expression v qv fun con field fv e t
+                     -> m (e t))
+                 -> (forall t. GetType t => Var b t -> RevComp a t)
+                 -> Expr b t
+                 -> a e -> m (e t)
+
+{-
 renderDomainTerm :: AbstractState a -> Domain a -> IO String
 renderDomainTerm st dom
   = withSMTPool (domainPool dom) $
@@ -356,3 +408,4 @@ renderDomain dom
       edges <- mapM (\(n1,n2,_) -> return $ "nd"++show n1++" -> nd"++show n2++";"
                     ) $ labEdges (domainGraph dom)
       return $ unlines $ ["digraph domain {"]++nodes++edges++["}"]
+-}

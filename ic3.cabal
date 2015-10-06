@@ -23,21 +23,21 @@ Data-Files:     include/assert.h
 --  Main-Is:              bin/Pretty.hs
 --  Build-Depends:        base,bytestring,atto-lisp,attoparsec,text,pretty
 
-Executable vvt-bmc
- Main-Is:              bin/BMC.hs
- Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes
- Build-Depends:        base,mtl,containers,constraints,data-fix,smtlib2,smtlib2-pipe,smtlib2-z3,smtlib2-debug,atto-lisp,bytestring,attoparsec,text,dependent-sum,dependent-map,transformers
+-- Executable vvt-bmc
+--  Main-Is:              bin/BMC.hs
+--  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes
+--  Build-Depends:        base,mtl,containers,constraints,data-fix,smtlib2,smtlib2-pipe,smtlib2-z3,smtlib2-debug,atto-lisp,bytestring,attoparsec,text,dependent-sum,dependent-map,transformers
 
 --Executable vvt-enc
 --  Main-Is:              bin/Encode.hs
 --  Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
 
--- Executable vvt-verify
---   Main-Is:              bin/Verify.hs
---   GHC-Options:          -threaded
---   Build-Depends:        base, smtlib2, smtlib2-debug, smtlib2-pipe, containers, vector, pqueue, fgl, time, mtl,
---                         dependent-sum, text, atto-lisp, constraints, bytestring, attoparsec, transformers, resource-pool, dependent-map
---   Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes
+Executable vvt-verify
+  Main-Is:              bin/Verify.hs
+  GHC-Options:          -threaded
+  Build-Depends:        base, smtlib2, smtlib2-debug, smtlib2-pipe, containers, vector, pqueue, fgl, time, mtl,
+                        dependent-sum, text, atto-lisp, constraints, bytestring, attoparsec, transformers, resource-pool, dependent-map
+  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes
 
 --Executable vvt-predicates
 --  Main-Is:              bin/Predicates.hs
