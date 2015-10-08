@@ -26,6 +26,7 @@ import qualified Data.Vector as Vec
 import qualified Data.IntSet as IntSet
 import Data.IORef
 import Control.Monad (when)
+import Control.Applicative (Applicative)
 import "mtl" Control.Monad.Trans (MonadIO,liftIO)
 import "mtl" Control.Monad.Reader (MonadReader(..),ask,asks)
 import "mtl" Control.Monad.State (MonadState,gets)
