@@ -10,12 +10,13 @@ import Realization.Lisp.Simplify.ValueSet
 import System.IO
 import qualified Data.Text as T
 import Data.Map (Map)
-import Data.List
+import Data.List (stripPrefix)
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
 import Control.Monad
 import Data.Foldable
+import Prelude hiding (foldl)
 
 data Options = Options { showHelp :: Bool
                        , transformation :: [Transformation] }

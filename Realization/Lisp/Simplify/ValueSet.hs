@@ -159,7 +159,7 @@ addState :: [LispUValue] -> ValueSet -> ValueSet
 addState vs vals = vals { values = vs:values vals
                         , vsize = (vsize vals)+1 }
 
-refineValueSet :: MonadIO m => Int -> LispProgram -> ValueSet -> SMT' m ValueSet
+refineValueSet :: (Functor m,MonadIO m) => Int -> LispProgram -> ValueSet -> SMT' m ValueSet
 refineValueSet threshold prog vs = stack $ do
   cur <- createStateVars "" prog
   inp <- createInputVars "" prog
@@ -181,7 +181,7 @@ refineValueSet threshold prog vs = stack $ do
         Just vs' -> getValues cur nxt vs'
         Nothing -> return vs
             
-initialValueSet :: MonadIO m => Int -> LispProgram -> SMT' m ValueSet
+initialValueSet :: (Functor m,MonadIO m) => Int -> LispProgram -> SMT' m ValueSet
 initialValueSet threshold prog = stack $ do
   vars <- createStateVars "" prog
   assert $ initialState prog vars
