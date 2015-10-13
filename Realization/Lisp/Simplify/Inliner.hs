@@ -45,11 +45,21 @@ doInlining prog = prog { programState = nstate
                               Just inl -> Just ()
                               _ -> Nothing
                            ) (inliningCache inl6)
+    -- All variables that are used, but not inlined
+    used = Map.mapMaybe (\x -> case x of
+                            Nothing -> Just ()
+                            Just _ -> Nothing
+                        ) (inliningCache inl6)
     nstate = Map.difference (programState prog) inlined
+    --nstate = Map.intersection (programState prog) used
     ninput = Map.difference (programInput prog) inlined
-    ngates' = Map.difference ngates inlined
+    --ninput = Map.intersection (programInput prog) used
+    --ngates' = Map.difference ngates inlined
+    ngates' = Map.intersection ngates used
     nnext' = Map.difference nnext inlined
+    --nnext' = Map.intersection nnext used
     ninit = Map.difference (programInit prog) inlined
+    --ninit = Map.intersection (programInit prog) used
 
 isSimple :: LispVar -> Bool
 isSimple (NamedVar _ _ _) = True

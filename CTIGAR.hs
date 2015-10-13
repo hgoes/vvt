@@ -1253,9 +1253,9 @@ interpolateState j s inp = do
 
     splitInterpolant (App (SMTLogic And) es) = concat (fmap splitInterpolant es)
     -- Henning: Maybe it's a good idea not to refine with equalities:
-    splitInterpolant (App SMTEq [lhs,rhs]) = case cast lhs of
-      Just (_::SMTExpr Integer) -> [App (SMTOrd Ge) (lhs,rhs)
-                                   ,App (SMTOrd Gt) (lhs,rhs)]
+    splitInterpolant (App SMTEq [lhs,rhs]) = case cast (lhs,rhs) of
+      Just ((lhs',rhs')::(SMTExpr Integer,SMTExpr Integer)) -> [App (SMTOrd Ge) (lhs',rhs')
+                                                               ,App (SMTOrd Gt) (lhs',rhs')]
       Nothing -> [App SMTEq [lhs,rhs]]
     splitInterpolant (App (SMTOrd Gt) (lhs,rhs)) = [App (SMTOrd Ge) (lhs,rhs)
                                                    ,App (SMTOrd Gt) (lhs,rhs)]
