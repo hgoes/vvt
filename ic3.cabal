@@ -45,3 +45,7 @@ Executable vvt
   Main-Is:              bin/Main.hs
   Build-Depends:        process,filepath
   GHC-Options:          -threaded
+
+Executable vvt-svcomp
+  Extensions:           ScopedTypeVariables
+  Main-Is:              bin/SVComp.hs

@@ -81,7 +81,12 @@ toLispProgram opts real' = do
                                       let name1 = T.append (T.pack $ tName++"-") name
                                       return $ Map.insert name1 (toLispAllocType tp) mp
                                   ) mp2 (Map.toList $ threadGlobalDesc thSt)
-                    return mp3
+                    mp4 <- case threadReturnDesc thSt of
+                      Nothing -> return mp3
+                      Just tp -> do
+                        let name = T.pack $ "return-"++tName
+                        return $ Map.insert name (toLispType $ Singleton tp) mp3
+                    return mp4
                 ) st4 (Map.toList $ threadStateDesc $ stateAnnotation real)
   let dontStep = Map.null threadNames
       inp1 = if dontStep
@@ -294,15 +299,25 @@ toLispProgram opts real' = do
                            [] -> old
                            [x] -> x .||. old
                            xs -> (app and' xs) .||. old
-                         term = case Map.lookup th (termEvents real) of
-                           Nothing -> act
-                           Just [x] -> act .&&. (not' (x input))
-                           Just xs -> act .&&. (not' $ app and' [ x input | x <- xs])
+                         Just thD = Map.lookup th (threadStateDesc $ stateAnnotation real)
+                         Just thRet = threadReturnDesc thD
+                         mkRet [(_,v)] = symbolicValue v input
+                         mkRet ((c,v):vs) = symITE (c input) (symbolicValue v input) (mkRet vs)
+                         (term,ret) = case Map.lookup th (termEvents real) of
+                           Nothing -> (act,Nothing)
+                           Just [(x,v)] -> (act .&&. (not' (x input)),Just (symbolicValue v input))
+                           Just xs -> (act .&&. (not' $ app and' [ x input | (x,_) <- xs]),
+                                       Just $ mkRet xs)
                      return $ Map.insert (T.pack $ "run-"++name)
                        (L.LispConstr $
                         L.LispValue (L.Size []) $
                         L.Singleton $
-                        L.Val $ toLispExpr gateTrans term) mp
+                        L.Val $ toLispExpr gateTrans term)
+                       (case ret of
+                         Nothing -> mp
+                         Just ret' -> Map.insert (T.pack $ "return-"++name)
+                                      (toLispExprs gateTrans (Singleton thRet) (Singleton ret'))
+                                      mp)
                  ) nxt5 (Map.keys $ threadStateDesc $ stateAnnotation real)
   nxt7 <- foldlM (\mp (th,thD) -> case threadArgumentDesc thD of
                    Nothing -> return mp
@@ -621,10 +636,18 @@ makeProgramInput opts threadNames real = do
                              name <- instrName glob
                              return $ makeAllocVar (T.append (T.pack $ thName++"-") name) L.State tp
                           ) (threadGlobalDesc thd)
+                 ret <- case threadReturnDesc thd of
+                   Nothing -> return Nothing
+                   Just tp -> do
+                     let name' = T.pack $ "return-"++thName
+                     return (Just $ makeVar (L.NamedVar name' L.State
+                                             (L.LispType 0 (toLispType'
+                                                            (Singleton tp)))) tp)
                  return (run,ThreadState { latchBlocks = blocks
                                          , latchValues = instrs
                                          , threadArgument = arg
-                                         , threadGlobals = globs })
+                                         , threadGlobals = globs
+                                         , threadReturn = ret })
              ) (threadStateDesc $ stateAnnotation real)
   mem <- sequence $ Map.mapWithKey
          (\loc tp -> do
@@ -661,7 +684,8 @@ makeProgramInput opts threadNames real = do
   return (ProgramState { mainState = ThreadState { latchBlocks = mainBlocks
                                                  , latchValues = mainInstrs
                                                  , threadArgument = Nothing
-                                                 , threadGlobals = mainGlobals }
+                                                 , threadGlobals = mainGlobals
+                                                 , threadReturn = Nothing }
                        , threadState = threads
                        , memory = mem },
           ProgramInput { mainInput = ThreadInput { step = if dontStep

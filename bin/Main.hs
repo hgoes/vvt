@@ -92,7 +92,8 @@ execPipe inp outp (act:acts) = do
 compile :: Options -> FilePath -> IO (Handle,ProcessHandle)
 compile opts fp = do
   includePath <- getDataFileName "include"
-  let clang = (proc (clangBin opts) $
+  let clangExe:clangOpts = words (clangBin opts)
+      clang = (proc clangExe $ clangOpts++
                     ["-O0","-emit-llvm","-c","-o","-",fp,"-I"++includePath,"-DHCTIGAR"]++
                     ["-D"++def | def <- defines opts ]) { std_out = CreatePipe }
   --let clang = (proc "ls" ["-l"]) { std_out = CreatePipe }

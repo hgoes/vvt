@@ -16,10 +16,24 @@ data ThreadLocation = ThreadSpawnLocation { spawningInstruction :: Ptr CallInst
                                           }
                     | AllocationLocation { allocInstruction :: Ptr Instruction
                                          , quantity :: Quantity
-                                         , allocType' :: Ptr Type
+                                         , allocType' :: AllocKind
                                          , allocSize' :: Maybe (Ptr Value)
                                          }
+                    | ReturnLocation { returningFunction :: Ptr Function
+                                     , returnedType :: Ptr Type
+                                     }
                     deriving (Show,Eq,Ord)
+
+data AllocKind = NormalAlloc (Ptr Type)
+               | ThreadIdAlloc [Ptr CallInst]
+               deriving (Show,Eq,Ord)
+
+updateQuantity :: (Quantity -> Quantity) -> ThreadLocation -> ThreadLocation
+updateQuantity f l@(ThreadSpawnLocation { quantity = q })
+  = l { quantity = f q }
+updateQuantity f l@(AllocationLocation { quantity = q })
+  = l { quantity = f q }
+updateQuantity f l = l
 
 getThreadSpawns' :: Ptr Module -> Ptr Function -> IO [ThreadLocation]
 getThreadSpawns' mod fun = do
@@ -50,8 +64,8 @@ getThreadSpawns fun loopInfo = do
          Just (fun::Ptr Function) -> do
            name <- getNameString fun
            case name of
-            "pthread_create" -> do
-              threadVal <- callInstGetArgOperand call 2
+            "__thread_spawn" -> do
+              threadVal <- callInstGetArgOperand call 1
               case castDown threadVal of
                Just threadFun -> do
                  loop <- loopInfoBaseGetLoopFor loopInfo blk
@@ -86,7 +100,7 @@ getThreadSpawns fun loopInfo = do
                             (True,Nothing) -> Infinite
               return $ AllocationLocation { allocInstruction = i
                                           , quantity = quant
-                                          , allocType' = rtp
+                                          , allocType' = NormalAlloc rtp
                                           , allocSize' = case quant of
                                                            Infinite -> Just sz
                                                            _ -> Nothing }:rest
@@ -103,15 +117,22 @@ getThreadSpawns fun loopInfo = do
                                              , quantity = if loop==nullPtr
                                                           then Finite 1
                                                           else Infinite
-                                             , allocType' = rtp
+                                             , allocType' = NormalAlloc rtp
                                              , allocSize' = Just num }:rest
             _ -> analyzeInstructions is blk blks
       Nothing -> case castDown i of
         Just alloc -> do
           loop <- loopInfoBaseGetLoopFor loopInfo blk
-          rest <- analyzeInstructions is blk blks
-          tp <- getType (alloc :: Ptr AllocaInst) >>= sequentialTypeGetElementType
           sz <- allocaInstGetArraySize alloc
+          {-tp <- do
+            spawns <- getThreadSpawns alloc
+            case spawns of
+              [] -> do
+                tp <- getType (alloc :: Ptr AllocaInst) >>= sequentialTypeGetElementType
+                return $ NormalAlloc tp
+              _ -> return $ ThreadIdAlloc spawns-}
+          tp <- fmap NormalAlloc $ getType (alloc :: Ptr AllocaInst) >>= sequentialTypeGetElementType
+          rest <- analyzeInstructions is blk blks
           return $ (AllocationLocation { allocInstruction = i
                                        , quantity = if loop==nullPtr
                                                     then Finite 1
@@ -121,7 +142,52 @@ getThreadSpawns fun loopInfo = do
                                                       then Nothing
                                                       else Just sz
                                        }):rest
-        Nothing -> analyzeInstructions is blk blks
+        Nothing -> case castDown i of
+          Just ret -> do
+            rval <- returnInstGetReturnValue ret
+            tp <- realReturnType rval
+            rest <- analyzeInstructions is blk blks
+            return (ReturnLocation { returningFunction = fun
+                                   , returnedType = tp }:rest)
+          Nothing -> analyzeInstructions is blk blks
+    getThreadSpawns :: ValueC v => Ptr v -> IO [Ptr CallInst]
+    getThreadSpawns val = do
+      begin <- valueUseBegin val
+      end <- valueUseEnd val
+      get begin end
+      where
+        get cur end = do
+          finished <- valueUseIteratorEq cur end
+          if finished
+            then return []
+            else do
+            use <- valueUseIteratorDeref cur
+            nxt <- valueUseIteratorNext cur
+            user <- useGetUser use
+            case castDown user of
+              Just cast -> do
+                x <- getThreadSpawns (cast::Ptr CastInst)
+                xs <- get nxt end
+                return (x++xs)
+              Nothing -> case castDown user of
+                Just call -> do
+                  cv <- callInstGetCalledValue call
+                  name <- getNameString cv
+                  case name of
+                    "__thread_spawn" -> do
+                      rest <- get nxt end
+                      return (call:rest)
+                    _ -> get nxt end
+                Nothing -> get nxt end
+
+realReturnType :: Ptr Value -> IO (Ptr Type)
+realReturnType (castDown -> Just (bc::Ptr BitCastInst))
+  = getOperand bc 0 >>= realReturnType
+realReturnType (castDown -> Just (i2p::Ptr IntToPtrInst))
+  = getOperand i2p 0 >>= realReturnType
+realReturnType (castDown -> Just (c::Ptr ConstantExpr))
+  = fmap castUp (constantExprAsInstruction c) >>= realReturnType
+realReturnType val = getType val
 
 getThreadArgument :: Ptr Function -> IO (Maybe (Ptr Argument,Ptr Type))
 getThreadArgument fun = do

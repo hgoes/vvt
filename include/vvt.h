@@ -7,19 +7,39 @@
 extern "C" {
 #endif
 
-extern int __nondet_int();
-extern unsigned int __nondet_uint();
-extern size_t __nondet_size();
-extern bool __nondet_bool();
+  extern int __nondet_int();
+  extern unsigned int __nondet_uint();
+  extern size_t __nondet_size();
+  extern bool __nondet_bool();
 
-extern void __yield(int loc);
-extern void __yield_internal(int loc);
-extern bool __act(void *(*thread) (void *),int loc,...);
-extern void __atomic_begin();
-extern void __atomic_end();
+  extern void __yield(int loc);
+  extern void __yield_internal(int loc);
+  extern bool __act(void *(*thread) (void *),int loc,...);
+  extern void __atomic_begin();
+  extern void __atomic_end();
+  
+  extern void __assume(bool cond);
+  extern void __error(void) __attribute__ ((noreturn));
+  
+  void assume(bool cond) {
+    __assume(cond);
+#if __has_builtin(__builtin_assume)
+    __builtin_assume(cond);
+#else
+    if(!cond) {
+      __builtin_unreachable();
+    }
+#endif
+  }
 
-extern void assume(bool cond);
+  // Threads
+  typedef struct {
+    void* id;
+  } __thread_id;
 
+  extern void __thread_spawn(__thread_id* ref,void *(thread) (void*),void* arg);
+  extern void __thread_join(__thread_id* ref,void** ret);
+  
 #ifdef __cplusplus
 }
 #endif

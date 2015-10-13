@@ -2,18 +2,15 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <vvt.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct {
-  int id;
-} pthread_t;
+typedef __thread_id pthread_t;
 
-typedef struct {
-  void* data;
-} pthread_attr_t;
+typedef void pthread_attr_t;
 
 typedef struct {
   int id;
@@ -34,11 +31,17 @@ typedef struct {
 // Pthread functions
 
 int pthread_create(pthread_t* pthread,const pthread_attr_t* attr,
-                   void *(*start_routine) (void*),void* arg);
+                   void *(*start_routine) (void*),void* arg) {
+  __thread_spawn(pthread,start_routine,arg);
+  return 0;
+}
 
 int pthread_yield(void);
 
-int pthread_join(pthread_t* pthread,void** retval);
+int pthread_join(pthread_t* pthread,void** retval) {
+  __thread_join(pthread,retval);
+  return 0;
+}
 
 void pthread_exit(void* retval);
   
