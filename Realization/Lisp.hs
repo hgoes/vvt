@@ -113,6 +113,7 @@ parseLispProgram descr = case descr of
                                              L.List [L.Symbol name,def]
                                                -> case parseLispTopVar state inp gates def of
                                                    Just var -> (name,var)
+                                                   Nothing -> error $ "Failed to parse next value of "++show name++": "++show def
                                              _ -> error $ "Failed to parse next expression: "++show nxt
                                            ) nxts
                           in Map.fromList nxts'
@@ -328,8 +329,8 @@ parseLispVar state inps gts (L.List [L.List [L.Symbol "_",L.Symbol "ite"]
                                     ,cond,ifT,ifF]) = do
   cond' <- parseLispExpr' state inps gts (\e -> case cast e of
                                                  Just e' -> e') cond
-  ifT' <- parseLispVar state inps gts ifT
-  ifF' <- parseLispVar state inps gts ifF
+  ifT' <- parseLispTopVar state inps gts ifT
+  ifF' <- parseLispTopVar state inps gts ifF
   return (LispITE cond' ifT' ifF')
 parseLispVar state inps gts lisp
   = (do

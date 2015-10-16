@@ -171,8 +171,14 @@ realizeProgram opts mod fun = {-withAliasAnalysis mod $ \aa ->-} do
         arg <- case threadArg tinfo of
           Nothing -> return Nothing
           Just (val,rtp) -> do
-            tp <- translateType (threads info) sigs' rtp
-            return (Just (val,TpPtr (allPtrsOfType tp sigs) tp))
+            tp <- case rtp of
+              Left ptp -> do
+                rtp' <- translateType (threads info) sigs' ptp
+                return $ TpPtr (allPtrsOfType rtp' sigs) rtp'
+              Right itp -> do
+                Singleton tp' <- translateType (threads info) sigs' (castUp itp)
+                return tp'
+            return (Just (val,tp))
         ret <- case Map.lookup (threadFunction tinfo) (functionReturns info) of
           Nothing -> return Nothing
           Just rtp -> do
@@ -1035,6 +1041,9 @@ realizeDefInstruction thread (castDown -> Just extr) edge real = do
     indexValue (ValVector vals) (i:is) = indexValue (vals `genericIndex` i) is
 realizeDefInstruction thread (castDown -> Just (i2p::Ptr IntToPtrInst)) edge real0 = do
   val <- getOperand i2p 0
+  realizeValue thread val edge real0
+realizeDefInstruction thread (castDown -> Just (p2i::Ptr PtrToIntInst)) edge real0 = do
+  val <- getOperand p2i 0
   realizeValue thread val edge real0
 realizeDefInstruction _ i _ _ = do
   str <- valueToString i
