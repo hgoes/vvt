@@ -19,18 +19,24 @@ import Data.Foldable
 import Prelude hiding (foldl)
 
 data Options = Options { showHelp :: Bool
-                       , transformation :: [Transformation] }
+                       , transformation :: [Transformation]
+                       , verbose :: Int }
 
 data Transformation = Inline
                     | Simplify
                     | ValueSetAnalysis Int
 
 options :: [OptDescr (Options -> Options)]
-options = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Shows this help."]
+options = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Shows this help."
+          ,Option ['v'] ["verbose"] (OptArg (\v opt -> case v of
+                                               Just v' -> opt { verbose = read v' }
+                                               Nothing -> opt { verbose = 1 }) "level"
+                                    ) "Output more information while running (higher level = more info)"]
 
 defaultOptions :: Options
 defaultOptions = Options { showHelp = False
-                         , transformation = [] }
+                         , transformation = []
+                         , verbose = 0 }
 
 getOptions :: IO Options
 getOptions = do
@@ -66,10 +72,10 @@ getOptions = do
       mapM (\err -> hPutStrLn stderr $ "  "++err) errs
       exitFailure
 
-applyTransformation :: LispProgram -> Transformation -> IO LispProgram
-applyTransformation prog Inline = return $ doInlining prog
-applyTransformation prog Simplify = return $ simplifyProgram prog
-applyTransformation prog (ValueSetAnalysis threshold) = valueSetAnalysis threshold prog
+applyTransformation :: Int -> LispProgram -> Transformation -> IO LispProgram
+applyTransformation _ prog Inline = return $ doInlining prog
+applyTransformation _ prog Simplify = return $ simplifyProgram prog
+applyTransformation v prog (ValueSetAnalysis threshold) = valueSetAnalysis v threshold prog
 
 parseTransformation :: String -> Maybe Transformation
 parseTransformation "inline" = Just Inline
@@ -84,5 +90,5 @@ main :: IO ()
 main = do
   opts <- getOptions
   prog <- fmap parseLispProgram (readLispFile stdin)
-  prog' <- foldlM applyTransformation prog (transformation opts)
+  prog' <- foldlM (applyTransformation (verbose opts)) prog (transformation opts)
   print $ programToLisp prog'

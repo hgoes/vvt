@@ -18,6 +18,8 @@ import Data.Maybe (catMaybes)
 import Data.Typeable (cast,gcast)
 import Data.Constraint
 import Control.Monad.Trans
+import System.IO
+import Control.Monad
 
 import Debug.Trace
 
@@ -26,9 +28,11 @@ data ValueSet = ValueSet { valueMask :: [(T.Text,[[Int]])]
                          , vsize :: !Int
                          }
 
-valueSetAnalysis :: Int -> LispProgram -> IO LispProgram
-valueSetAnalysis threshold prog = do
+valueSetAnalysis :: Int -> Int -> LispProgram -> IO LispProgram
+valueSetAnalysis verbosity threshold prog = do
   vs <- deduceValueSet threshold prog
+  when (verbosity >= 1)
+    (hPutStrLn stderr $ "Value set:\n"++showValueSet vs)
   let consts = getConstants vs
   return $ foldl (\prog' (name,idx,c) -> replaceConstantProg name (fmap fromIntegral idx) c prog') prog consts
 
