@@ -47,5 +47,5 @@ Executable vvt
   GHC-Options:          -threaded
 
 Executable vvt-svcomp
-  Extensions:           ScopedTypeVariables
+  Extensions:           ScopedTypeVariables,ViewPatterns
   Main-Is:              bin/SVComp.hs
