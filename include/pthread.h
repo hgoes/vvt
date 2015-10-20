@@ -94,15 +94,21 @@ int pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
 void __cond_register(pthread_cond_t* cond,pthread_mutex_t* mutex);
 void __cond_wait(pthread_cond_t* cond,pthread_mutex_t* mutex);
 void __cond_signal(pthread_cond_t* cond);
+void __cond_broadcast(pthread_cond_t* cond);
   
-int pthread_cond_init(pthread_cond_t* cond,pthread_condattr_t* cond_attr);
+int pthread_cond_init(pthread_cond_t* cond,pthread_condattr_t* cond_attr) {
+  return 0;
+}
 
 int pthread_cond_signal(pthread_cond_t *cond) {
   __cond_signal(cond);
   return 0;
 }
 
-int pthread_cond_broadcast(pthread_cond_t *cond);
+int pthread_cond_broadcast(pthread_cond_t *cond) {
+  __cond_broadcast(cond);
+  return 0;
+}
 
 int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
   __cond_register(cond,mutex);
@@ -112,7 +118,9 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
 
 int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime);
 
-int pthread_cond_destroy(pthread_cond_t *cond);
+int pthread_cond_destroy(pthread_cond_t *cond) {
+  return 0;
+}
 
 #define PTHREAD_COND_INITIALIZER { 0 }
   

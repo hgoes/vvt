@@ -643,6 +643,29 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
                                           })
                               (events real1)
                    })
+   "__cond_broadcast" -> do
+     cond <- getOperand call 0
+     (cond',real1) <- realizeValue thread cond edge real0
+     let rcond = memoryRead thread i cond' edge real1
+         sz = Map.size (events real1)
+     return (Just edge { observedEvents = Map.insert sz ()
+                                          (observedEvents edge)
+                       },
+             act,
+             real1 { events = Map.insert sz
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue cond' inp) of
+                                                                            Just r -> r
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType cond')
+                                          , writeContent = rcond { symbolicValue = const (ValCondition $ fmap (const $ constant False) (tpCondition $ symbolicType rcond))
+                                                                 }
+                                          , eventThread = thread
+                                          , eventOrigin = i
+                                          })
+                              (events real1)
+                   })
    "pthread_yield"
      -> return (Nothing,
                 act,
