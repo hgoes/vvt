@@ -29,6 +29,7 @@ data SymVal = ValBool { valBool :: !(SMTExpr Bool) }
             | ValPtr { valPtr :: !(Map MemoryPtr (SMTExpr Bool,[SMTExpr Integer]))
                      , valPtrType :: !(Struct SymType) }
             | ValThreadId { valThreadId :: !(Map (Ptr CallInst) (SMTExpr Bool)) }
+            | ValCondition { valCondition :: !(Map (Maybe (Ptr CallInst)) (SMTExpr Bool)) }
             | ValVector { valVector :: ![SymVal] }
             deriving (Eq,Ord,Show,Typeable)
 
@@ -38,6 +39,7 @@ data SymArray = ArrBool { arrBool :: SMTExpr (SMTArray (SMTExpr Integer) Bool) }
                                                   [SMTExpr (SMTArray (SMTExpr Integer) Integer)])
                        , arrPtrType :: Struct SymType }
               | ArrThreadId { arrThreadId :: Map (Ptr CallInst) (SMTExpr (SMTArray (SMTExpr Integer) Bool)) }
+              | ArrCondition { arrCondition :: Map (Maybe (Ptr CallInst)) (SMTExpr (SMTArray (SMTExpr Integer) Bool)) }
               | ArrVector { arrVector :: [SymArray] }
               deriving (Eq,Ord,Show,Typeable)
 
@@ -46,6 +48,7 @@ data SymType = TpBool
              | TpPtr { tpPtr :: Map MemoryPtr ()
                      , tpPtrType :: Struct SymType }
              | TpThreadId { tpThreadId :: Map (Ptr CallInst) () }
+             | TpCondition { tpCondition :: Map (Maybe (Ptr CallInst)) () }
              | TpVector { tpVector :: [SymType] }
              deriving (Eq,Ord,Show,Typeable)
 
@@ -86,6 +89,7 @@ defaultIf cond (ValPtr ptr tp) = ValPtr (fmap (\(c,idx) -> (constant False,
                                                             fmap (const $ constant 0) idx)
                                               ) ptr) tp
 defaultIf cond (ValThreadId mp) = ValThreadId $ fmap (const $ constant False) mp
+defaultIf cond (ValCondition mp) = ValCondition $ fmap (const $ constant False) mp
 defaultIf cond (ValVector vals) = ValVector $ fmap (defaultIf cond) vals
 
 defaultValue :: SymType -> SymVal
@@ -98,6 +102,8 @@ defaultValue (TpPtr mp tp)
             ) mp) tp
 defaultValue (TpThreadId mp)
   = ValThreadId (fmap (const $ constant False) mp)
+defaultValue (TpCondition mp)
+  = ValCondition (fmap (const $ constant False) mp)
 defaultValue (TpVector tps) = ValVector (fmap defaultValue tps)
 
 valEq :: SymVal -> SymVal -> SMTExpr Bool
@@ -117,6 +123,13 @@ valEq (ValPtr x _) (ValPtr y _) = case catMaybes $ Map.elems mp of
       rest <- idxEq xs ys
       return $ (x.==.y):rest
 valEq (ValThreadId x) (ValThreadId y) = case Map.elems mp of
+  [] -> constant False
+  [x] -> x
+  xs -> app or' xs
+  where
+    mp = Map.intersectionWith condEq x y
+    condEq c1 c2 = c1 .&&. c2
+valEq (ValCondition x) (ValCondition y) = case Map.elems mp of
   [] -> constant False
   [x] -> x
   xs -> app or' xs
@@ -207,6 +220,9 @@ symITE cond (ValPtr x tp) (ValPtr y _)
 symITE cond (ValThreadId x) (ValThreadId y)
   = ValThreadId (Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
                  (fmap (.&&. cond)) (fmap (.&&. (not' cond))) x y)
+symITE cond (ValCondition x) (ValCondition y)
+  = ValCondition (Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
+                  (fmap (.&&. cond)) (fmap (.&&. (not' cond))) x y)
 symITE cond (ValVector v1) (ValVector v2)
   = ValVector $ zipWith (symITE cond) v1 v2
 symITE cond v1 v2 = error $ "Cannot ITE differently typed values "++show v1++" and "++show v2
@@ -228,6 +244,8 @@ arrITE cond (ArrPtr x tp) (ArrPtr y _)
     tp
 arrITE cond (ArrThreadId x) (ArrThreadId y)
   = ArrThreadId $ Map.intersectionWith (ite cond) x y
+arrITE cond (ArrCondition x) (ArrCondition y)
+  = ArrCondition $ Map.intersectionWith (ite cond) x y
 arrITE cond (ArrVector x) (ArrVector y)
   = ArrVector $ zipWith (arrITE cond) x y
 
@@ -298,6 +316,8 @@ extractValue idx (ArrPtr arr tp)
   = ValPtr (fmap (\(conds,idxs) -> (select conds idx,fmap (\i -> select i idx) idxs)) arr) tp
 extractValue idx (ArrThreadId arr)
   = ValThreadId (fmap (\conds -> select conds idx) arr)
+extractValue idx (ArrCondition arr)
+  = ValCondition (fmap (\conds -> select conds idx) arr)
 extractValue idx (ArrVector arrs)
   = ValVector (fmap (extractValue idx) arrs)
 
@@ -314,18 +334,12 @@ insertValue idx (ValThreadId t) (ArrThreadId ts)
   = ArrThreadId (Map.intersectionWith
                  (\nval arr -> store arr idx nval)
                  t ts)
+insertValue idx (ValCondition t) (ArrCondition ts)
+  = ArrCondition (Map.intersectionWith
+                  (\nval arr -> store arr idx nval)
+                  t ts)
 insertValue idx (ValVector vals) (ArrVector arr)
   = ArrVector (zipWith (insertValue idx) vals arr)
-
-{-accessAlloc' :: (SymVal -> c -> (a,SymVal,c))
-             -> [Either Integer (SMTExpr Integer)]
-             -> AllocVal
-             -> c
-             -> (MemoryAccessResult a,AllocVal,c)
-accessAlloc' f (Left i:is) (ValStatic s) st
-  =
-  where-}
-    
 
 accessAlloc :: (SymVal -> c -> (MemoryAccessResult a,SymVal,c))
             -> [Either Integer (SMTExpr Integer)]
@@ -392,6 +406,7 @@ sameType TpBool TpBool = True
 sameType TpInt TpInt = True
 sameType (TpPtr _ tp1) (TpPtr _ tp2) = sameStructType tp1 tp2
 sameType (TpThreadId _) (TpThreadId _) = True
+sameType (TpCondition _) (TpCondition _) = True
 sameType (TpVector v1) (TpVector v2) = sameVector v1 v2
   where
     sameVector [] [] = True
@@ -458,6 +473,15 @@ addSymGate gts (TpThreadId trgs) f name
                                         in (ngts,cond)
                           ) gts trgs
     in (ValThreadId trgExprs,ngts)
+addSymGate gts (TpCondition trgs) f name
+  = let (ngts,trgExprs) = Map.mapAccumWithKey
+                          (\gts th _ -> let gt = Gate { gateTransfer = (Map.! th).valCondition.f
+                                                      , gateAnnotation = ()
+                                                      , gateName = name }
+                                            (cond,ngts) = addGate gts gt
+                                        in (ngts,cond)
+                          ) gts trgs
+    in (ValCondition trgExprs,ngts)
 addSymGate gts (TpVector tps) f name
   = let (ngts,nvals) = mapAccumL (\gts (tp,i) -> let (val,ngts) = addSymGate gts tp ((!!i).valVector.f) name
                                                  in (ngts,val)
@@ -620,6 +644,9 @@ instance Args SymVal where
   foldExprs f s ~(ValThreadId conds) (TpThreadId ths) = do
     (s',conds') <- foldExprs f s conds ths
     return (s',ValThreadId conds')
+  foldExprs f s ~(ValCondition conds) (TpCondition ths) = do
+    (s',conds') <- foldExprs f s conds ths
+    return (s',ValCondition conds')
   foldExprs f s ~(ValVector vals) (TpVector tps) = do
     (s',vals') <- foldExprs f s vals tps
     return (s',ValVector vals')
@@ -643,6 +670,7 @@ instance Args SymVal where
   extractArgAnnotation (ValInt _) = TpInt
   extractArgAnnotation (ValPtr conds tp) = TpPtr (fmap (const ()) conds) tp
   extractArgAnnotation (ValThreadId conds) = TpThreadId (fmap (const ()) conds)
+  extractArgAnnotation (ValCondition conds) = TpCondition (fmap (const ()) conds)
   extractArgAnnotation (ValVector vals) = TpVector (fmap extractArgAnnotation vals)
   toArgs TpBool es = case es of
     [] -> Nothing
@@ -660,6 +688,9 @@ instance Args SymVal where
   toArgs (TpThreadId ths) es = do
     (conds,rest) <- toArgs ths es
     return (ValThreadId conds,rest)
+  toArgs (TpCondition ths) es = do
+    (conds,rest) <- toArgs ths es
+    return (ValCondition conds,rest)
   toArgs (TpVector tps) es = do
     (vals,rest) <- toArgs tps es
     return (ValVector vals,rest)
@@ -667,11 +698,13 @@ instance Args SymVal where
   getTypes _ TpInt = [ProxyArg (undefined::Integer) ()]
   getTypes _ (TpPtr trgs tp) = getTypes (undefined::Map MemoryPtr (SMTExpr Bool)) trgs
   getTypes _ (TpThreadId ths) = getTypes (undefined::Map (Ptr CallInst) (SMTExpr Bool)) ths
+  getTypes _ (TpCondition ths) = getTypes (undefined::Map (Maybe (Ptr CallInst)) (SMTExpr Bool)) ths
   getTypes _ (TpVector tps) = getTypes (undefined::[SymVal]) tps
   fromArgs (ValBool e) = [UntypedExpr e]
   fromArgs (ValInt e) = [UntypedExpr e]
   fromArgs (ValPtr conds _) = fromArgs conds
   fromArgs (ValThreadId conds) = fromArgs conds
+  fromArgs (ValCondition conds) = fromArgs conds
   fromArgs (ValVector vals) = fromArgs vals
 
 instance Args SymArray where
@@ -688,6 +721,9 @@ instance Args SymArray where
   foldExprs f s ~(ArrThreadId conds) (TpThreadId ths) = do
     (s',conds') <- foldExprs f s conds (fmap (\_ -> ((),())) ths)
     return (s',ArrThreadId conds')
+  foldExprs f s ~(ArrCondition conds) (TpCondition ths) = do
+    (s',conds') <- foldExprs f s conds (fmap (\_ -> ((),())) ths)
+    return (s',ArrCondition conds')
   foldExprs f s ~(ArrVector arrs) (TpVector tps) = do
     (s',arrs') <- foldExprs f s arrs tps
     return (s',ArrVector arrs')
@@ -707,6 +743,10 @@ instance Args SymArray where
     let lst' = fmap (\(ArrThreadId x,y) -> (x,y)) lst
     (ns,rlst,res) <- foldsExprs f s lst' (fmap (\_ -> ((),())) conds)
     return (ns,fmap ArrThreadId rlst,ArrThreadId res)
+  foldsExprs f s lst (TpCondition conds) = do
+    let lst' = fmap (\(ArrCondition x,y) -> (x,y)) lst
+    (ns,rlst,res) <- foldsExprs f s lst' (fmap (\_ -> ((),())) conds)
+    return (ns,fmap ArrCondition rlst,ArrCondition res)
   foldsExprs f s lst (TpVector tps) = do
     let lst' = fmap (\(ArrVector x,y) -> (x,y)) lst
     (ns,rlst,res) <- foldsExprs f s lst' tps
@@ -715,6 +755,7 @@ instance Args SymArray where
   extractArgAnnotation (ArrInt _) = TpInt
   extractArgAnnotation (ArrPtr mp tp) = TpPtr (fmap (const ()) mp) tp
   extractArgAnnotation (ArrThreadId mp) = TpThreadId (fmap (const ()) mp)
+  extractArgAnnotation (ArrCondition mp) = TpCondition (fmap (const ()) mp)
   extractArgAnnotation (ArrVector arrs) = TpVector (fmap extractArgAnnotation arrs)
   toArgs TpBool es = do
     (arr,rest) <- toArgs ((),()) es
@@ -728,6 +769,9 @@ instance Args SymArray where
   toArgs (TpThreadId trgs) es = do
     (conds,rest) <- toArgs (fmap (const ((),())) trgs) es
     return (ArrThreadId conds,rest)
+  toArgs (TpCondition trgs) es = do
+    (conds,rest) <- toArgs (fmap (const ((),())) trgs) es
+    return (ArrCondition conds,rest)
   toArgs (TpVector arrs) es = do
     (arrs,rest) <- toArgs arrs es
     return (ArrVector arrs,rest)
@@ -739,12 +783,16 @@ instance Args SymArray where
   getTypes _ (TpThreadId trgs)
     = getTypes (undefined::Map (Ptr CallInst) (SMTExpr (SMTArray (SMTExpr Integer) Bool)))
       (fmap (const ((),())) trgs)
+  getTypes _ (TpCondition trgs)
+    = getTypes (undefined::Map (Maybe (Ptr CallInst)) (SMTExpr (SMTArray (SMTExpr Integer) Bool)))
+      (fmap (const ((),())) trgs)
   getTypes _ (TpVector tps)
     = getTypes (undefined::[SymArray]) tps
   fromArgs (ArrBool arr) = [UntypedExpr arr]
   fromArgs (ArrInt arr) = [UntypedExpr arr]
   fromArgs (ArrPtr arrs _) = fromArgs arrs
   fromArgs (ArrThreadId arrs) = fromArgs arrs
+  fromArgs (ArrCondition arrs) = fromArgs arrs
   fromArgs (ArrVector arrs) = fromArgs arrs
   
 instance Args a => Args (Struct a) where

@@ -534,6 +534,115 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
                                           , eventThread = thread
                                           , eventOrigin = castUp call
                                           }) (events real1) })
+   "__cond_register" -> do
+     cond <- getOperand call 0
+     mutex <- getOperand call 1
+     (cond',real1) <- realizeValue thread cond edge real0
+     (mutex',real2) <- realizeValue thread mutex edge real1
+     --hPutStrLn stderr $ "Condition pointer: "++show (tpPtr $ symbolicType cond')
+     let rcond = memoryRead thread i cond' edge real2
+         rmutex = memoryRead thread i mutex' edge real2
+         sz = Map.size (events real2)
+         waiting inp = case Map.lookup thread $ valCondition (symbolicValue rcond inp) of
+           Just b -> b
+         locked inp = valBool $ symbolicValue rmutex inp
+     return (Just edge { observedEvents = Map.insert sz () $
+                                          Map.insert (sz+1) () $
+                                          observedEvents edge },
+             act,
+             real2 { events = Map.insert sz
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue mutex' inp) of
+                                                                            Just r -> r
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType mutex')
+                                          , writeContent = constantBoolValue False
+                                          , eventThread = thread
+                                          , eventOrigin = castUp call
+                                          }) $
+                              Map.insert (sz+1)
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue cond' inp) of
+                                                                            Just r -> r
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType cond')
+                                          , writeContent = rcond { symbolicValue = \inp -> let orig = symbolicValue rcond inp
+                                                                                           in orig { valCondition = Map.insert thread (constant True) (valCondition orig) }
+                                                                 }
+                                          , eventThread = thread
+                                          , eventOrigin = castUp call
+                                          }) $
+                              events real2 })
+   "__cond_wait" -> do
+     cond <- getOperand call 0
+     mutex <- getOperand call 1
+     (cond',real1) <- realizeValue thread cond edge real0
+     (mutex',real2) <- realizeValue thread mutex edge real1
+     let rcond = memoryRead thread i cond' edge real2
+         rmutex = memoryRead thread i mutex' edge real2
+         sz = Map.size (events real2)
+         waiting inp = case Map.lookup thread $ valCondition (symbolicValue rcond inp) of
+           Just b -> b
+         locked inp = valBool $ symbolicValue rmutex inp
+     return (Just edge { observedEvents = Map.insert sz () $
+                                          observedEvents edge },
+             \inp -> (act inp) .&&. (not' $ waiting inp) .&&. (not' $ locked inp),
+             real2 { events = Map.insert sz
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue mutex' inp) of
+                                                                            Just r -> r
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType mutex')
+                                          , writeContent = constantBoolValue True
+                                          , eventThread = thread
+                                          , eventOrigin = castUp call
+                                          }) $
+                              events real2 })
+   "__cond_signal" -> do
+     -- We must select a thread at random
+     cond <- getOperand call 0
+     (cond',real1) <- realizeValue thread cond edge real0
+     let rcond = memoryRead thread i cond' edge real1
+         sz = Map.size (events real1)
+         nval inp = let ti = getThreadInput thread (snd inp)
+                        Just vec = Map.lookup i (nondets ti)
+                    in ValCondition $ snd $ Map.mapAccum
+                       (\cont (sel,act) -> (cont .&&. (not' $ sel .&&. act),
+                                            ite act (not' (cont .&&. sel)) (constant False))
+                       ) (constant True)
+                       (Map.intersectionWith (\x y -> (x,y))
+                        (valCondition vec) (valCondition $ symbolicValue rcond inp))
+         hasSelected inp = let ti = getThreadInput thread (snd inp)
+                               Just vec = Map.lookup i (nondets ti)
+                           in app or'
+                              [ sel .&&. act
+                              | (sel,act) <- Map.elems (Map.intersectionWith (\x y -> (x,y))
+                                                        (valCondition vec) (valCondition $ symbolicValue rcond inp)) ]
+     return (Just edge { observedEvents = Map.insert sz ()
+                                          (observedEvents edge)
+                       },
+             \inp -> (act inp) .&&. (hasSelected inp),
+             real1 { inputAnnotation = updateThreadInputDesc thread
+                                       (\ti -> ti { nondetTypes = Map.insert i
+                                                                  (symbolicType rcond)
+                                                                  (nondetTypes ti) })
+                                       (inputAnnotation real1)
+                   , events = Map.insert sz
+                              (WriteEvent { target = Map.mapWithKey
+                                                     (\loc _ inp
+                                                      -> let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue cond' inp) of
+                                                                            Just r -> r
+                                                         in ((act inp) .&&. cond,idx))
+                                                     (tpPtr $ symbolicType cond')
+                                          , writeContent = rcond { symbolicValue = nval }
+                                          , eventThread = thread
+                                          , eventOrigin = i
+                                          })
+                              (events real1)
+                   })
    "pthread_yield"
      -> return (Nothing,
                 act,
@@ -1310,6 +1419,9 @@ translateType threads tps (castDown -> Just struct) = do
    Just "struct.__thread_id" -> return $ Singleton $ TpThreadId (fmap (const ()) threads)
    Just "struct.pthread_mutex_t" -> return $ Singleton TpBool
    Just "struct.pthread_rwlock_t" -> return $ Singleton $ TpVector [TpBool,TpInt]
+   Just "struct.pthread_cond_t"
+     -> return $ Singleton $ TpCondition $
+        Map.fromList $ (Nothing,()):[ (Just t,()) | t <- Map.keys threads ]
    _ -> do
      num <- structTypeGetNumElements struct
      els <- mapM (\i -> structTypeGetElementType struct i
@@ -1345,6 +1457,7 @@ translateType0 (castDown -> Just struct) = do
    "struct.pthread_mutex_t" -> return $ Singleton TpBool
    "struct.pthread_rwlock_t" -> return $ Singleton $
                                 TpVector [TpBool,TpInt]
+   "struct.pthread_cond_t" -> return $ Singleton $ TpCondition Map.empty
    _ -> do
      num <- structTypeGetNumElements struct
      tps <- mapM (\i -> structTypeGetElementType struct i >>= translateType0) [0..num-1]
@@ -1392,6 +1505,8 @@ threadBasedReachability :: Map (Ptr CallInst) ()
 threadBasedReachability threads
   = fmap (mapTypes (\tp -> case tp of
                      TpThreadId _ -> TpThreadId threads
+                     TpCondition _ -> TpCondition
+                                      (Map.fromList $ (Nothing,()):[ (Just t,()) | t <- Map.keys threads ])
                      _ -> tp))
 
 instance Monoid (Edge inp) where
@@ -1703,6 +1818,8 @@ getConstant _ (castDown -> Just czero) = do
                                                    ,ValInt $ constant 0]
             "struct.__thread_id" -> return $ Just $ Singleton $
                                     ValThreadId $ Map.empty
+            "struct.pthread_cond_t" -> return $ Just $ Singleton $
+                                       ValCondition $ Map.empty
             _ -> return Nothing
            else return Nothing
        case specialInit of

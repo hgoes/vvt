@@ -27,7 +27,15 @@ typedef struct {
 typedef struct {
   void* data;
 } pthread_rwlockattr_t;
-  
+
+typedef struct {
+  int id;
+} pthread_cond_t;
+
+typedef struct {
+  void* data;
+} pthread_condattr_t;
+
 // Pthread functions
 
 int pthread_create(pthread_t* pthread,const pthread_attr_t* attr,
@@ -81,6 +89,33 @@ int pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
 
 #define pthread_join(thread,retval) pthread_join(&thread,retval)
 
+// Condition variable
+
+void __cond_register(pthread_cond_t* cond,pthread_mutex_t* mutex);
+void __cond_wait(pthread_cond_t* cond,pthread_mutex_t* mutex);
+void __cond_signal(pthread_cond_t* cond);
+  
+int pthread_cond_init(pthread_cond_t* cond,pthread_condattr_t* cond_attr);
+
+int pthread_cond_signal(pthread_cond_t *cond) {
+  __cond_signal(cond);
+  return 0;
+}
+
+int pthread_cond_broadcast(pthread_cond_t *cond);
+
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
+  __cond_register(cond,mutex);
+  __cond_wait(cond,mutex);
+  return 0;
+}
+
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime);
+
+int pthread_cond_destroy(pthread_cond_t *cond);
+
+#define PTHREAD_COND_INITIALIZER { 0 }
+  
 #ifdef __cplusplus
 }
 #endif

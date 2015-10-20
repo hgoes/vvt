@@ -494,6 +494,8 @@ toLispType' (Singleton (TpPtr dest _))
              | dest <- Map.keys dest ]
 toLispType' (Singleton (TpThreadId ths)) = L.Struct [ L.Singleton (Fix BoolSort)
                                                     | th <- Map.keys ths ]
+toLispType' (Singleton (TpCondition ths)) = L.Struct [ L.Singleton (Fix BoolSort)
+                                                     | th <- Map.keys ths ]
 toLispType' (Singleton (TpVector tps)) = L.Struct (fmap (toLispType'.Singleton) tps)
 toLispType' (Struct tps) = L.Struct $ fmap toLispType' tps
 
@@ -723,6 +725,11 @@ makeVar' idx var (TpThreadId ths)
     (\i () -> (i+1,InternalObj (L.LispVarAccess
                                 var
                                 (idx++[i]) []) ())) 0 ths
+makeVar' idx var (TpCondition ths)
+  = ValCondition $ snd $ Map.mapAccum
+    (\i () -> (i+1,InternalObj (L.LispVarAccess
+                                var
+                                (idx++[i]) []) ())) 0 ths
 makeVar' idx var (TpVector tps)
   = ValVector $ zipWith (\tp i -> makeVar' (idx++[i]) var tp) tps [0..]
 
@@ -786,6 +793,12 @@ toLispExprs' trans (Singleton (TpPtr locs _)) (Singleton (ValPtr trgs _))
   where
     diff = Map.difference trgs locs
 toLispExprs' trans (Singleton (TpThreadId trgs)) (Singleton (ValThreadId ths))
+  = L.Struct [ L.Singleton (L.Val $ toLispExpr trans cond)
+             | trg <- Map.keys trgs
+             , let cond = case Map.lookup trg ths of
+                     Just c -> c
+                     Nothing -> constant False ]
+toLispExprs' trans (Singleton (TpCondition trgs)) (Singleton (ValCondition ths))
   = L.Struct [ L.Singleton (L.Val $ toLispExpr trans cond)
              | trg <- Map.keys trgs
              , let cond = case Map.lookup trg ths of

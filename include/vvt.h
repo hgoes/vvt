@@ -15,8 +15,8 @@ extern "C" {
   extern void __yield(int loc);
   extern void __yield_internal(int loc);
   extern bool __act(void *(*thread) (void *),int loc,...);
-  extern void __atomic_begin();
-  extern void __atomic_end();
+  extern void __atomic_begin(void);
+  extern void __atomic_end(void);
   
   extern void __assume(bool cond);
   extern void __error(void) __attribute__ ((noreturn));
