@@ -39,6 +39,7 @@ Executable vvt-predicates
   Main-Is:              bin/Predicates.hs
 
 Executable vvt-opt
+  Extensions:           ViewPatterns
   Main-Is:              bin/Optimize.hs
   
 Executable vvt

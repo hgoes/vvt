@@ -6,6 +6,7 @@ import Realization.Lisp.Simplify.Dataflow
 import Realization.Lisp.Simplify.Inliner
 import Realization.Lisp.Simplify.ExprSimplify
 import Realization.Lisp.Simplify.ValueSet
+import Realization.Lisp.Simplify.Slicing
 
 import System.IO
 import qualified Data.Text as T
@@ -25,6 +26,7 @@ data Options = Options { showHelp :: Bool
 data Transformation = Inline
                     | Simplify
                     | ValueSetAnalysis Int
+                    | Slice
 
 options :: [OptDescr (Options -> Options)]
 options = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Shows this help."
@@ -54,6 +56,7 @@ getOptions = do
                     ,"    inline        - Inline gates that are used only once."
                     ,"    simplify      - Simplify expressions in the program."
                     ,"    value-set[=p] - Identify constant state variables."
+                    ,"    slice         - Remove unreachable parts of the program."
                     ]
            ) options
          exitSuccess
@@ -64,7 +67,7 @@ getOptions = do
                           Just t' -> return t'
                        ) transf
        let transf'' = case transf' of
-             [] -> [ValueSetAnalysis 1,Inline,Simplify]
+             [] -> [ValueSetAnalysis 1,Inline,Simplify,Slice]
              _ -> transf'
        return (opts { transformation = transf'' })
     (_,_,errs) -> do
@@ -76,10 +79,12 @@ applyTransformation :: Int -> LispProgram -> Transformation -> IO LispProgram
 applyTransformation _ prog Inline = return $ doInlining prog
 applyTransformation _ prog Simplify = return $ simplifyProgram prog
 applyTransformation v prog (ValueSetAnalysis threshold) = valueSetAnalysis v threshold prog
+applyTransformation v prog Slice = return $ slice prog
 
 parseTransformation :: String -> Maybe Transformation
 parseTransformation "inline" = Just Inline
 parseTransformation "simplify" = Just Simplify
+parseTransformation "slice" = Just Slice
 parseTransformation (stripPrefix "value-set" -> Just rest) = case rest of
   '=':n -> Just $ ValueSetAnalysis (read n)
   "" -> Just $ ValueSetAnalysis 5
