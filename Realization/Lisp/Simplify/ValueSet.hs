@@ -10,8 +10,8 @@ import Language.SMTLib2.Internals
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
 
-import Data.Map (Map)
-import qualified Data.Map as Map
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.List
 import Data.Maybe (catMaybes)
@@ -30,7 +30,7 @@ data ValueSet = ValueSet { valueMask :: [(T.Text,[[Int]])]
 
 valueSetAnalysis :: Int -> Int -> LispProgram -> IO LispProgram
 valueSetAnalysis verbosity threshold prog = do
-  vs <- deduceValueSet threshold prog
+  vs <- deduceValueSet verbosity threshold prog
   when (verbosity >= 1)
     (hPutStrLn stderr $ "Value set:\n"++showValueSet vs)
   let consts = getConstants vs
@@ -117,11 +117,12 @@ replaceConstantExpr name idx c (App fun args)
                     (extractArgAnnotation args)
 replaceConstantExpr _ _ _ e = e
 
-deduceValueSet :: Int -> LispProgram -> IO ValueSet
-deduceValueSet threshold prog = do
+deduceValueSet :: Int -> Int -> LispProgram -> IO ValueSet
+deduceValueSet verbosity threshold prog = do
   pipe <- createSMTPipe "z3" ["-smt2","-in"]
   let pipe' = debugBackend pipe
-  withSMTBackend pipe $ initialValueSet threshold prog >>= refineValueSet threshold prog
+  withSMTBackend pipe $ initialValueSet threshold prog
+    >>= refineValueSet verbosity threshold prog
 
 getConstants :: ValueSet -> [(T.Text,[Int],LispUValue)]
 getConstants vs = getConstants' 0 (valueMask vs)
@@ -163,12 +164,16 @@ addState :: [LispUValue] -> ValueSet -> ValueSet
 addState vs vals = vals { values = vs:values vals
                         , vsize = (vsize vals)+1 }
 
-refineValueSet :: (Functor m,MonadIO m) => Int -> LispProgram -> ValueSet -> SMT' m ValueSet
-refineValueSet threshold prog vs = stack $ do
+refineValueSet :: (Functor m,MonadIO m) => Int -> Int -> LispProgram -> ValueSet -> SMT' m ValueSet
+refineValueSet verbosity threshold prog vs = stack $ do
   cur <- createStateVars "" prog
   inp <- createInputVars "" prog
   (nxt,_) <- declareNextState prog cur inp Nothing (startingProgress prog)
-  getValues cur nxt vs
+  res <- getValues cur nxt vs
+  when (verbosity>=2) $ do
+    liftIO $ hPutStrLn stderr $ "Current value set:"
+    liftIO $ hPutStrLn stderr $ showValueSet res
+  return res
   where
     getValues cur nxt vs = do
       nvs <- stack $ do
