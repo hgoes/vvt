@@ -21,6 +21,7 @@ slice prog = prog { programState = Map.intersection (programState prog) keepStat
                   , programGates = Map.intersection (programGates prog) keepGates
                   , programNext  = Map.intersection (programNext prog) keepState
                   , programInit  = Map.intersection (programInit prog) keepState
+                  , programInvariant = fmap filterExpr (programInvariant prog)
                   }
   where
     keepInput = Map.fromList [ (name,()) | (name,Input) <- Set.toList deps ]
@@ -32,6 +33,51 @@ slice prog = prog { programState = Map.intersection (programState prog) keepStat
     dep1 = foldl (\st e -> getDependenciesExpr e st
                  ) dep0 (programProperty prog)
     deps = recDependencies prog dep1
+    filterExpr :: SMTExpr t -> SMTExpr t
+    filterExpr (InternalObj (cast -> Just acc) ann) = case acc of
+      LispVarAccess var idx dyn -> case filterVar var of
+        Nothing -> defaultExpr ann
+        Just var' -> InternalObj (LispVarAccess var' idx (fmap filterExpr dyn)) ann
+      LispSizeAccess var dyn -> case filterVar var of
+        Nothing -> defaultExpr ann
+        Just var' -> InternalObj (LispSizeAccess var' (fmap filterExpr dyn)) ann
+      LispSizeArrAccess var i -> case filterVar var of
+        Nothing -> defaultExpr ann
+        Just var' -> InternalObj (LispSizeArrAccess var' i) ann
+      LispEq v1 v2 -> case filterVar v1 of
+        Nothing -> defaultExpr ann
+        Just v1' -> case filterVar v2 of
+          Nothing -> defaultExpr ann
+          Just v2' -> InternalObj (LispEq v1' v2') ann
+    filterExpr (App fun args)
+      = App fun (snd $ foldExprsId (\_ e _ -> ((),filterExpr e)) () args
+                       (extractArgAnnotation args))
+    filterExpr e = e
+    filterVar v@(NamedVar name cat tp) = case cat of
+      Input -> if Map.member name keepInput
+               then Just v
+               else Nothing
+      State -> if Map.member name keepState
+               then Just v
+               else Nothing
+      Gate -> if Map.member name keepGates
+              then Just v
+              else Nothing
+    filterVar (LispStore v idx sidx val) = do
+      v' <- filterVar v
+      let sidx' = fmap filterExpr sidx
+          val' = filterExpr val
+      return (LispStore v' idx sidx' val')
+    filterVar (LispConstr val) = Just $ LispConstr $ LispValue { size = nsize
+                                                               , value = nvalue }
+      where
+        nsize = case size val of
+          Size elem -> Size (fmap (\(SizeElement e) -> SizeElement $ filterExpr e) elem)
+        nvalue = fmap (\(Val v) -> Val (filterExpr v)) (value val)
+    filterVar (LispITE c ifT ifF) = do
+      ifT' <- filterVar ifT
+      ifF' <- filterVar ifF
+      return (LispITE (filterExpr c) ifT' ifF')
 
 recDependencies :: LispProgram -> DepState -> Set (T.Text,LispVarCat)
 recDependencies prog dep = case todo dep of
