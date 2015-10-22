@@ -34,22 +34,48 @@ valueSetAnalysis verbosity threshold prog = do
   when (verbosity >= 1)
     (hPutStrLn stderr $ "Value set:\n"++showValueSet vs)
   let consts = getConstants vs
-  return $ foldl (\prog' (name,idx,c) -> replaceConstantProg name (fmap fromIntegral idx) c prog') prog consts
+  return $ foldl' (\prog' (name,idx,c) -> replaceConstantProg name (fmap fromIntegral idx) c prog') prog consts
 
 replaceConstantProg :: T.Text -> [Integer] -> LispUValue -> LispProgram -> LispProgram
 replaceConstantProg name idx c prog
-  = prog { programNext = fmap (replaceConstant name idx c) (del $ programNext prog)
+  = prog { programNext = fmap (replaceConstant name idx c) (delNext $ programNext prog)
          , programProperty = fmap (replaceConstantExpr name idx c) (programProperty prog)
          , programGates = fmap (\(tp,var) -> (tp,replaceConstant name idx c var))
                           (programGates prog)
          , programAssumption = fmap (replaceConstantExpr name idx c) (programAssumption prog)
          , programInvariant = fmap (replaceConstantExpr name idx c) (programInvariant prog)
-         , programState = del (programState prog)
-         , programInit = del (programInit prog)
+         , programState = delType (programState prog)
+         , programInit = delInit (programInit prog)
          }
   where
-    del :: Map T.Text a -> Map T.Text a
-    del mp = if idx==[] then Map.delete name mp else mp
+    delInit mp = if idx==[] then Map.delete name mp
+                 else Map.adjust (\val -> val { value = delEntry idx (value val) }
+                                 ) name mp
+    delType mp = if idx==[] then Map.delete name mp
+                 else Map.adjust (\(tp,ann) -> (tp { typeBase = delEntry idx (typeBase tp)
+                                                   },ann)
+                                 ) name mp
+    delNext mp = if idx==[] then Map.delete name mp
+                 else Map.adjust (\var -> delVarEntry idx var
+                                 ) name mp
+
+delEntry :: [Integer] -> LispStruct a -> LispStruct a
+delEntry [] _ = Struct []
+delEntry (i:is) (Struct elems) = Struct (del' 0 elems)
+  where
+    del' n (x:xs) = if i==n
+                    then delEntry is x:xs
+                    else x:del' (n+1) xs
+
+delVarEntry :: [Integer] -> LispVar -> LispVar
+delVarEntry [] v = LispConstr $ LispValue (error "Size of deleted entry accessed.") (Struct [])
+delVarEntry _ v@(NamedVar _ _ _) = v
+delVarEntry idx (LispStore v idx' didx val)
+  = if idx==idx'
+    then delVarEntry idx v
+    else LispStore (delVarEntry idx v) idx' didx val
+delVarEntry idx (LispITE c ifT ifF) = LispITE c (delVarEntry idx ifT) (delVarEntry idx ifF)
+delVarEntry idx (LispConstr val) = LispConstr $ val { value = delEntry idx (value val) }
 
 replaceConstant :: T.Text -> [Integer] -> LispUValue -> LispVar -> LispVar
 replaceConstant name idx c var@(NamedVar name' cat tp)
@@ -82,10 +108,11 @@ replaceConstant name idx c (LispITE cond ifT ifF)
             (replaceConstant name idx c ifF)
 
 replaceConstantExpr :: T.Text -> [Integer] -> LispUValue -> SMTExpr t -> SMTExpr t
-replaceConstantExpr name idx c (InternalObj (cast -> Just acc) ann)
+replaceConstantExpr name idx c e@(InternalObj (cast -> Just acc) ann)
   = case acc of
      LispVarAccess (NamedVar name' State tp) idx' dyn
        | name==name' && idx==idx' -> access c dyn
+       | name==name' -> e
        where
          access :: SMTType t => LispUValue -> [SMTExpr Integer] -> SMTExpr t
          access (LispUValue x) [] = case gcast (constant $ derefConst (undefined::SMTExpr Integer) x) of
