@@ -9,6 +9,10 @@ import qualified Data.Set as Set
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Foldable
+import System.Console.GetOpt
+import System.Exit
+import System.Environment
+import Control.Monad (when)
 
 threadIdType :: Ptr Module -> IO (Ptr StructType)
 threadIdType mod = withStringRef "struct.__thread_id" $ \name -> do
@@ -421,17 +425,78 @@ getProgram = do
   mod <- parseIR buf diag ctx
   return mod
 
+data Transformation
+  = MakeAtomicBlocks
+  | MakeFiniteThreads Int
+  | MakePThreadLocks
+
+data Options = Options { showHelp :: Bool
+                       , transformation :: [Transformation]
+                       , verbose :: Int
+                       }
+
+defaultOptions :: Options
+defaultOptions = Options { showHelp = False
+                         , transformation = []
+                         , verbose = 0 }
+
+options :: [OptDescr (Options -> Options)]
+options = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help."
+          ,Option ['v'] ["verbose"] (OptArg (\v opt -> case v of
+                                               Just v' -> opt { verbose = read v' }
+                                               Nothing -> opt { verbose = 1 }) "level"
+                                    ) "Output more information while running (higher level = more info)"
+          ]
+
+getOptions :: IO Options
+getOptions = do
+  args <- getArgs
+  case getOpt Permute options args of
+    (xs,transf,[]) -> do
+       let opts = foldl (flip id) defaultOptions xs
+       when (showHelp opts) $ do
+         putStrLn $
+           usageInfo
+           (unlines ["USAGE: vvt-svcomp [TRANS...] < <file>"
+                    ,"       where <file> is an llvm file."
+                    ,""
+                    ,"  TRANS can be one of the following transformations:"
+                    ,"    atomic        - Generate atomic blocks for atomic functions."
+                    ,"    threads[=p]   - Restrict infinite thread creation loops."
+                    ,"    locks         - Identify locks in the program."
+                    ]
+           ) options
+         exitSuccess
+       transf' <- mapM (\t -> case parseTransformation t of
+                          Nothing -> do
+                            hPutStrLn stderr $ "Failed to parse transformation: "++t
+                            exitFailure
+                          Just t' -> return t'
+                       ) transf
+       return (opts { transformation = transf' })
+    (_,_,errs) -> do
+      hPutStrLn stderr "vvt-svcomp: Error while parsing command-line options:"
+      mapM (\err -> hPutStrLn stderr $ "  "++err) errs
+      exitFailure
+
+applyTransformation :: Int -> Ptr Module -> Transformation -> IO ()
+applyTransformation _ mod MakeAtomicBlocks = makeAtomic mod
+applyTransformation _ mod (MakeFiniteThreads n) = makeFiniteThreads n mod >> fixPThreadCalls mod
+applyTransformation _ mod MakePThreadLocks = insertLocks mod
+
+parseTransformation :: String -> Maybe Transformation
+parseTransformation "atomic" = Just MakeAtomicBlocks
+parseTransformation "locks" = Just MakePThreadLocks
+parseTransformation (stripPrefix "threads" -> Just rest) = case rest of
+  '=':n -> Just $ MakeFiniteThreads (read n)
+  "" -> Just $ MakeFiniteThreads 2
+  _ -> Nothing
+parseTransformation _  = Nothing
+
 main :: IO ()
 main = do
+  opts <- getOptions
   mod <- getProgram
-  hPutStrLn stderr "Creating atomic blocks..."
-  makeAtomic mod
-  hPutStrLn stderr "Unrolling thread creation loops..."
-  makeFiniteThreads 2 mod
-  hPutStrLn stderr "Fixing pthread calls..."
-  fixPThreadCalls mod
-  hPutStrLn stderr "Inserting locks..."
-  insertLocks mod
-  hPutStrLn stderr "done."
+  mapM_ (applyTransformation (verbose opts) mod) (transformation opts)
   writeBitCodeToFile mod "/dev/stdout"
   return ()
