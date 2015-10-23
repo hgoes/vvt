@@ -42,6 +42,7 @@ data DefinitionState inp = AlwaysDefined (inp -> SMTExpr Bool)
 data AlternativeRepresentation inp = IntConst Integer
                                    | OrList [inp -> SymVal]
                                    | ExtBool (inp -> SMTExpr Bool)
+                                   | NullPtr
 
 data InstructionValue inp = InstructionValue { symbolicType :: SymType
                                              , symbolicValue :: inp -> SymVal
@@ -1094,6 +1095,10 @@ realizeDefInstruction thread i@(castDown -> Just icmp) edge real0 = do
               )
               (valPtr $ symbolicValue x inp)
               (valPtr $ symbolicValue y inp))
+    cmp I_EQ (alternative -> Just NullPtr) y@(symbolicType -> TpInt) inp
+      = (valInt (symbolicValue y inp)) .==. 0
+    cmp I_EQ x@(symbolicType -> TpInt) (alternative -> Just NullPtr) inp
+      = (valInt (symbolicValue x inp)) .==. 0
     cmp I_NE x y inp = not' $ cmp I_EQ x y inp
     cmp I_SGE x y inp = (valInt $ symbolicValue x inp) .>=.
                         (valInt $ symbolicValue y inp)
@@ -1111,6 +1116,7 @@ realizeDefInstruction thread i@(castDown -> Just icmp) edge real0 = do
                         (valInt $ symbolicValue y inp)
     cmp I_ULT x y inp = (valInt $ symbolicValue x inp) .<.
                         (valInt $ symbolicValue y inp)
+    cmp op x y _ = error $ "Cannot compare "++show (symbolicType x)++" and "++show (symbolicType y)++" using "++show op
 realizeDefInstruction thread i@(castDown -> Just (zext::Ptr ZExtInst)) edge real0 = do
   op <- getOperand zext 0
   tp <- valueGetType op >>= translateType (threadStateDesc $ stateAnnotation real0)
@@ -1420,7 +1426,7 @@ realizeValue thread (castDown -> Just (null::Ptr ConstantPointerNull)) edge real
                                                   , tpPtrType = nullTp }
                            , symbolicValue = const $ ValPtr { valPtr = Map.empty
                                                             , valPtrType = nullTp }
-                           , alternative = Nothing
+                           , alternative = Just NullPtr
                            },real)
 realizeValue thread (castDown -> Just undef) edge real = do
   tp <- getType (undef::Ptr UndefValue)
