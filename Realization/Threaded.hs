@@ -92,6 +92,35 @@ data Realization inp
 
 data RealizationException = RealizationException String SomeException deriving Typeable
 
+writeBasedAliasAnalysis :: Realization inp
+                        -> (Map MemoryLoc AllocType,
+                            Map (Maybe (Ptr CallInst))
+                                (Map (Ptr GlobalVariable) AllocType))
+                        -> (Map MemoryLoc AllocType,
+                            Map (Maybe (Ptr CallInst))
+                                (Map (Ptr GlobalVariable) AllocType))
+writeBasedAliasAnalysis real start = foldl processEvent start (events real)
+  where
+    processEvent st ev = let trgs = Map.keys (target ev)
+                             tp = symbolicType (writeContent ev)
+                             th = eventThread ev
+                         in foldl (processWrite th tp) st trgs
+    processWrite th tp (g,l) trg = case memoryLoc trg of
+      AllocTrg instr -> (Map.adjust (insertType tp (offsetPattern trg)) (Left instr) g,l)
+      GlobalTrg glob -> (Map.adjust (insertType tp (offsetPattern trg)) (Right glob) g,l)
+      LocalTrg glob -> (g,Map.adjust (Map.adjust (insertType tp (offsetPattern trg)) glob) th l)
+    insertType tp (_:is) (TpStatic sz str) = TpStatic sz (insertTypeStruct tp is str)
+    insertType tp (_:is) (TpDynamic str) = TpDynamic (insertTypeStruct tp is str)
+    insertType tp [] (TpStatic sz str) = TpStatic sz (insertTypeStruct tp [] str)
+    insertTypeStruct tp [] (Singleton tp') = case typeIntersection tp tp' of
+      Just rtp -> Singleton rtp
+      Nothing -> Singleton tp'
+    insertTypeStruct tp (StaticAccess i:is) (Struct tps) = Struct (insert' i tps)
+      where
+        insert' 0 (tp':tps) = (insertTypeStruct tp is tp'):tps
+        insert' n (tp':tps) = tp':(insert' (n-1) tps)
+    insertTypeStruct tp (DynamicAccess:is) (Struct tps) = Struct (fmap (insertTypeStruct tp is) tps)
+
 withAliasAnalysis :: Ptr Module -> (Ptr AliasAnalysis -> IO a) -> IO a
 withAliasAnalysis mod act = do
   aaPass <- createBasicAliasAnalysisPass
@@ -125,11 +154,28 @@ constantBoolValue n = InstructionValue { symbolicType = TpBool
                                        , symbolicValue = \_ -> ValBool (constant n)
                                        , alternative = Nothing }
 
-realizeProgram :: TranslationOptions -> Ptr Module -> Ptr Function -> IO (Realization (ProgramState,ProgramInput))
-realizeProgram opts mod fun = {-withAliasAnalysis mod $ \aa ->-} do
+realizeProgramFix :: TranslationOptions
+                  -> Ptr Module -> Ptr Function
+                  -> IO (Realization (ProgramState,ProgramInput))
+realizeProgramFix opts mod fun = do
+  init <- realizeProgram opts Nothing mod fun
+  let glob = memoryDesc (stateAnnotation init)
+      loc = Map.insert Nothing (threadGlobalDesc $ mainStateDesc $ stateAnnotation init) $
+            Map.mapKeysMonotonic Just $
+            fmap threadGlobalDesc (threadStateDesc $ stateAnnotation init)
+      nst = writeBasedAliasAnalysis init (glob,loc)
+  realizeProgram opts (Just nst) mod fun
+
+realizeProgram :: TranslationOptions
+               -> Maybe (Map MemoryLoc AllocType,
+                         Map (Maybe (Ptr CallInst)) (Map (Ptr GlobalVariable) AllocType))
+               -> Ptr Module -> Ptr Function
+               -> IO (Realization (ProgramState,ProgramInput))
+realizeProgram opts tpInfo mod fun = {-withAliasAnalysis mod $ \aa ->-} do
   info <- getProgramInfo mod fun
   globals <- moduleGetGlobalList mod >>= ipListToList
-  globSig <- foldlM (\mp glob -> do
+  globSig <- case tpInfo of
+    Nothing -> foldlM (\mp glob -> do
                         ptrTp <- getType glob
                         tp <- sequentialTypeGetElementType ptrTp
                         symTp <- translateType0 tp
@@ -137,14 +183,16 @@ realizeProgram opts mod fun = {-withAliasAnalysis mod $ \aa ->-} do
                         return (Map.insert (if isLocal
                                             then LocalTrg glob
                                             else GlobalTrg glob) (TpStatic 1 symTp) mp)
-                    ) Map.empty globals
+                      ) Map.empty globals
+    Just _ -> return Map.empty
   globInit <- foldlM (\mp glob -> do
                         init <- globalVariableGetInitializer glob
                         val <- getConstant Nothing init
                         return (Map.insert glob (ValStatic [val]) mp)
                      ) Map.empty globals
-  allocSig <- sequence $ Map.mapWithKey
-              (\alloc info -> do
+  allocSig <- case tpInfo of
+    Nothing -> sequence $ Map.mapWithKey
+               (\alloc info -> do
                   tp <- translateAllocType0 (allocType info)
                   case allocSize info of
                    Nothing -> return $ case allocQuantity info of
@@ -153,7 +201,8 @@ realizeProgram opts mod fun = {-withAliasAnalysis mod $ \aa ->-} do
                    Just sz -> case allocQuantity info of
                      Finite 1 -> return $ TpDynamic tp
                      _ -> error $ "Dynamic allocations in a loop not yet supported."
-              ) (allocations info)
+               ) (allocations info)
+    Just _ -> return Map.empty
   let allocSig' = Map.mapKeysMonotonic AllocTrg allocSig
       sigs = typeBasedReachability (Map.union globSig allocSig')
       --sigs' = sigs
@@ -162,12 +211,17 @@ realizeProgram opts mod fun = {-withAliasAnalysis mod $ \aa ->-} do
                                                      AllocTrg _ -> True
                                                      GlobalTrg _ -> True
                                                      LocalTrg _ -> False) sigs'
-      globSigs'' = Map.mapKeysMonotonic (\k -> case k of
+      globSigs'' = case tpInfo of
+        Nothing -> Map.mapKeysMonotonic (\k -> case k of
                                             AllocTrg i -> Left i
                                             GlobalTrg g -> Right g
                                         ) globSigs'
-      locSigs'' = Map.mapKeysMonotonic (\(LocalTrg g) -> g) locSigs'
-  let th0 tinfo = do
+        Just (g,_) -> g
+      locSigs'' th = case tpInfo of
+        Nothing -> Map.mapKeysMonotonic (\(LocalTrg g) -> g) locSigs'
+        Just (_,l) -> case Map.lookup th l of
+          Just mp -> mp
+  let th0 th tinfo = do
         arg <- case threadArg tinfo of
           Nothing -> return Nothing
           Just (val,rtp) -> do
@@ -187,7 +241,7 @@ realizeProgram opts mod fun = {-withAliasAnalysis mod $ \aa ->-} do
         return $ ThreadStateDesc { latchBlockDesc = entryPoints tinfo
                                  , latchValueDesc = Map.empty
                                  , threadArgumentDesc = arg
-                                 , threadGlobalDesc = locSigs''
+                                 , threadGlobalDesc = locSigs'' th
                                  , threadReturnDesc = ret }
       th_inp = ThreadInputDesc Map.empty
   mainBlk <- getEntryBlock fun
@@ -197,8 +251,9 @@ realizeProgram opts mod fun = {-withAliasAnalysis mod $ \aa ->-} do
                 case castDown threadVal of
                  Just threadFun -> getEntryBlock threadFun
             ) (threads info)
-  mainDesc <- th0 (mainThread info)
-  thDesc <- fmap (typeBasedArgumentReachability sigs) $ mapM th0 (threads info)
+  mainDesc <- th0 Nothing (mainThread info)
+  thDesc <- fmap (typeBasedArgumentReachability sigs) $
+            Map.traverseWithKey (\th -> th0 (Just th)) (threads info)
   let real0 = Realization { edges = Map.empty
                           , yieldEdges = Map.empty
                           , internalYieldEdges = Map.empty
@@ -1747,7 +1802,9 @@ outputValues real = mp2
           Nothing -> error $ "outputValues: Cannot find old value of "++show instr
 
 outputMem :: Realization (ProgramState,ProgramInput) -> (ProgramState,ProgramInput)
-          -> (Map MemoryLoc AllocVal,Map (Maybe (Ptr CallInst)) (Map (Ptr GlobalVariable) AllocVal),Realization (ProgramState,ProgramInput))
+          -> (Map MemoryLoc AllocVal,
+              Map (Maybe (Ptr CallInst)) (Map (Ptr GlobalVariable) AllocVal),
+              Realization (ProgramState,ProgramInput))
 outputMem real inp
   = while "Generating output memory: " $
     Map.foldlWithKey

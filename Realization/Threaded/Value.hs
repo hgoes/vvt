@@ -82,16 +82,24 @@ data MemoryAccessResult a
   | CondAccess (SMTExpr Bool) (MemoryAccessResult a) (MemoryAccessResult a)
   deriving (Eq,Ord,Typeable)
 
-defaultIf :: SMTExpr Bool -> SymVal -> SymVal
-defaultIf cond (ValBool v) = ValBool (ite cond (constant False) v)
-defaultIf cond (ValInt v) = ValInt (ite cond (constant 0) v)
-defaultIf cond (ValPtr ptr tp) = ValPtr (fmap (\(c,idx) -> (constant False,
-                                                            fmap (const $ constant 0) idx)
-                                              ) ptr) tp
-defaultIf cond (ValThreadId mp) = ValThreadId $ fmap (const $ constant False) mp
-defaultIf cond (ValCondition mp) = ValCondition $ fmap (const $ constant False) mp
-defaultIf cond (ValVector vals) = ValVector $ fmap (defaultIf cond) vals
+typeIntersection :: SymType -> SymType -> Maybe SymType
+typeIntersection TpBool TpBool = Just TpBool
+typeIntersection TpInt TpInt = Just TpInt
+typeIntersection (TpPtr trg1 tp1) (TpPtr trg2 tp2) = do
+  ntp <- sequence $ zipStruct typeIntersection tp1 tp2
+  return $ TpPtr (Map.intersection trg1 trg2) ntp
+typeIntersection (TpCondition t1) (TpCondition t2)
+  = Just $ TpCondition (Map.intersection t1 t2)
+typeIntersection (TpVector v1) (TpVector v2) = do
+  ntps <- sequence $ zipWith typeIntersection v1 v2
+  return $ TpVector ntps
+typeIntersection _ _ = Nothing
 
+zipStruct :: (a -> b -> c) -> Struct a -> Struct b -> Struct c
+zipStruct f (Singleton x) (Singleton y) = Singleton (f x y)
+zipStruct f (Struct xs) (Struct ys)
+  = Struct (zipWith (zipStruct f) xs ys)
+      
 defaultValue :: SymType -> SymVal
 defaultValue TpBool = ValBool (constant False)
 defaultValue TpInt = ValInt (constant 0)

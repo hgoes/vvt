@@ -16,7 +16,7 @@ defaultOptions = TranslationOptions { dedicatedErrorState = True
 
 main = do
   (mod,fun) <- getProgram "main"
-  real <- realizeProgram defaultOptions mod fun
+  real <- realizeProgramFix defaultOptions mod fun
   lisp <- toLispProgram defaultOptions real
   print $ programToLisp lisp
 
