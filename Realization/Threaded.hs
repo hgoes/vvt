@@ -1441,6 +1441,13 @@ realizeValue thread (castDown -> Just undef) edge real = do
                                                 then const $ ValBool $ constant False
                                                 else const $ ValInt $ constant 0
                               , alternative = Just (IntConst 0) }
+    defaultValue (castDown -> Just (ptp::Ptr PointerType)) = do
+      rtp <- sequentialTypeGetElementType ptp
+             >>= translateType (threadStateDesc $ stateAnnotation real) (allMemoryTypes real)
+      return InstructionValue { symbolicType = TpPtr Map.empty rtp
+                              , symbolicValue = const $ ValPtr Map.empty rtp
+                              , alternative = Just NullPtr
+                              }
 realizeValue thread (castDown -> Just glob) edge real = do
   isLocal <- globalVariableIsThreadLocal glob
   let ptr = MemoryPtr { memoryLoc = if isLocal then LocalTrg glob else GlobalTrg glob
