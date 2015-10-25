@@ -13,6 +13,7 @@ import System.Console.GetOpt
 import System.Exit
 import System.Environment
 import Control.Monad (when)
+import Data.Int
 
 threadIdType :: Ptr Module -> IO (Ptr StructType)
 threadIdType mod = withStringRef "struct.__thread_id" $ \name -> do
@@ -105,28 +106,42 @@ makeAtomic mod = do
 
 data IdentifiedLock = IdentifiedLock { lockAquires :: [(Ptr CallInst,Ptr CallInst)]
                                      , lockReleases :: [(Ptr CallInst,Ptr CallInst)]
+                                     , lockTests :: [(Ptr LoadInst,Ptr TruncInst)]
                                      } deriving Show
 
 instance Monoid IdentifiedLock where
-  mempty = IdentifiedLock [] []
-  mappend (IdentifiedLock a1 r1) (IdentifiedLock a2 r2)
-    = IdentifiedLock (a1++a2) (r1++r2)
+  mempty = IdentifiedLock [] [] []
+  mappend (IdentifiedLock a1 r1 t1) (IdentifiedLock a2 r2 t2)
+    = IdentifiedLock (a1++a2) (r1++r2) (t1++t2)
+
+mergeLocks :: Maybe IdentifiedLock -> Maybe IdentifiedLock -> Maybe IdentifiedLock
+mergeLocks (Just l1) (Just l2) = Just $ mappend l1 l2
+mergeLocks _ _ = Nothing
 
 insertLocks :: Ptr Module -> IO ()
 insertLocks mod = do
   ctx <- moduleGetContext mod
   locks <- identifyLocks mod
-  hPutStrLn stderr $ "Identified locks: "++show locks
+  hPutStrLn stderr $ "Identified locks:"
+  mapM_ (\(var,locking) -> do
+             varName <- getNameString var
+             hPutStrLn stderr $ "  "++varName++": "++show locking
+        ) (Map.toList locks)
   mtype <- mutexType mod
   ptrMType <- pointerTypeGet mtype 0
   i32 <- getIntegerType ctx 32
+  i1 <- getIntegerType ctx 1
   lockSig <- withArrayRef [castUp ptrMType] $
              \arr -> newFunctionType i32 arr False
+  testSig <- withArrayRef [castUp ptrMType] $
+             \arr -> newFunctionType i1 arr False
   attrs <- newAttributeSet
   lockFun <- withStringRef "pthread_mutex_lock" $
              \name -> moduleGetOrInsertFunction mod name lockSig attrs
   unlockFun <- withStringRef "pthread_mutex_unlock" $
                \name -> moduleGetOrInsertFunction mod name lockSig attrs
+  testFun <- withStringRef "pthread_mutex_locked" $
+             \name -> moduleGetOrInsertFunction mod name testSig attrs
   val0 <- mallocAPInt (APInt 32 0) >>= createConstantInt ctx
   struct <- withArrayRef [castUp val0] $ \arr -> newConstantStruct mtype arr
   deleteAttributeSet attrs
@@ -156,6 +171,15 @@ insertLocks mod = do
                      replaceSeq instrs begin (castUp beginRelease) (castUp endRelease) (castUp unlockCall)
                      return ()
                   ) (lockReleases lock)
+            mapM_ (\(loadMtx,truncLoad) -> do
+                       name <- newTwineEmpty
+                       testCall <- withArrayRef [castUp nvar] $
+                                   \args -> newCallInst testFun args name
+                       instructionInsertBefore testCall loadMtx
+                       valueReplaceAllUsesWith truncLoad testCall
+                       instructionRemoveFromParent loadMtx
+                       instructionRemoveFromParent truncLoad
+                  ) (lockTests lock)
         ) (zip (Map.toList $ Map.mapMaybe id locks) [0..])
   where
     replaceSeq instrs cur begin end repl = do
@@ -213,86 +237,126 @@ identifyLocks mod = do
       -- Mark loads from globals as non-locks
       ptr <- loadInstGetPointerOperand load
       case castDown ptr of
-        Just glob -> identify begin end (Map.insert glob Nothing locks) is
+        Just glob -> case is of
+          (castDown -> Just (trunc::Ptr TruncInst)):is -> do
+            hPutStrLn stderr $ "Load-trunk of global"
+            truncOp <- getOperand trunc 0
+            if truncOp==castUp load
+              then identify begin end (Map.insertWith mergeLocks glob
+                                       (Just $ IdentifiedLock
+                                        [] [] [(load,trunc)]) locks) is
+              else identify begin end (Map.insert glob Nothing locks) is
+          _ -> identify begin end (Map.insert glob Nothing locks) is
         Nothing -> identify begin end locks is
     identify begin end locks ((castDown -> Just store):is) = do
       -- Mark stores to globals as non-locks
       ptr <- storeInstGetPointerOperand store
       case castDown ptr of
-        Just glob -> identify begin end (Map.insert glob Nothing locks) is
+        Just glob -> do
+          name <- getNameString glob
+          hPutStrLn stderr $ name++" is not a lock (store detected)."
+          identify begin end (Map.insert glob Nothing locks) is
         Nothing -> identify begin end locks is
     identify begin end locks (_:is) = identify begin end locks is
-
-    getLocking cur begin end locks
+    getMutexLoad :: [Ptr Instruction] -> IO (Maybe (Ptr Value,[Ptr Value]),[Ptr Instruction])
+    getMutexLoad
       ((castDown -> Just load):
-       rest@((castDown -> Just cmp):
-             (castDown -> Just assume):
-             (castDown -> Just store):
-             (castDown -> Just callEnd):is)) = do
-      hPutStrLn stderr "Matched!"
-      lockPtr <- loadInstGetPointerOperand load
-      case castDown lockPtr of
-        Nothing -> abort
-        Just glob -> do
-          hPutStrLn stderr "Is global"
-          cmpOp <- getICmpOp cmp
-          if cmpOp==I_EQ
-            then do
-              hPutStrLn stderr "Is EQ"
-              lhs <- getOperand cmp 0
-              rhs <- getOperand cmp 1
-              hPutStrLn stderr "LHS:"
-              valueToString lhs >>= hPutStrLn stderr
-              hPutStrLn stderr "RHS:"
-              valueToString rhs >>= hPutStrLn stderr
-              if lhs==castUp load
-                then case castDown rhs of
+       rest@((castDown -> Just (trunc::Ptr TruncInst)):
+             (castDown -> Just (zext::Ptr ZExtInst)):
+             is)) = do
+        lockPtr <- loadInstGetPointerOperand load
+        truncOp <- getOperand trunc 0
+        if truncOp==castUp load
+          then do
+          zextOp <- getOperand zext 0
+          if zextOp==castUp trunc
+            then return (Just (lockPtr,[castUp zext,castUp trunc]),is)
+            else return (Nothing,rest)
+          else return (Nothing,rest)
+    getMutexLoad
+      ((castDown -> Just load):is) = do
+        lockPtr <- loadInstGetPointerOperand load
+        return (Just (lockPtr,[castUp load]),is)
+    getMutexLoad (i:is) = return (Nothing,is)
+
+    getMutexAssume :: [Ptr Value] -> [Ptr Instruction]
+                   -> IO (Maybe (Int64,[Ptr Value],[Ptr Instruction]))
+    getMutexAssume lockRes ((castDown -> Just cmp):rest) = do
+      lhs <- getOperand cmp 0
+      rhs <- getOperand cmp 1
+      cmpOp <- getICmpOp cmp
+      if lhs `elem` lockRes && cmpOp==I_EQ
+        then case castDown rhs of
+        Just cint -> do
+          checkVal <- constantIntGetValue cint >>= apIntGetSExtValue
+          return (Just (checkVal,[castUp cmp],rest))
+        Nothing -> return Nothing
+        else return Nothing
+    getMutexAssume lockRes rest = return $ Just (1,lockRes,rest)
+          
+
+    getLocking cur begin end locks is = do
+      (res,rest) <- getMutexLoad is
+      case res of
+        Nothing -> identify begin end locks is
+        Just (lockPtr,lockRes) -> do
+          res <- getMutexAssume lockRes rest
+          case res of
+            Nothing -> abort
+            Just (checkVal,cmpRes,rest) -> case rest of
+              ((castDown -> Just assume):
+               (castDown -> Just store):
+               (castDown -> Just callEnd):is) -> do
+                hPutStrLn stderr "Matched!"
+                case castDown lockPtr of
                   Nothing -> abort
-                  Just cint -> do
-                    hPutStrLn stderr "Is int EQ"
-                    checkVal <- constantIntGetValue cint >>= apIntGetSExtValue
+                  Just glob -> do
+                    hPutStrLn stderr "Is global"
                     assumeName <- callInstGetCalledValue assume >>= getNameString
                     if assumeName=="__assume"
                       then do
-                        hPutStrLn stderr "Is assume"
-                        assumeOp <- getOperand assume 0
-                        if assumeOp==castUp cmp
+                      hPutStrLn stderr "Is assume"
+                      assumeOp <- getOperand assume 0
+                      if assumeOp `elem` cmpRes
+                        then do
+                        storePtr <- storeInstGetPointerOperand store
+                        if storePtr==lockPtr
                           then do
-                            storePtr <- storeInstGetPointerOperand store
-                            if storePtr==lockPtr
-                              then do
-                                hPutStrLn stderr "Store is to same address"
-                                storeVal <- storeInstGetValueOperand store
-                                case castDown storeVal of
-                                  Just cint -> do
-                                    hPutStrLn stderr "Stores int"
-                                    newVal <- constantIntGetValue cint >>= apIntGetSExtValue
-                                    endFun <- callInstGetCalledValue callEnd
-                                    case castDown endFun of
-                                      Just endFun'
-                                        -> if endFun'==end
-                                           then (if checkVal==0 && newVal==1
-                                                 then identify begin end
-                                                      (Map.insertWith mappend glob
-                                                       (Just $ IdentifiedLock [(cur,callEnd)] [])
-                                                       locks) is
-                                                 else if checkVal==1 && newVal==0
-                                                      then identify begin end
-                                                           (Map.insertWith mappend glob
-                                                            (Just $ IdentifiedLock [] [(cur,callEnd)])
-                                                            locks) is
-                                                      else abort)
-                                           else abort
-                                      Nothing -> abort
-                                  Nothing -> abort
-                              else abort
+                          hPutStrLn stderr "Store is to same address"
+                          storeVal <- storeInstGetValueOperand store
+                          case castDown storeVal of
+                            Just cint -> do
+                              hPutStrLn stderr "Stores int"
+                              newVal <- constantIntGetValue cint >>= apIntGetSExtValue
+                              endFun <- callInstGetCalledValue callEnd
+                              case castDown endFun of
+                                Just endFun'
+                                  -> if endFun'==end
+                                     then (if checkVal==0 && newVal==1
+                                           then do
+                                             globName <- getNameString glob
+                                             hPutStrLn stderr $ globName++" has lock aquire."
+                                             identify begin end
+                                               (Map.insertWith mergeLocks glob
+                                                (Just $ IdentifiedLock [(cur,callEnd)] [] [])
+                                                locks) is
+                                           else if checkVal==1 && newVal==0
+                                                then do
+                                                  globName <- getNameString glob
+                                                  hPutStrLn stderr $ globName++" has lock release."
+                                                  identify begin end
+                                                    (Map.insertWith mergeLocks glob
+                                                     (Just $ IdentifiedLock [] [(cur,callEnd)] [])
+                                                     locks) is
+                                                else abort)
+                                     else abort
+                                Nothing -> abort
+                            Nothing -> abort
                           else abort
+                        else abort
                       else abort
-                else abort
-            else abort
-      where
-        abort = identify begin end locks rest
-    getLocking cur begin end locks (_:is) = identify begin end locks is
+          where
+            abort = identify begin end locks is
 
 makeFiniteThreads :: Int -> Ptr Module -> IO ()
 makeFiniteThreads n mod = do
