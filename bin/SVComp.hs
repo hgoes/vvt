@@ -14,6 +14,7 @@ import System.Exit
 import System.Environment
 import Control.Monad (when)
 import Data.Int
+import Data.Monoid
 
 threadIdType :: Ptr Module -> IO (Ptr StructType)
 threadIdType mod = withStringRef "struct.__thread_id" $ \name -> do
@@ -64,7 +65,25 @@ threadSpawnFun mod = do
   deleteAttributeSet attrs
   case castDown c of
     Just fun -> return fun
-  
+
+threadJoinFun :: Ptr Module -> IO (Ptr Function)
+threadJoinFun mod = do
+  ctx <- moduleGetContext mod
+  tpThreadId <- threadIdType mod
+  tpThreadIdPtr <- pointerTypeGet tpThreadId 0
+  void <- getVoidType ctx
+  void8 <- getIntegerType ctx 8
+  voidPtr <- pointerTypeGet void8 0
+  voidPtrPtr <- pointerTypeGet voidPtr 0
+  funSig <- withArrayRef [castUp tpThreadIdPtr,castUp voidPtrPtr] $
+            \arr -> newFunctionType void arr False
+  attrs <- newAttributeSet
+  c <- withStringRef "__thread_join" $
+       \name -> moduleGetOrInsertFunction mod name funSig attrs
+  deleteAttributeSet attrs
+  case castDown c of
+    Just fun -> return fun
+
 makeAtomic :: Ptr Module -> IO ()
 makeAtomic mod = do
   funs <- moduleGetFunctionList mod >>= ipListToList
@@ -355,6 +374,7 @@ identifyLocks mod = do
                           else abort
                         else abort
                       else abort
+              _ -> abort
           where
             abort = identify begin end locks is
 
@@ -427,18 +447,42 @@ makeFiniteThreads n mod = do
 fixPThreadCalls :: Ptr Module -> IO ()
 fixPThreadCalls mod = do
   pthreadCreate <- threadSpawnFun mod
+  pthreadJoin <- threadJoinFun mod
   moduleGetFunctionList mod >>= ipListToLazyList >>=
-    mapM_ (\fun -> do
-              getBasicBlockList fun >>= ipListToLazyList >>=
-                mapM_ (\blk -> do
-                         getInstList blk >>= ipListToLazyList >>=
-                           mapM_ (\i -> case castDown i of
-                                          Nothing -> return ()
-                                          Just call -> fixCall pthreadCreate call
-                                 )))
+    foldlM (\mp fun -> do
+                getBasicBlockList fun >>= ipListToLazyList >>=
+                  foldlM (\mp blk -> do
+                              getInstList blk >>= ipListToLazyList >>=
+                                foldlM (\mp i -> case castDown i of
+                                          Nothing -> return mp
+                                          Just call -> fixCall pthreadCreate pthreadJoin mp call
+                                       ) mp
+                         ) mp
+           ) Map.empty
+  return ()
   where
-    fixCall :: Ptr Function -> Ptr CallInst -> IO ()
-    fixCall create call = do
+    fixRef :: Map (Ptr Value) (Ptr Value) -> Ptr Value
+           -> IO (Ptr Value,Map (Ptr Value) (Ptr Value))
+    fixRef mp val = case Map.lookup val mp of
+      Just nval -> return (nval,mp)
+      Nothing -> case castDown val of
+        Just (allocRef::Ptr AllocaInst) -> do
+          ctx <- moduleGetContext mod
+          tp <- threadIdType mod
+          name <- newTwineEmpty
+          sz <- mallocAPInt (APInt 32 1) >>= createConstantInt ctx
+          nalloc <- newAllocaInst tp sz 0 name
+          instructionInsertAfter nalloc allocRef
+          return (castUp nalloc,Map.insert val (castUp nalloc) mp)
+        Nothing -> case castDown val of
+          Just load -> do
+            ptr <- loadInstGetPointerOperand load
+            fixRef mp ptr
+        
+    fixCall :: Ptr Function -> Ptr Function
+            -> Map (Ptr Value) (Ptr Value) -> Ptr CallInst
+            -> IO (Map (Ptr Value) (Ptr Value))
+    fixCall create join mp call = do
       ctx <- moduleGetContext mod
       void <- getIntegerType ctx 8 >>= \p -> pointerTypeGet p 0
       cv <- callInstGetCalledValue call
@@ -449,21 +493,13 @@ fixPThreadCalls mod = do
           valueDump call
           noName <- newTwineEmpty
           ref <- callInstGetArgOperand call 0
-          nref <- case castDown ref of
-            Just (allocRef::Ptr AllocaInst) -> do
-              tp <- threadIdType mod
-              name <- newTwineEmpty
-              sz <- mallocAPInt (APInt 32 0) >>= createConstantInt ctx
-              nalloc <- newAllocaInst tp sz 0 name
-              instructionInsertAfter nalloc allocRef
-              return nalloc
-          --nref <- newBitCastInst ref void noName
+          (nref,nmp) <- fixRef mp ref
           hPutStrLn stderr $ "New reference:"
           valueDump nref
           --instructionInsertBefore nref call
           thr <- callInstGetArgOperand call 2
           arg <- callInstGetArgOperand call 3
-          ncall <- withArrayRef [castUp nref,thr,arg] $ \arr -> newCallInst create arr noName
+          ncall <- withArrayRef [nref,thr,arg] $ \arr -> newCallInst create arr noName
           hPutStrLn stderr $ "Replacement call:"
           valueDump ncall
           instructionInsertBefore ncall call
@@ -476,7 +512,31 @@ fixPThreadCalls mod = do
           deleteAPInt zero
           valueReplaceAllUsesWith call czero
           instructionRemoveFromParent call
-        _ -> return ()
+          return nmp
+        "pthread_join" -> do
+          hPutStrLn stderr $ "Replacing call:"
+          valueDump call
+          noName <- newTwineEmpty
+          ref <- callInstGetArgOperand call 0
+          (nref,nmp) <- fixRef mp ref
+          hPutStrLn stderr $ "New reference:"
+          valueDump nref
+          ret <- callInstGetArgOperand call 1
+          ncall <- withArrayRef [nref,ret] $ \arr -> newCallInst join arr noName
+          hPutStrLn stderr $ "Replacement call:"
+          valueDump ncall
+          instructionInsertBefore ncall call
+          rtp <- getType call
+          bw <- case castDown rtp of
+            Just itp -> getBitWidth itp
+            Nothing -> return 32
+          zero <- newAPIntLimited (fromIntegral bw) 0 False
+          czero <- createConstantInt ctx zero
+          deleteAPInt zero
+          valueReplaceAllUsesWith call czero
+          instructionRemoveFromParent call
+          return nmp
+        _ -> return mp
 
 getProgram :: IO (Ptr Module)
 getProgram = do
