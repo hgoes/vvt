@@ -925,21 +925,23 @@ check st opts verb stats dumpDomain = do
   let prog:args = words (optBackend opts Map.! Base)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
-  case tr of
-    Just tr' -> return (Left tr')
-    Nothing -> runIC3 (mkIC3Config st opts verb stats dumpDomain)
-               ((do
-                     addSuggestedPredicates
-                     extend
-                     extend
-                     res <- checkIt
-                     ic3DumpStats (case res of
-                                     Left _ -> Nothing
-                                     Right fp -> Just fp)
-                     return res
-                ) `ic3Catch` (\ex -> do
-                                  ic3DumpStats Nothing
-                                  throw (ex::SomeException)))
+  runIC3 (mkIC3Config st opts verb stats dumpDomain) $ do
+    case tr of
+      Just tr' -> do
+        ic3DumpStats Nothing
+        return (Left tr')
+      Nothing -> (do
+                      addSuggestedPredicates
+                      extend
+                      extend
+                      res <- checkIt
+                      ic3DumpStats (case res of
+                                      Left _ -> Nothing
+                                      Right fp -> Just fp)
+                      return res
+                 ) `ic3Catch` (\ex -> do
+                                   ic3DumpStats Nothing
+                                   throw (ex::SomeException))
   where
     checkIt = do
       ic3DebugAct 1 (do
