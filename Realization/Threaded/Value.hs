@@ -13,12 +13,11 @@ import LLVM.FFI
 import Foreign.Ptr (Ptr)
 import Data.Typeable
 import Data.List (genericIndex,genericReplicate,genericLength)
-import Prelude hiding (mapM)
 import Data.Traversable
 import Data.Foldable
 import System.IO.Unsafe
 import Data.Maybe (mapMaybe,catMaybes)
-import Prelude hiding (sequence)
+import Prelude hiding (sequence,mapM)
 import Debug.Trace
 
 data Struct a = Singleton { singleton :: a }
