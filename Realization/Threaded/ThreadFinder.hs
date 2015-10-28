@@ -6,6 +6,8 @@ import LLVM.FFI.Loop
 import Foreign.Ptr (Ptr,nullPtr)
 import Foreign.Storable (peek)
 
+import Debug.Trace
+
 data Quantity = Finite Integer
               | Infinite
               deriving (Show,Eq)
@@ -61,8 +63,8 @@ getThreadSpawns fun loopInfo = do
       Just call -> do
         cv <- callInstGetCalledValue call
         case castDown cv of
-         Just (fun::Ptr Function) -> do
-           name <- getNameString fun
+         Just (call_fun::Ptr Function) -> do
+           name <- getNameString call_fun
            case name of
             "__thread_spawn" -> do
               threadVal <- callInstGetArgOperand call 1
@@ -119,6 +121,12 @@ getThreadSpawns fun loopInfo = do
                                                           else Infinite
                                              , allocType' = NormalAlloc rtp
                                              , allocSize' = Just num }:rest
+            "pthread_exit" -> do
+              arg <- callInstGetArgOperand call 0
+              tp <- realReturnType arg
+              rest <- analyzeInstructions is blk blks
+              return $ ReturnLocation { returningFunction = fun
+                                      , returnedType = tp }:rest
             _ -> analyzeInstructions is blk blks
       Nothing -> case castDown i of
         Just alloc -> do
@@ -187,6 +195,8 @@ realReturnType (castDown -> Just (i2p::Ptr IntToPtrInst))
   = getOperand i2p 0 >>= realReturnType
 realReturnType (castDown -> Just (c::Ptr ConstantExpr))
   = fmap castUp (constantExprAsInstruction c) >>= realReturnType
+realReturnType (castDown -> Just phi)
+  = phiNodeGetIncomingValue phi 0 >>= realReturnType
 realReturnType val = getType val
 
 getThreadArgument :: Ptr Function
@@ -256,6 +266,25 @@ simpleTypeByteSize :: Ptr Type -> IO Integer
 simpleTypeByteSize (castDown -> Just itp) = do
   sz <- getBitWidth itp
   return (sz `div` 8)
+simpleTypeByteSize (castDown -> Just (_::Ptr PointerType)) = return 8
+simpleTypeByteSize (castDown -> Just str) = do
+  num <- structTypeGetNumElements str
+  szs <- mapM (\i -> structTypeGetElementType str i >>= simpleTypeByteSize
+              ) (if num==0
+                 then []
+                 else [0..num-1])
+  return $ sum szs
+simpleTypeByteSize (castDown -> Just vec) = do
+  num <- vectorTypeGetNumElements vec
+  sz <- sequentialTypeGetElementType vec >>= simpleTypeByteSize
+  return $ num*sz
+simpleTypeByteSize (castDown -> Just arr) = do
+  num <- arrayTypeGetNumElements arr
+  sz <- sequentialTypeGetElementType arr >>= simpleTypeByteSize
+  return $ num*sz
+simpleTypeByteSize tp = do
+  typeDump tp
+  error $ "simpleTypeByteSize not implemented"
 
 instance Num Quantity where
   (+) Infinite _ = Infinite
