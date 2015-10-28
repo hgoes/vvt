@@ -18,6 +18,7 @@ import Data.Traversable
 import Data.Foldable
 import System.IO.Unsafe
 import Data.Maybe (mapMaybe,catMaybes)
+import Prelude hiding (sequence)
 import Debug.Trace
 
 data Struct a = Singleton { singleton :: a }
