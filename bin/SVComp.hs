@@ -15,6 +15,7 @@ import System.Environment
 import Control.Monad (when)
 import Data.Int
 import Data.Monoid
+import Prelude hiding (mapM_,elem,foldl)
 
 threadIdType :: Ptr Module -> IO (Ptr StructType)
 threadIdType mod = withStringRef "struct.__thread_id" $ \name -> do
