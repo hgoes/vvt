@@ -11,6 +11,8 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import Data.Typeable
+import Data.Foldable (foldl)
+import Prelude hiding (foldl)
 
 data DepState = DepState { dependencies :: Set (T.Text,LispVarCat)
                          , todo :: [(T.Text,LispVarCat)] }
