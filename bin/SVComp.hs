@@ -2,6 +2,7 @@ module Main where
 
 import LLVM.FFI
 import Foreign.Ptr
+import Foreign.C
 import Data.List (stripPrefix)
 import System.IO
 import Data.Set (Set)
@@ -539,6 +540,16 @@ fixPThreadCalls mod = do
           return nmp
         _ -> return mp
 
+inlineAll :: Ptr Module -> IO ()
+inlineAll mod = do
+  pm <- newPassManager
+  internalize <- withCString "main" $ \str -> withArrayRef [str] $ \arr -> createInternalizePass arr
+  inline <- createFunctionInliningPass 100000
+  passManagerAdd pm internalize
+  passManagerAdd pm inline
+  passManagerRun pm mod
+  deletePassManager pm
+
 getProgram :: IO (Ptr Module)
 getProgram = do
   loadRes <- getStdInMemoryBufferSimple
@@ -554,6 +565,7 @@ data Transformation
   = MakeAtomicBlocks
   | MakeFiniteThreads Int
   | MakePThreadLocks
+  | Inline
 
 data Options = Options { showHelp :: Bool
                        , transformation :: [Transformation]
@@ -589,6 +601,7 @@ getOptions = do
                     ,"    atomic        - Generate atomic blocks for atomic functions."
                     ,"    threads[=p]   - Restrict infinite thread creation loops."
                     ,"    locks         - Identify locks in the program."
+                    ,"    inline        - Inline all inlineable functions."
                     ]
            ) options
          exitSuccess
@@ -606,12 +619,14 @@ getOptions = do
 
 applyTransformation :: Int -> Ptr Module -> Transformation -> IO ()
 applyTransformation _ mod MakeAtomicBlocks = makeAtomic mod
-applyTransformation _ mod (MakeFiniteThreads n) = makeFiniteThreads n mod >> fixPThreadCalls mod
+applyTransformation _ mod (MakeFiniteThreads n) = makeFiniteThreads n mod -- >> fixPThreadCalls mod
 applyTransformation _ mod MakePThreadLocks = insertLocks mod
+applyTransformation _ mod Inline = inlineAll mod
 
 parseTransformation :: String -> Maybe Transformation
 parseTransformation "atomic" = Just MakeAtomicBlocks
 parseTransformation "locks" = Just MakePThreadLocks
+parseTransformation "inline" = Just Inline
 parseTransformation (stripPrefix "threads" -> Just rest) = case rest of
   '=':n -> Just $ MakeFiniteThreads (read n)
   "" -> Just $ MakeFiniteThreads 2
