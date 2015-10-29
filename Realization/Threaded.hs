@@ -1278,7 +1278,7 @@ memoryRead th origin (InstructionValue { symbolicType = TpPtr locs (Singleton tp
                          in (res,cond)
                      ) trgs
         in case Map.elems condMp of
-            [] -> error $ "Pointer has zero targets."
+            [] -> defaultValue tp --error $ "Pointer has zero targets."
             xs -> symITEs xs
     val inp = let ValPtr trgs _ = f inp
               in foldl (\cval ev -> case ev of
