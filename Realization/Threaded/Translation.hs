@@ -300,7 +300,9 @@ toLispProgram opts real' = do
                            [x] -> x .||. old
                            xs -> (app and' xs) .||. old
                          Just thD = Map.lookup th (threadStateDesc $ stateAnnotation real)
-                         Just thRet = threadReturnDesc thD
+                         thRet = case threadReturnDesc thD of
+                           Just rd -> rd
+                           Nothing -> error $ "Thread "++name++" has no return type."
                          mkRet [(_,v)] = symbolicValue v input
                          mkRet ((c,v):vs) = symITE (c input) (symbolicValue v input) (mkRet vs)
                          (term,ret) = case Map.lookup th (termEvents real) of

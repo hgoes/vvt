@@ -200,6 +200,7 @@ realizeProgram opts tpInfo mod fun = {-withAliasAnalysis mod $ \aa ->-} do
                      Finite n -> TpStatic n tp
                      Infinite -> TpDynamic tp
                    Just sz -> case allocQuantity info of
+                     _ -> return $ TpDynamic tp
                      Finite 1 -> return $ TpDynamic tp
                      _ -> error $ "Dynamic allocations in a loop not yet supported."
                ) (allocations info)
@@ -1980,6 +1981,7 @@ allPtrsOfType tp mem
     allStructPtrs tp' = if sameStructType tp tp'
                         then [[]]
                         else (case tp' of
+                               Struct [] -> []
                                Struct tps
                                  | allEq tps -> [ DynamicAccess:idx
                                                 | idx <- allStructPtrs (head tps) ]++
