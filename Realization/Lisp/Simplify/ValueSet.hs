@@ -28,9 +28,9 @@ data ValueSet = ValueSet { valueMask :: [(T.Text,[[Int]])]
                          , vsize :: !Int
                          }
 
-valueSetAnalysis :: Int -> Int -> LispProgram -> IO LispProgram
-valueSetAnalysis verbosity threshold prog = do
-  vs <- deduceValueSet verbosity threshold prog
+valueSetAnalysis :: Int -> Int -> String -> LispProgram -> IO LispProgram
+valueSetAnalysis verbosity threshold solver prog = do
+  vs <- deduceValueSet verbosity threshold solver prog
   when (verbosity >= 1)
     (hPutStrLn stderr $ "Value set:\n"++showValueSet vs)
   let consts = getConstants vs
@@ -144,9 +144,10 @@ replaceConstantExpr name idx c (App fun args)
                     (extractArgAnnotation args)
 replaceConstantExpr _ _ _ e = e
 
-deduceValueSet :: Int -> Int -> LispProgram -> IO ValueSet
-deduceValueSet verbosity threshold prog = do
-  pipe <- createSMTPipe "z3" ["-smt2","-in"]
+deduceValueSet :: Int -> Int -> String -> LispProgram -> IO ValueSet
+deduceValueSet verbosity threshold solver prog = do
+  let bin:args = words solver
+  pipe <- createSMTPipe bin args
   let pipe' = debugBackend pipe
   withSMTBackend pipe $ initialValueSet threshold prog
     >>= refineValueSet verbosity threshold prog
