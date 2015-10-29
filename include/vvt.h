@@ -9,6 +9,7 @@ extern "C" {
 
   extern int __nondet_int();
   extern unsigned int __nondet_uint();
+  extern long __nondet_long();
   extern size_t __nondet_size();
   extern bool __nondet_bool();
 
