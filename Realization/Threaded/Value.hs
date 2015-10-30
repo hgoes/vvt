@@ -95,6 +95,21 @@ typeIntersection (TpVector v1) (TpVector v2) = do
   return $ TpVector ntps
 typeIntersection _ _ = Nothing
 
+typeUnion :: SymType -> SymType -> Maybe SymType
+typeUnion TpBool TpBool = Just TpBool
+typeUnion TpInt TpInt = Just TpInt
+typeUnion (TpPtr trg1 tp1) (TpPtr trg2 tp2) = do
+  ntp <- sequence $ zipStruct typeUnion tp1 tp2
+  return $ TpPtr (Map.union trg1 trg2) ntp
+typeUnion (TpCondition t1) (TpCondition t2)
+  = Just $ TpCondition (Map.union t1 t2)
+typeUnion (TpVector v1) (TpVector v2) = do
+  ntps <- sequence $ zipWith typeUnion v1 v2
+  return $ TpVector ntps
+typeUnion (TpThreadId t1) (TpThreadId t2)
+  = Just $ TpThreadId $ Map.union t1 t2
+typeUnion _ _ = Nothing
+
 zipStruct :: (a -> b -> c) -> Struct a -> Struct b -> Struct c
 zipStruct f (Singleton x) (Singleton y) = Singleton (f x y)
 zipStruct f (Struct xs) (Struct ys)
