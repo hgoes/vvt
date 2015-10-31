@@ -8,7 +8,6 @@ p_ic3_r, p_ic3_w = os.pipe()
 os.set_inheritable(p_ic3_r,True)
 id_ic3=os.fork()
 if id_ic3==0:
-    #os.close(p_ic3_w)
     sys.stdin.close()
     os.dup2(p_ic3_r, 0)
     os.execl(binpath+'vvt-verify','vvt-verify',
@@ -23,7 +22,6 @@ p_bmc_r, p_bmc_w = os.pipe()
 os.set_inheritable(p_bmc_r,True)
 id_bmc=os.fork()
 if id_bmc==0:
-    os.close(p_bmc_w)
     sys.stdin.close()
     os.dup2(p_bmc_r, 0)
     os.execl(binpath+'vvt-bmc','vvt-bmc','--solver='+binpath+'z3 -smt2 -in','-i','-d','50')
@@ -41,6 +39,12 @@ while True:
 id_exit,res = os.wait()
 
 if id_exit==id_ic3:
-    os.kill(id_bmc,signal.SIGKILL)
+    if res==0:
+        os.kill(id_bmc,signal.SIGKILL)
+    else:
+        os.wait(id_bmc)
 else:
-    os.kill(id_ic3,signal.SIGKILL)
+    if res==0:
+        os.kill(id_ic3,signal.SIGKILL)
+    else:
+        os.wait(id_ic3)
