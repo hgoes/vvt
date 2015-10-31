@@ -33,7 +33,7 @@ getSlicing fun = do
                    , sliceQueue = Map.empty
                    , realizationOrder = []
                    , currentSlice = Just (entry,0,instrs)
-                   , sliceMapping = Map.empty {-Map.singleton 0 [(entry,0)]-} }
+                   , sliceMapping = Map.singleton 0 [(entry,0)] }
   getSlicing' s0
   where
     getSlicing' s = do

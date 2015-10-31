@@ -1054,13 +1054,14 @@ realizeDefInstruction thread i@(castDown -> Just call) edge real0 = do
      acts <- parseActArgs call
      let res (st,_) = case [ act
                            | (fun,is) <- acts
-                           , (thId,thread) <- (Nothing,mainThread (programInfo real0)):
-                                              [ (Just thId,th)
-                                              | (thId,th) <- Map.toList
-                                                             (threads $ programInfo real0) ]
-                           , threadFunction thread==fun
+                           , (thId,thread') <- (Nothing,mainThread (programInfo real0)):
+                                               [ (Just thId,th)
+                                               | (thId,th) <- Map.toList
+                                                              (threads $ programInfo real0) ]
+                           , threadFunction thread'==fun
+                           , thId/=thread
                            , i <- is
-                           , blk <- case Map.lookup i (threadSliceMapping thread) of
+                           , blk <- case Map.lookup i (threadSliceMapping thread') of
                               Nothing -> []
                               Just blks -> blks
                            , let Just act = Map.lookup blk (latchBlocks $ getThreadState thId st)
