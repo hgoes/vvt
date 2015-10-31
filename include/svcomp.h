@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdio.h>
 
 #define __VERIFIER_assume __assume
 #define __VERIFIER_error __error
@@ -20,5 +21,3 @@
 #define GET_MACRO(_1,_2,_3,_4,_5,NAME,...) NAME
 #define __VERIFIER_atomic_CAS(...) GET_MACRO(__VA_ARGS__,CAS2,CAS1)(__VA_ARGS__)
 #define __VERIFIER_atomic_TAS(lock,cond) { *cond = __atomic_test_and_set(lock,__ATOMIC_RELAXED); }
-
-#define printf(...)

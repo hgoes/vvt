@@ -38,6 +38,8 @@ INCLUDE_FIXES="s/\(^\|[^_]\)inline//;\
                s/typedef .* wchar_t;//;\
                s/int (.*malloc)/int __NOT_USED_malloc/;\
                s/int exit(/int __NOT_USED_exit(/;\
+               s/int *fprintf *(/int __NOT_USED_fprintf(/;\
+               s/int *printf *(/int __NOT_USED_printf(/;\
                s/void __VERIFIER_assume(/void __NOT_USED_assume(/;\
                s/void *\* *\(thr[0-9]*\|qrcu.*\|reader\|writer\|allocator\|de_allocator\)()/void *\1(void* __NOT_USED_ARG)/"
 
