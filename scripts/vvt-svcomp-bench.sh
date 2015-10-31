@@ -46,16 +46,11 @@ INCLUDE_FIXES="s/\(^\|[^_]\)inline//;\
 sed "${INCLUDE_FIXES}" < $1 |\
     ${CLANG} -O0 -x c -I${VVT_INCLUDE} -include ${VVT_INCLUDE}/svcomp.h -emit-llvm -c - -o - |\
     ${LLVM_OPT} -mem2reg |\
-    ${BINDIR}/vvt-svcomp atomic threads=2 inline locks |\
+    ${BINDIR}/vvt-svcomp atomic threads=3 inline locks |\
     ${LLVM_OPT} ${CLANG_OPTS} - -o - |\
     ${LIPTON} |\
     ${LLVM_OPT} ${LIPTON_OPT} |\
     ${BINDIR}/vvt-enc |\
     ${BINDIR}/vvt-opt -s "${BINDIR}/z3 -smt2 -in" ${VVT_OPT} |\
     ${BINDIR}/vvt-predicates |\
-    ${BINDIR}/vvt-verify\
-	     --backend="cons:${BINDIR}/z3 -smt2 -in"\
-	     --backend="lifting:${BINDIR}/z3 -smt2 -in"\
-	     --backend="domain:${BINDIR}/z3 -smt2 -in"\
-	     --backend="init:${BINDIR}/z3 -smt2 -in"\
-	     --backend="interp:${BINDIR}/mathsat"
+    python3 ${BINDIR}/portfolio.py ${BINDIR}
