@@ -42,9 +42,9 @@ if id_exit==id_ic3:
     if res==0:
         os.kill(id_bmc,signal.SIGKILL)
     else:
-        os.wait(id_bmc)
+        os.waitid(os.P_PID,id_bmc,os.WEXITED)
 else:
     if res==0:
         os.kill(id_ic3,signal.SIGKILL)
     else:
-        os.wait(id_ic3)
+        os.waitid(os.P_PID,id_ic3,os.WEXITED)
