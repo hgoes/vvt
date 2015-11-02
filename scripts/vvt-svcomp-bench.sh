@@ -20,6 +20,7 @@ INCLUDE_FIXES="s/\(^\|[^_]\)inline//;\
                s/void __VERIFIER_atomic_TAS/__NOT_USED_atomic_TAS/;\
                s/void main/int main/;\
                s/void __VERIFIER_assert/void __VERIFIER_assert_NOT_USED/;\
+               s/void __VERIFIER_assume/void __VERIFIER_assume_NOT_USED/;\
                s/int pthread_create/int __NOT_USED_pthread_create/;\
                s/int pthread_join/int __NOT_USED_pthread_join/;\
                s/void pthread_exit/void __NOT_USED_pthread_exit/;\
