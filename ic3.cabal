@@ -7,25 +7,13 @@ Data-Files:     include/assert.h
                 include/stdlib.h
                 include/vvt.h
 
---Executable hctigar
---  Main-Is:              Main.hs
---  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
---                        smtlib2,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,
---                        array,resource-pool,mtl,bytestring,attoparsec<0.11,
---                        atto-lisp,text,time,linear,data-fix,constraints
---  GHC-Options:          -threaded -fwarn-unused-imports
-
---Executable vvt-karr
---  Main-Is:              bin/Karr.hs
---  Build-Depends:        base,vector,smtlib2
-
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs
   Build-Depends:        base,bytestring,atto-lisp,attoparsec<0.13,text,pretty
 
 Executable vvt-bmc
   Main-Is:              bin/BMC.hs
-  Build-Depends:        mtl,containers,constraints,data-fix,smtlib2,smtlib2-debug,smtlib2-emulated-datatypes
+  Build-Depends:        mtl,containers,constraints,data-fix,smtlib2,smtlib2-debug
 
 Executable vvt-enc
   Main-Is:              bin/Encode.hs

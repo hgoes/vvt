@@ -17,7 +17,6 @@ import Language.SMTLib2.Internals.Operators
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
-import Language.SMTLib2.DatatypeEmulator
 import Language.SMTLib2.ModulusEmulator
 
 import qualified Data.Map as Map
@@ -1639,11 +1638,6 @@ addTiming time_ref num_ref act = do
   return $ AnyBackend $ timingBackend (\t -> modifyIORef' time_ref (+t) >>
                                              modifyIORef' num_ref (+1)
                                       ) b
-
-addEmulation :: IO (AnyBackend IO) -> IO (AnyBackend IO)
-addEmulation act = do
-  AnyBackend b <- act
-  return $ AnyBackend $ emulateDataTypes b
 
 addDebugging :: String -> IO (AnyBackend IO) -> IO (AnyBackend IO)
 addDebugging name act = do

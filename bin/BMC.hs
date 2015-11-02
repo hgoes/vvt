@@ -9,7 +9,6 @@ import System.Environment
 import Language.SMTLib2.Pipe
 import Language.SMTLib2
 import Language.SMTLib2.Debug
-import Language.SMTLib2.DatatypeEmulator
 import PartialArgs
 import Data.Map (Map)
 import qualified Data.Map as Map
