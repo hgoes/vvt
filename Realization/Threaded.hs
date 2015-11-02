@@ -799,6 +799,8 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
    -- Ignore llvm annotations
    "llvm.lifetime.start" -> return (Just edge,act,real0)
    "llvm.lifetime.end" -> return (Just edge,act,real0)
+   "llvm.stacksave" -> return (Just edge,act,real0)
+   "llvm.stackrestore" -> return (Just edge,act,real0)
    "exit" -> return (Nothing,act,real0)
    _ -> do
      (val,nreal) <- realizeDefInstruction thread i edge real0
