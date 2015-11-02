@@ -265,6 +265,7 @@ realizeValue ana real (castDown -> Just undef) = do
   tp <- getType (undef::Ptr UndefValue)
   defaultValue tp
   where
+    defaultValue :: Ptr Type -> IO (RealizedValue LLVMInput)
     defaultValue (castDown -> Just itp) = do
       bw <- getBitWidth itp
       if bw==1
@@ -932,7 +933,7 @@ instance TransitionRelation RealizedBlocks where
                  then act
                  else not' act
                | (blk,act) <- Map.toList acts ]
-  stateInvariant _ (blks,_)
+  stateInvariant _ _ (blks,_)
     = app or' $
       fmap (app and') $
       exactlyOne [] (Map.elems blks)
@@ -1074,8 +1075,9 @@ getKarrTrans opts instrs fun = do
     inp <- createInputVars "" nmdl
     ((nblks,ninstrs),gts1) <- declareNextState nmdl (blks,instrs) inp Nothing Map.empty
     (assumps,gts2) <- declareAssumptions nmdl (blks,instrs) inp gts1
-    assert $ stateInvariant nmdl (blks,instrs)
-    assert $ stateInvariant nmdl (nblks,ninstrs)
+    ninp <- createInputVars "" nmdl
+    assert $ stateInvariant nmdl inp (blks,instrs)
+    assert $ stateInvariant nmdl ninp (nblks,ninstrs)
     mapM_ assert assumps
     allSat blks nblks ninstrs
   initBlk <- getEntryBlock fun
@@ -1159,15 +1161,16 @@ buildKarrCFG rev mp trans ((src,trg,vec,c):rest)
 
 sanityCheck :: RealizedBlocks -> IO Bool
 sanityCheck mdl = do
-  pipe <- createSMTPipe "z3" ["-smt2","-in"]
+  pipe <- createSMTPipe "z3" ["-smt2","-in"] -- >>= namedDebugBackend "sanity"
   withSMTBackend pipe $ do
     (blks,instrs) <- createStateVars "" mdl
     inp@(inpInstrs,lin) <- createInputVars "" mdl
     ((nblks,ninstrs),gts1) <- declareNextState mdl (blks,instrs) inp Nothing Map.empty
     (assumps,gts2) <- declareAssumptions mdl (blks,instrs) inp gts1
-    assert $ stateInvariant mdl (blks,instrs)
+    assert $ stateInvariant mdl inp (blks,instrs)
     mapM_ assert assumps
-    assert $ not' $ stateInvariant mdl (nblks,ninstrs)
+    ninp <- createInputVars "" mdl
+    assert $ not' $ stateInvariant mdl ninp (nblks,ninstrs)
     res <- checkSat
     if res
       then (do

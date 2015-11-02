@@ -91,14 +91,14 @@ getFunctionName ci = do
   where
     getFunctionName' (castDown -> Just (f::Ptr Function))
       = getNameString f
-    getFunctionName' (castDown -> Just c) = do
-      tp <- constantExprGetOpcode (c::Ptr ConstantExpr)
+    getFunctionName' (castDown -> Just (c::Ptr ConstantExpr)) = do
+      tp <- constantExprGetOpcode c
       case tp of
         CastOp BitCast -> do
           val <- getOperand c 0
           getFunctionName' val
 
-getProgram :: Bool -> Bool -> String -> String -> IO (Ptr Function)
+getProgram :: Bool -> Bool -> String -> String -> IO (Ptr Module,Ptr Function)
 getProgram dump optimize entry file = do
   loadRes <- getFileMemoryBufferSimple file
   buf <- case loadRes of
@@ -111,7 +111,8 @@ getProgram dump optimize entry file = do
   if dump
     then moduleDump mod
     else return ()
-  moduleGetFunctionString mod entry
+  fun <- moduleGetFunctionString mod entry
+  return (mod,fun)
 
 applyOptimizations :: Bool -> Ptr Module -> String -> IO ()
 applyOptimizations optimize mod entry = do
@@ -236,6 +237,16 @@ symITE cond (SymBool x) (SymBool y) = SymBool (ite cond x y)
 symITE cond (SymInteger x) (SymInteger y) = SymInteger (ite cond x y)
 symITE cond (SymLinear v1 c1) (SymLinear v2 c2)
   = SymLinear (Vec.zipWith (ite cond) v1 v2) (ite cond c1 c2)
+
+realizedValueITE :: IntegerEncoding inp -> (inp -> SMTExpr Bool)
+                 -> RealizedValue inp -> RealizedValue inp -> RealizedValue inp
+realizedValueITE enc cond (ExtBool x) (ExtBool y)
+  = ExtBool (\inp -> ite (cond inp) (x inp) (y inp))
+realizedValueITE enc cond x y
+  = NormalValue xtp (\inp -> symITE (cond inp) (x' inp) (y' inp))
+  where
+    (xtp,x') = toSMTValue x enc
+    (ytp,y') = toSMTValue y enc
 
 symEq :: IntegerEncoding inp -> SymInstr -> SymInstr -> inp -> SMTExpr Bool
 symEq _ (SymBool x) (SymBool y) _ = x.==.y
@@ -455,9 +466,9 @@ instance PartialArgs SymInstr where
                             then val
                             else Nothing,xs)
   unmaskValue _ val = Just val
-  assignPartial _ Nothing = []
-  assignPartial (SymBool c) (Just (ValBool v)) = [c.==.(constant v)]
-  assignPartial (SymInteger c) (Just (ValInteger v)) = [c.==.(constant v)]
+  assignPartial _ Nothing = [Nothing]
+  assignPartial (SymBool c) (Just (ValBool v)) = [Just $ c.==.(constant v)]
+  assignPartial (SymInteger c) (Just (ValInteger v)) = [Just $ c.==.(constant v)]
 
 parseLLVMPreds :: Handle -> [Ptr BasicBlock] -> [Ptr Instruction]
                -> (a -> Ptr Instruction -> SymInstr)

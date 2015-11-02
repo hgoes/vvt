@@ -1,6 +1,6 @@
 {-# LANGUAGE ExistentialQuantification,FlexibleContexts,RankNTypes,
              ScopedTypeVariables,PackageImports,GADTs,DeriveDataTypeable,
-             ViewPatterns #-}
+             ViewPatterns,MultiParamTypeClasses #-}
 module CTIGAR where
 
 import qualified Realization as TR
@@ -9,24 +9,28 @@ import Consecution
 import PartialArgs
 import SMTPool
 import LitOrder
-import Options
+import BackendOptions
 
-import Language.SMTLib2 hiding (interpolate)
+import Language.SMTLib2
 import Language.SMTLib2.Internals
 import Language.SMTLib2.Internals.Operators
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
+import Language.SMTLib2.DatatypeEmulator
+import Language.SMTLib2.ModulusEmulator
 
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import qualified Data.Vector as Vec
 import qualified Data.IntSet as IntSet
 import Data.IORef
 import Control.Monad (when)
-import "mtl" Control.Monad.Trans (liftIO)
-import "mtl" Control.Monad.Reader (ReaderT,runReaderT,ask,asks)
-import "mtl" Control.Monad.State (StateT,evalStateT,gets)
-import Data.List (sort,sortBy,genericIndex)
+import Control.Applicative (Applicative(..))
+import "mtl" Control.Monad.Trans (MonadIO,liftIO)
+import "mtl" Control.Monad.Reader (MonadReader(..),ask,asks)
+import "mtl" Control.Monad.State (MonadState,gets)
+import Data.List (sort,sortBy,genericIndex,intercalate)
 import Data.PQueue.Min (MinQueue)
 import qualified Data.PQueue.Min as Queue
 import Data.Graph.Inductive (Node)
@@ -39,6 +43,9 @@ import Data.Bits (shiftL)
 import Data.Maybe (catMaybes)
 import Data.Either (partitionEithers)
 import Data.Time.Clock
+import Control.Exception (Exception,SomeException,finally,catch,throw)
+import System.IO
+import System.Exit
 
 data IC3Config mdl
   = IC3Cfg { ic3Model :: mdl
@@ -55,6 +62,7 @@ data IC3Config mdl
            , ic3MaxJoins :: Int
            , ic3MaxCTGs :: Int
            , ic3CollectStats :: Bool
+           , ic3DumpDomainFile :: Maybe String
            }
 
 data IC3Env mdl
@@ -99,10 +107,12 @@ data IC3Stats = IC3Stats { startTime :: UTCTime
 data InterpolationState mdl = InterpolationState { interpCur :: TR.State mdl
                                                  , interpNxt :: TR.State mdl
                                                  , interpInputs :: TR.Input mdl
+                                                 , interpNxtInputs :: TR.Input mdl
                                                  , interpAsserts :: [SMTExpr Bool]
-                                                 , interpAnte :: InterpolationGroup
-                                                 , interpPost :: InterpolationGroup
+                                                 , interpAnte :: Either InterpolationGroup [SMTExpr Bool]
+                                                 , interpPost :: Maybe InterpolationGroup
                                                  , interpReverse :: TR.RevState mdl
+                                                 , interpUsingMathSAT :: Bool
                                                  }
 
 data LiftingState mdl = LiftingState { liftCur :: TR.State mdl
@@ -124,7 +134,8 @@ instance Ord (Obligation inp st) where
 
 type Queue inp st = MinQueue (Obligation inp st)
 
-type IC3 mdl a = ReaderT (IC3Config mdl) (StateT (IC3Env mdl) IO) a
+-- | In order to deal with exceptions, this is a custom monad.
+newtype IC3 mdl a = IC3 { evalIC3 :: IC3Config mdl -> IORef (IC3Env mdl) -> IO a }
 
 data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
                           , stateLiftedAst :: Maybe (AbstractState st)
@@ -139,6 +150,40 @@ data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
                           , stateSpuriousSucc :: Bool
                           , stateDomainHash :: Int
                           }
+
+instance Applicative (IC3 mdl) where
+  pure x = IC3 (\_ _ -> return x)
+  x <*> y = IC3 (\cfg env -> do
+                     f <- evalIC3 x cfg env
+                     v <- evalIC3 y cfg env
+                     return (f v))
+
+instance Monad (IC3 mdl) where
+  (>>=) ic3 f = IC3 $ \cfg ref -> do
+    r1 <- evalIC3 ic3 cfg ref
+    evalIC3 (f r1) cfg ref
+  return x = IC3 $ \_ _ -> return x
+
+instance MonadIO (IC3 mdl) where
+  liftIO f = IC3 $ \_ _ -> f
+
+instance Functor (IC3 mdl) where
+  fmap f act = IC3 $ \cfg ref -> do
+    res <- evalIC3 act cfg ref
+    return (f res)
+
+instance MonadState (IC3Env mdl) (IC3 mdl) where
+  get = IC3 $ \_ ref -> readIORef ref
+  put x = IC3 $ \_ ref -> writeIORef ref x
+
+instance MonadReader (IC3Config mdl) (IC3 mdl) where
+  ask = IC3 $ \cfg _ -> return cfg
+  local f act = IC3 $ \cfg ref -> evalIC3 act (f cfg) ref
+  reader f = IC3 $ \cfg _ -> return $ f cfg
+
+ic3Catch :: Exception e => IC3 mdl a -> (e -> IC3 mdl a) -> IC3 mdl a
+ic3Catch act handle = IC3 $ \cfg ref -> evalIC3 act cfg ref `catch`
+                                        (\ex -> evalIC3 (handle ex) cfg ref)
 
 bestAbstraction :: State inp st -> AbstractState st
 bestAbstraction st = case stateLiftedAst st of
@@ -167,26 +212,53 @@ splitLast [x] = ([],x)
 splitLast (x:xs) = let (rest,last) = splitLast xs
                    in (x:rest,last)
 
-mkIC3Config :: mdl -> Options -> IC3Config mdl
-mkIC3Config mdl opts
+mkIC3Config :: mdl -> BackendOptions
+            -> Int -- ^ Verbosity
+            -> Bool -- ^ Dump stats?
+            -> Maybe String -- ^ Dump domain?
+            -> IC3Config mdl
+mkIC3Config mdl opts verb stats dumpDomain
   = IC3Cfg { ic3Model = mdl
-           , ic3ConsecutionBackend = mkPipe (optBackendCons opts)
-           , ic3LiftingBackend = mkPipe (optBackendLifting opts)
-           , ic3DomainBackend = mkPipe (optBackendDomain opts)
-           , ic3BaseBackend = mkPipe (optBackendBase opts)
-           , ic3InitBackend = mkPipe (optBackendInit opts)
-           , ic3InterpolationBackend = mkPipe (optBackendInterp opts)
-           , ic3DebugLevel = optVerbosity opts
+           , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
+                                     (if Set.member ConsecutionBackend (optDebugBackend opts)
+                                      then Just "cons"
+                                      else Nothing)
+           , ic3LiftingBackend = mkPipe (optBackend opts Map.! Lifting)
+                                 (if Set.member Lifting (optDebugBackend opts)
+                                  then Just "lift"
+                                  else Nothing)
+           , ic3DomainBackend = mkPipe (optBackend opts Map.! Domain)
+                                (if Set.member Domain (optDebugBackend opts)
+                                 then Just "domain"
+                                 else Nothing)
+           , ic3BaseBackend = mkPipe (optBackend opts Map.! Base)
+                              (if Set.member Base (optDebugBackend opts)
+                               then Just "base"
+                               else Nothing)
+           , ic3InitBackend = mkPipe (optBackend opts Map.! Initiation)
+                              (if Set.member Initiation (optDebugBackend opts)
+                               then Just "init"
+                               else Nothing)
+           , ic3InterpolationBackend = mkPipe (optBackend opts Map.! Interpolation)
+                                       (if Set.member Interpolation (optDebugBackend opts)
+                                        then Just "interp"
+                                        else Nothing)
+           , ic3DebugLevel = verb
            , ic3MaxSpurious = 0
            , ic3MicAttempts = 1 `shiftL` 20
            , ic3MaxDepth = 1
            , ic3MaxJoins = 1 `shiftL` 20
            , ic3MaxCTGs = 3
-           , ic3CollectStats = optStats opts
+           , ic3CollectStats = stats
+           , ic3DumpDomainFile = dumpDomain
            }
   where
-    mkPipe cmd = let prog:args = words cmd
-                 in fmap AnyBackend $ createSMTPipe prog args
+    mkPipe cmd debug = let prog:args = words cmd
+                       in case debug of
+                           Nothing -> fmap AnyBackend $ createSMTPipe prog args
+                           Just name -> do
+                             pipe <- createSMTPipe prog args
+                             return (AnyBackend $ namedDebugBackend name pipe)
 
 runIC3 :: TR.TransitionRelation mdl => IC3Config mdl -> IC3 mdl a -> IO a
 runIC3 cfg act = do
@@ -194,6 +266,12 @@ runIC3 cfg act = do
   stats <- if ic3CollectStats cfg
            then fmap Just newIC3Stats
            else return Nothing
+  -- MathSAT is really annoying, we have to take care of it like a baby
+  interpolationIsMathSAT <- do
+    backend <- ic3InterpolationBackend cfg
+    withSMTBackend backend $ do
+      name <- getInfo SMTSolverName
+      return $ name=="MathSAT5"
   let consBackend = case stats of
         Nothing -> ic3ConsecutionBackend cfg
         Just stats -> addTiming (consecutionTime stats) (consecutionNum stats)
@@ -216,80 +294,132 @@ runIC3 cfg act = do
         Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
         Just stats -> addTiming (interpolationTime stats) (interpolationNum stats)
                       (ic3InterpolationBackend cfg)
-  cons <- consecutionNew consBackend
+      interpBackend'' = if interpolationIsMathSAT
+                        then addModulusEmulation interpBackend'
+                        else interpBackend'
+  cons <- consecutionNew ({-addDebugging "cons"-} consBackend)
           (do
               cur <- TR.createStateVars "" mdl
-              assert (TR.stateInvariant mdl cur)
               inp <- TR.createInputVars "" mdl
+              assert (TR.stateInvariant mdl inp cur)
               (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
               --assert (blockConstraint nxtBlks)
               (asserts1,real2) <- TR.declareAssertions mdl cur inp real1
               (assumps1,real3) <- TR.declareAssumptions mdl cur inp real2
+              mapM_ assert asserts1
               mapM_ assert assumps1
               nxtInp <- TR.createInputVars "nxt." mdl
-              (asserts2,_) <- TR.declareAssertions mdl nxt nxtInp (TR.startingProgress mdl)
-              mapM assert asserts1
+              (asserts2,real1') <- TR.declareAssertions mdl nxt nxtInp (TR.startingProgress mdl)
+              (assumps2,real2') <- TR.declareAssumptions mdl nxt nxtInp real1'
+              assert (TR.stateInvariant mdl nxtInp nxt)
+              mapM_ assert assumps2
               return $ ConsecutionVars { consecutionInput = inp
                                        , consecutionNxtInput = nxtInp
                                        , consecutionState = cur
                                        , consecutionNxtState = nxt
                                        , consecutionNxtAsserts = asserts2 })
           (TR.initialState mdl)
-  lifting <- createSMTPool liftingBackend $ do
+  lifting <- createSMTPool ({-addDebugging "lift"-} liftingBackend) $ do
     setOption (ProduceUnsatCores True)
     cur <- TR.createStateVars "" mdl
-    assert $ TR.stateInvariant mdl cur
     inp <- TR.createInputVars "inp." mdl
+    assert $ TR.stateInvariant mdl inp cur
     (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
     (assumps,real2) <- TR.declareAssumptions mdl cur inp real1
     mapM_ assert assumps
     inp' <- TR.createInputVars "inp.nxt." mdl
     (asserts,real1') <- TR.declareAssertions mdl nxt inp' (TR.startingProgress mdl)
+    (assumps2,real2') <- TR.declareAssumptions mdl nxt inp' real1'
+    assert (TR.stateInvariant mdl inp' nxt)
+    mapM_ assert assumps2
     return $ LiftingState cur inp nxt inp' asserts
   initiation <- createSMTPool initiationBackend $ do
     cur <- TR.createStateVars "" mdl
     assert $ TR.initialState mdl cur
+    --assert $ TR.stateInvariant mdl inp cur
     return cur
-  interpolation <- createSMTPool interpBackend' $ do
-    setLogic "QF_LIA"
+  interpolation <- createSMTPool interpBackend'' $ do
+    setLogic "QF_AUFLIA"
     setOption (ProduceInterpolants True)
-    ante <- interpolationGroup
-    post <- interpolationGroup
-    cur <- TR.createStateVars "" mdl
-    inp <- TR.createInputVars "" mdl
-    (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) (TR.startingProgress mdl)
-    (asserts,real2) <- TR.declareAssertions mdl cur inp real1
-    (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
-    (nxt',rev) <- TR.createRevState "" mdl
-    assertInterp (TR.stateInvariant mdl cur) ante
-    mapM_ (\asump -> assertInterp asump ante) assumps
-    mapM_ (\assert -> assertInterp assert ante) asserts
-    assertInterp (argEq nxt' nxt) ante
-    return $ InterpolationState { interpCur = cur
-                                , interpNxt = nxt'
-                                , interpInputs = inp
-                                , interpAsserts = asserts
-                                , interpAnte = ante
-                                , interpPost = post
-                                , interpReverse = rev
-                                }
+    setOption (ProduceModels True)
+    if interpolationIsMathSAT
+      then do
+      ante <- interpolationGroup
+      post <- interpolationGroup
+      cur <- TR.createStateVars "" mdl
+      inp <- TR.createInputVars "" mdl
+      nxtInp <- TR.createInputVars "" mdl
+      (nxt,real1) <- TR.declareNextState mdl cur inp (Just ante) (TR.startingProgress mdl)
+      (asserts,real2) <- TR.declareAssertions mdl cur inp real1
+      (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
+      (nxt',rev) <- TR.createRevState "" mdl
+      mapM_ (\asump -> assertInterp asump ante) assumps
+      mapM_ (\assert -> assertInterp assert ante) asserts
+      assertInterp (TR.stateInvariant mdl inp cur) ante
+      assertInterp (TR.stateInvariant mdl nxtInp nxt') post
+      assertInterp (argEq nxt' nxt) ante
+      return $ InterpolationState { interpCur = cur
+                                  , interpNxt = nxt'
+                                  , interpInputs = inp
+                                  , interpNxtInputs = nxtInp
+                                  , interpAsserts = asserts
+                                  , interpAnte = Left ante
+                                  , interpPost = Just post
+                                  , interpReverse = rev
+                                  , interpUsingMathSAT = True
+                                  }
+      else do
+      cur <- TR.createStateVars "" mdl
+      inp <- TR.createInputVars "" mdl
+      nxtInp <- TR.createInputVars "" mdl
+      (nxt,real1) <- TR.declareNextState mdl cur inp Nothing (TR.startingProgress mdl)
+      (asserts,real2) <- TR.declareAssertions mdl cur inp real1
+      (assumps,real3) <- TR.declareAssumptions mdl cur inp real2
+      (nxt',rev) <- TR.createRevState "" mdl
+      exprs1 <- mapM (\assump -> do
+                         (assump',name) <- named "assump" assump
+                         assert assump'
+                         return name
+                     ) assumps
+      exprs2 <- mapM (\ass -> do
+                         (ass',name) <- named "assertion" ass
+                         assert ass'
+                         return name
+                     ) asserts
+      (invExpr1,namedInvExpr1) <- named "invariant1" (TR.stateInvariant mdl inp cur)
+      (invExpr2,namedInvExpr2) <- named "invariant2" (TR.stateInvariant mdl nxtInp nxt)
+      (eqExpr,namedEqExpr) <- named "equality" (argEq nxt' nxt)
+      assert invExpr1
+      assert invExpr2
+      assert eqExpr
+      return $ InterpolationState { interpCur = cur
+                                  , interpNxt = nxt'
+                                  , interpInputs = inp
+                                  , interpNxtInputs = nxtInp
+                                  , interpAsserts = exprs2
+                                  , interpAnte = Right (exprs1++exprs2++[namedInvExpr1,namedInvExpr2,namedEqExpr])
+                                  , interpPost = Nothing
+                                  , interpReverse = rev
+                                  , interpUsingMathSAT = False
+                                  }
   dom <- initialDomain (ic3DebugLevel cfg) domainBackend
          (TR.annotationState mdl)
          (TR.createStateVars "" mdl)
   (initNode,dom') <- domainAdd (TR.initialState mdl) dom
   extractor <- TR.defaultPredicateExtractor mdl
-  evalStateT (runReaderT act cfg) (IC3Env { ic3Domain = dom'
-                                          , ic3InitialProperty = initNode
-                                          , ic3Consecution = cons
-                                          , ic3Lifting = lifting
-                                          , ic3Initiation = initiation
-                                          , ic3Interpolation = interpolation
-                                          , ic3CexState = Nothing
-                                          , ic3LitOrder = Map.empty
-                                          , ic3Earliest = 0
-                                          , ic3PredicateExtractor = extractor
-                                          , ic3Stats = stats
-                                          })
+  ref <- newIORef (IC3Env { ic3Domain = dom'
+                          , ic3InitialProperty = initNode
+                          , ic3Consecution = cons
+                          , ic3Lifting = lifting
+                          , ic3Initiation = initiation
+                          , ic3Interpolation = interpolation
+                          , ic3CexState = Nothing
+                          , ic3LitOrder = Map.empty
+                          , ic3Earliest = 0
+                          , ic3PredicateExtractor = extractor
+                          , ic3Stats = stats
+                          })
+  evalIC3 act cfg ref
 
 extractState :: (PartialArgs inp,PartialArgs st)
                 => Maybe (IORef (State inp st))
@@ -321,9 +451,11 @@ liftState lifting st = do
     Nothing -> return $ \lft -> app and' $ liftNxtAsserts lft
     Just succ' -> do
       succ'' <- readIORef succ'
-      return $ \lft -> (not' $ app and' $
-                        assignPartial (liftNxt lft) (stateLifted succ'')) .&&.
-                       (app and' $ assignPartial (liftNxtInputs lft) (stateLiftedInputs succ''))
+      return $ \lft -> (not' $ app and' [ cond
+                                        | Just cond <- assignPartial (liftNxt lft) (stateLifted succ'')
+                                        ]) {-.||.
+                       (not' $ app and' [ cond
+                                        | Just cond <- assignPartial (liftNxtInputs lft) (stateLiftedInputs succ'')])-}
   (part,partInp) <- withSMTPool lifting $
                     \vars' -> lift' ((liftCur vars'),
                                      liftInputs vars',
@@ -336,27 +468,28 @@ lift' :: (PartialArgs st,PartialArgs inp) => (st,inp,inp)
              -> (Unpacked st,Unpacked inp,Unpacked inp,SMTExpr Bool)
              -> SMT (PartialValue st,PartialValue inp)
 lift' (cur::st,inp::inp,inp') vals@(vcur,vinp,vinp',vnxt) = stack $ do
-  let ann_cur = extractArgAnnotation cur
-      ann_inp = extractArgAnnotation inp
-  ((cmp1,len_st),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
-                                        cid <- assertId (arg1 .==. arg2)
-                                        return ((Map.insert cid (Left n) mp,n+1),
-                                                [arg1,arg2],
-                                                error "U3")
-                                    ) (Map.empty,0)
-                         [(cur,()),(liftArgs vcur ann_cur,())] ann_cur
-  ((cmp2,len_inp),_,_) <- foldsExprs (\(mp,n) [(arg1,_),(arg2,_)] _ -> do
-                                         cid <- assertId (arg1 .==. arg2)
-                                         return ((Map.insert cid (Right n) mp,n+1),
-                                                 [arg1,arg2],
-                                                 error "U3")
-                                     ) (cmp1,0)
-                          [(inp,()),(liftArgs vinp ann_inp,())] ann_inp
-  --assert $ argEq inp (liftArgs vinp ann_inp)
-  assert $ argEq inp' (liftArgs vinp' ann_inp)
+  let assignedCur = assignPartial cur (unmaskValue cur vcur)
+      assignedInp = assignPartial inp (unmaskValue inp vinp)
+  comment "State:"
+  (cmp1,len_st) <- foldlM (\(mp,n) cond -> case cond of
+                            Nothing -> return (mp,n+1)
+                            Just cond' -> do
+                              cid <- assertId cond'
+                              return (Map.insert cid (Left n) mp,n+1)
+                          ) (Map.empty,0) assignedCur
+  comment "Input:"
+  (cmp2,len_inp) <- foldlM (\(mp,n) cond -> case cond of
+                             Nothing -> return (mp,n+1)
+                             Just cond' -> do
+                               cid <- assertId cond'
+                               return (Map.insert cid (Right n) mp,n+1)
+                           ) (cmp1,0) assignedInp
+  --assert $ argEq inp (liftArgs vinp (extractArgAnnotation inp))
+  --assert $ argEq inp' (liftArgs vinp' (extractArgAnnotation inp'))
+  comment "Next state:"
   assert vnxt
   res <- checkSat
-  when res $ error "The model appears to be non-deterministic."
+  when res $ error $ "The model appears to be non-deterministic."
   core <- getUnsatCore
   let (coreSt,coreInp) = partitionEithers $ fmap (cmp2 Map.!) core
       partSt = toTruthValues len_st 0 (sort coreSt)
@@ -390,7 +523,7 @@ initiationConcrete vals = do
   env <- get
   liftIO $ fmap not $ withSMTPool (ic3Initiation env) $
     \vars -> stack $ do
-      mapM assert (assignPartial vars vals)
+      mapM assert (assignPartial' vars vals)
       checkSat
 
 -- From ConsRefConcrPred
@@ -411,7 +544,7 @@ updateAbstraction ref = do
     else (do
              full <- liftIO $ domainAbstract
                      (\x -> {-argEq x (liftArgs (stateFull st) (TR.annotationState mdl))-}
-                       app and' $ assignPartial x (stateLifted st))
+                       app and' $ assignPartial' x (stateLifted st))
                      initialPred
                      dom
              lifted <- case stateSuccessor st of
@@ -443,10 +576,10 @@ lift toLift inps nxtInps succ = do
                           return (i+1,Map.insert cid i mp)
                       ) (0,Map.empty) (toDomainTerms toLift domain (liftCur st))
     assert $ argEq (liftInputs st) (liftArgs inps (TR.annotationInput mdl))
-    assert $ argEq (liftNxtInputs st) (liftArgs nxtInps (TR.annotationInput mdl))
+    --assert $ argEq (liftNxtInputs st) (liftArgs nxtInps (TR.annotationInput mdl))
     case succ of
       Nothing -> assert $ app and' (liftNxtAsserts st)
-      Just succ_abstr -> assert $ toDomainTerm succ_abstr domain (liftCur st)
+      Just succ_abstr -> assert $ not' $ toDomainTerm succ_abstr domain (liftNxt st)
     res <- checkSat
     if res
       then return Nothing
@@ -497,12 +630,12 @@ abstractConsecution fi abs_st succ = do
                       ) (0,Map.empty) (toDomainTerms abs_st (ic3Domain env)
                                        (consecutionNxtState vars))
     -- Henning: This tries to take the lifted inputs of the successor into account (doesn't do anything yet)
-    case succ of
+    {-case succ of
      Nothing -> return ()
      Just s -> do
        succ' <- liftIO $ readIORef s
-       assert $ app and' $ assignPartial (consecutionNxtInput vars)
-         (stateLiftedInputs succ')
+       assert $ app and' $ assignPartial' (consecutionNxtInput vars)
+         (stateLiftedInputs succ')-}
     res <- checkSat
     if res
       then (do
@@ -520,6 +653,9 @@ abstractConsecution fi abs_st succ = do
       let absCore' = if absInit
                      then absCore
                      else Vec.cons (ic3InitialProperty env,False) absCore
+      ic3DebugAct 3 $ do
+        abs_st_str <- renderAbstractState absCore'
+        liftIO $ putStrLn ("Reduced abstract state: "++abs_st_str)
       --absInit' <- initiationAbstract absCore'
       --error $ "abstractConsecution core: "++show absCore'++" "++show absInit'
       return $ Left absCore'
@@ -531,12 +667,12 @@ concreteConsecution :: TR.TransitionRelation mdl
 concreteConsecution fi st succ = do
   env <- get
   res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
-    assert (app or' $ fmap not' $ assignPartial (consecutionState vars) st)
-    do
+    assert (app or' $ fmap not' $ assignPartial' (consecutionState vars) st)
+    {-do
       succ' <- liftIO $ readIORef succ
-      assert $ app and' $ assignPartial (consecutionNxtInput vars)
-        (stateLiftedInputs succ')
-    mapM_ assert (assignPartial (consecutionNxtState vars) st)
+      assert $ app and' $ assignPartial' (consecutionNxtInput vars)
+        (stateLiftedInputs succ')-}
+    mapM_ assert (assignPartial' (consecutionNxtState vars) st)
     sat <- checkSat
     if sat
       then (do
@@ -582,9 +718,11 @@ handleObligations queue = case Queue.minView queue of
       consRes <- abstractConsecution (oblLevel obl) (bestAbstraction rst) (Just (oblState obl))
       case consRes of
         Right abstractPred -> do
+          ic3Debug 4 "Abstract counter-example found."
           concConsRes <- concreteConsecution (oblLevel obl) (stateLifted rst) (oblState obl)
           case concConsRes of
             Nothing -> do
+              ic3Debug 4 "No corresponding concrete counter-example found."
               absPred <- case stateLiftedAst rst of
                 Nothing -> return $ Right abstractPred
                 Just _ -> case stateFullAst rst of
@@ -601,6 +739,7 @@ handleObligations queue = case Queue.minView queue of
                       else elim
                   where
                     elim = do
+                      ic3Debug 4 "Eliminating spurious counter-example."
                       elimSpuriousTrans (oblState obl) (oblLevel obl)
                       return True
                     spurious = error "spur"
@@ -702,6 +841,8 @@ baseCases st = do
   comment "Assumptions:"
   (assumps0,real0) <- TR.declareAssumptions st cur0 inp0 (TR.startingProgress st)
   mapM_ assert assumps0
+  comment "Invariant:"
+  assert $ TR.stateInvariant st inp0 cur0
   comment "Declare assertions:"
   (asserts0,real1) <- TR.declareAssertions st cur0 inp0 real0
   comment "Declare next state:"
@@ -710,6 +851,8 @@ baseCases st = do
   inp1 <- TR.createInputVars "nxt" st
   comment "Assumptions 2:"
   (assumps1,real0) <- TR.declareAssumptions st cur1 inp1 (TR.startingProgress st)
+  comment "Invariant 2:"
+  assert $ TR.stateInvariant st inp1 cur1
   mapM_ assert assumps1
   comment "Declare assertions 2:"
   (asserts1,_) <- TR.declareAssertions st cur1 inp1 real0
@@ -772,24 +915,33 @@ strengthen = strengthen' True
          return $ Just trivial
 
 check :: TR.TransitionRelation mdl
-         => mdl -> Options
+         => mdl
+         -> BackendOptions
+         -> Int -- ^ Verbosity
+         -> Bool -- ^ Dump stats?
+         -> Maybe String -- ^ Dump domain?
          -> IO (Either [Unpacked (TR.State mdl,TR.Input mdl)] [AbstractState (TR.State mdl)])
-check st opts = do
-  let prog:args = words (optBackendBase opts)
+check st opts verb stats dumpDomain = do
+  let prog:args = words (optBackend opts Map.! Base)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
-  case tr of
-    Just tr' -> return (Left tr')
-    Nothing -> runIC3 (mkIC3Config st opts) (do
-                                                addSuggestedPredicates
-                                                extend
-                                                extend
-                                                res <- checkIt
-                                                ic3DumpStats (case res of
-                                                               Left _ -> Nothing
-                                                               Right fp -> Just fp)
-                                                return res
-                                            )
+  runIC3 (mkIC3Config st opts verb stats dumpDomain) $ do
+    case tr of
+      Just tr' -> do
+        ic3DumpStats Nothing
+        return (Left tr')
+      Nothing -> (do
+                      addSuggestedPredicates
+                      extend
+                      extend
+                      res <- checkIt
+                      ic3DumpStats (case res of
+                                      Left _ -> Nothing
+                                      Right fp -> Just fp)
+                      return res
+                 ) `ic3Catch` (\ex -> do
+                                   ic3DumpStats Nothing
+                                   throw (ex::SomeException))
   where
     checkIt = do
       ic3DebugAct 1 (do
@@ -834,15 +986,22 @@ check st opts = do
       return $ (stateLifted rst):rest
     constructTrace real st [] errs = do
       inps <- TR.createInputVars "" real
-      (ass,_) <- TR.declareAssertions real st inps (TR.startingProgress real)
+      (assumps,real0) <- TR.declareAssumptions real st inps (TR.startingProgress real)
+      (ass,_) <- TR.declareAssertions real st inps real0
+      comment "Invariant"
+      assert $ TR.stateInvariant real inps st
+      comment "Assumptions"
+      mapM_ assert assumps
       comment "Assertions"
       assert $ app or' (fmap not' (ass++errs))
-      return []
+      return [(st,inps)]
     constructTrace real st (x:xs) asserts = do
       comment "Assignments"
-      assert $ app and' $ assignPartial st x
+      assert $ app and' $ assignPartial' st x
       comment "Inputs"
       inps <- TR.createInputVars "" real
+      comment "Invariant"
+      assert $ TR.stateInvariant real inps st
       (assumps,real0) <- TR.declareAssumptions real st inps (TR.startingProgress real)
       (nxt_st,real1) <- TR.declareNextState real st inps Nothing real0
       (ass,real2) <- TR.declareAssertions real st inps real1
@@ -953,7 +1112,7 @@ elimSpuriousTrans st level = do
   updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
                                , numAddPreds = (numAddPreds stats)+(length props) })
   put $ env { ic3PredicateExtractor = nextr }
-  interp <- interpolate level (stateLifted rst)
+  interp <- interpolateState level (stateLifted rst) (stateLiftedInputs rst)
   domain <- gets ic3Domain
   ndomain <- foldlM (\cdomain trm
                      -> do
@@ -963,41 +1122,92 @@ elimSpuriousTrans st level = do
   --liftIO $ domainDump ndomain >>= putStrLn
   modify $ \env -> env { ic3Domain = ndomain }
 
-interpolate :: TR.TransitionRelation mdl => Int -> PartialValue (TR.State mdl)
-               -> IC3 mdl [TR.State mdl -> SMTExpr Bool]
-interpolate j s = do
+interpolateState :: TR.TransitionRelation mdl => Int
+                 -> PartialValue (TR.State mdl)
+                 -> PartialValue (TR.Input mdl)
+                 -> IC3 mdl [TR.State mdl -> SMTExpr Bool]
+interpolateState j s inp = do
   env <- get
   cfg <- ask
   liftIO $ withSMTPool (ic3Interpolation env) $
     \st -> stack $ do
       comment $ "Interpolating at level "++show j
-      -- XXX: Workaround for MathSAT:
-      ante <- interpolationGroup
-      post <- interpolationGroup
-      if j==0
-        then assertInterp (translateToMathSAT $ TR.initialState (ic3Model cfg) (interpCur st)) ante --(interpAnte st)
-        else (do
-                 let cons = ic3Consecution env
-                     frames = Vec.drop j (consecutionFrames cons)
-                 mapM_ (\fr -> mapM_ (\st_id -> do
-                                         let ast = getCube st_id cons
-                                             trm = toDomainTerm ast (ic3Domain env)
-                                                   (interpCur st)
-                                         assertInterp (translateToMathSAT $ not' trm) ante --(interpAnte st)
-                                     ) (IntSet.toList fr)
-                       ) frames)
-      assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial (interpCur st) s)
-        ante -- (interpAnte st)
-      assertInterp (translateToMathSAT $ app and' $ assignPartial (interpNxt st) s)
-        post -- (interpPost st)
-      res <- checkSat
-      when res $ error "Interpolation query is SAT"
-      interp <- getInterpolant [ante,interpAnte st]
-      let interp1 = cleanInterpolant interp
-      interp1Str <- renderExpr interp1
-      comment $ "Cleaned interpolant: "++interp1Str
-      return $ fmap (TR.relativizeExpr (ic3Model cfg) (interpReverse st)
-                    ) $ splitInterpolant $ negateInterpolant interp1
+      if interpUsingMathSAT st
+        then do
+        -- XXX: Workaround for baby MathSAT:
+        ante <- interpolationGroup
+        post <- interpolationGroup
+        if j==0
+          then assertInterp (translateToMathSAT $ TR.initialState (ic3Model cfg) (interpCur st)) ante --(interpAnte st)
+          else (do
+                   let cons = ic3Consecution env
+                       frames = Vec.drop j (consecutionFrames cons)
+                   mapM_ (\fr -> mapM_ (\st_id -> do
+                                           let ast = getCube st_id cons
+                                               trm = toDomainTerm ast (ic3Domain env)
+                                                     (interpCur st)
+                                           assertInterp (translateToMathSAT $ not' trm) ante --(interpAnte st)
+                                       ) (IntSet.toList fr)
+                         ) frames)
+        assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial' (interpCur st) s)
+          ante -- (interpAnte st)
+        --assertInterp (translateToMathSAT $ not' $ app and' $ assignPartial' (interpInputs st) inp)
+        --  ante
+        assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxt st) s)
+          post -- (interpPost st)
+        --assertInterp (translateToMathSAT $ app and' $ assignPartial' (interpNxtInputs st) inp)
+        --  post
+        res <- checkSat
+        when res $ do
+          curSt <- getValues (interpCur st) >>= TR.renderState (ic3Model cfg)
+          curInpSt <- getValues (interpInputs st) >>= TR.renderInput (ic3Model cfg)
+          nxtSt <- getValues (interpNxt st) >>= TR.renderState (ic3Model cfg)
+          error $ "Interpolation query is SAT.\nState:\n"++
+            curSt++"\nInput:\n"++curInpSt++"\nNext state:\n"++nxtSt
+        let Left ante' = interpAnte st
+        interp <- getInterpolant [ante,ante']
+        let interp1 = cleanInterpolant interp
+        interp1Str <- renderExpr interp1
+        comment $ "Cleaned interpolant: "++interp1Str
+        return $ fmap (TR.relativizeExpr (ic3Model cfg) (interpReverse st)
+                      ) $ splitInterpolant $ negateInterpolant interp1
+        else do
+        ante1 <- if j==0
+                 then do
+                   (inits,namedInits) <- named "init"
+                                         (TR.initialState (ic3Model cfg) (interpCur st))
+                   assert inits
+                   return [namedInits]
+                 else do
+                   let cons = ic3Consecution env
+                       frames = Vec.drop j (consecutionFrames cons)
+                   fmap concat $
+                     mapM (\fr -> mapM (\st_id -> do
+                                           let ast = getCube st_id cons
+                                               trm = toDomainTerm ast (ic3Domain env)
+                                                     (interpCur st)
+                                           (trm',namedTrm) <- named "trm" (not' trm)
+                                           assert trm'
+                                           return namedTrm
+                                       ) (IntSet.toList fr)
+                          ) frames
+        ante2 <- do
+          (asgn,namedAsgn) <- named "assign" $ not' $ app and' $ assignPartial' (interpCur st) s
+          assert asgn
+          return namedAsgn
+        post1 <- do
+          (asgn,namedAsgn) <- named "assignNxt" $ app and' $ assignPartial' (interpNxt st) s
+          assert asgn
+          return namedAsgn
+        res <- checkSat
+        when res $ error "Interpolation query is SAT"
+        let Right ante = interpAnte st
+        [interp] <- interpolate [post1,app and' $ ante++ante1++[ante2]]
+        let interp1 = cleanInterpolant interp
+        interp1Str <- renderExpr interp1
+        comment $ "Cleaned interpolant: "++interp1Str
+        return $ fmap (TR.relativizeExpr (ic3Model cfg) (interpReverse st)
+                      ) $ splitInterpolant $ negateInterpolant interp1
   where
     cleanInterpolant (Let lvl args f)
       = let (_,f') = foldExpr (\_ e -> case e of
@@ -1025,6 +1235,7 @@ interpolate j s = do
     removeToReal (App SMTToReal e) = Just e
     removeToReal _ = Nothing
 
+    negateInterpolant :: SMTExpr Bool -> SMTExpr Bool
     negateInterpolant (App SMTNot e) = pushNegation e
     negateInterpolant (App (SMTLogic And) es) = App (SMTLogic Or) (fmap negateInterpolant es)
     negateInterpolant (App (SMTLogic Or) es) = App (SMTLogic And) (fmap negateInterpolant es)
@@ -1037,14 +1248,17 @@ interpolate j s = do
         in App (SMTOrd nop) arg
     negateInterpolant e = App SMTNot e
 
+    pushNegation :: SMTExpr Bool -> SMTExpr Bool
     pushNegation (App SMTNot e) = negateInterpolant e
     pushNegation (App (SMTLogic op) es) = App (SMTLogic op) (fmap pushNegation es)
     pushNegation e = e
 
     splitInterpolant (App (SMTLogic And) es) = concat (fmap splitInterpolant es)
     -- Henning: Maybe it's a good idea not to refine with equalities:
-    splitInterpolant (App SMTEq [lhs,rhs]) = [App (SMTOrd Ge) (lhs,rhs)
-                                             ,App (SMTOrd Gt) (lhs,rhs)]
+    splitInterpolant (App SMTEq [lhs,rhs]) = case cast (lhs,rhs) of
+      Just ((lhs',rhs')::(SMTExpr Integer,SMTExpr Integer)) -> [App (SMTOrd Ge) (lhs',rhs')
+                                                               ,App (SMTOrd Gt) (lhs',rhs')]
+      Nothing -> [App SMTEq [lhs,rhs]]
     splitInterpolant (App (SMTOrd Gt) (lhs,rhs)) = [App (SMTOrd Ge) (lhs,rhs)
                                                    ,App (SMTOrd Gt) (lhs,rhs)]
     splitInterpolant e = [e]
@@ -1054,6 +1268,7 @@ interpolate j s = do
       = App (SMTDivisible n) (x-y)
     translateToMathSAT (App SMTEq [y,App (SMTIntArith Mod) (x,Const n ())])
       = App (SMTDivisible n) (x-y)
+    translateToMathSAT (App (SMTLogic And) []) = constant True
     translateToMathSAT (App f args)
       = let args1 = fromArgs args
             args2 = fmap (\(UntypedExpr e)
@@ -1144,7 +1359,7 @@ ctgDown = ctgDown' 0 0
                            domain <- gets ic3Domain
                            initialPred <- gets ic3InitialProperty
                            abstractCtg <- liftIO $ domainAbstract
-                                          (\x -> app and' $ assignPartial x (stateLifted ctg)
+                                          (\x -> app and' $ assignPartial' x (stateLifted ctg)
                                           ) initialPred domain
                            if ctgs < efMaxCTGs && level > 1
                              then (do
@@ -1243,19 +1458,20 @@ checkFixpoint abs_fp = do
   mdl <- asks ic3Model
   domain <- gets ic3Domain
   let fp = getFixpoint domain abs_fp
-  backend <- liftIO $ createSMTPipe "z3" ["-in","-smt2"] -- >>= namedDebugBackend "fp"
+  backend <- liftIO $ {-fmap (namedDebugBackend "fp") $-} createSMTPipe "z3" ["-in","-smt2"]
   liftIO $ withSMTBackendExitCleanly backend $ do
+    setOption (ProduceModels True)
     incorrectInitial <- stack $ do
       cur <- TR.createStateVars "" mdl
       assert $ TR.initialState mdl cur
       assert $ not' (fp cur)
       checkSat
     when incorrectInitial (error "Fixpoint doesn't cover initial condition")
-    errorReachable <- stack $ do
+    stack $ do
       cur <- TR.createStateVars "" mdl
-      assert $ TR.stateInvariant mdl cur
-      assert $ fp cur
       inp <- TR.createInputVars "" mdl
+      assert $ TR.stateInvariant mdl inp cur
+      assert $ fp cur
       (asserts,real0) <- TR.declareAssertions mdl cur inp (TR.startingProgress mdl)
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
@@ -1266,22 +1482,59 @@ checkFixpoint abs_fp = do
       assert $ not' $ app and' asserts'
       (assumps',real1') <- TR.declareAssumptions mdl nxt inp' real0'
       assert $ app and' assumps'
-      checkSat
-    when errorReachable (error "Fixpoint doesn't imply property")
-    incorrectFix <- stack $ do
+      assert $ TR.stateInvariant mdl inp' nxt
+      errorReachable <- checkSat
+      when errorReachable (do
+                               curSt <- getValues cur >>= TR.renderState mdl
+                               curInpSt <- getValues inp >>= TR.renderInput mdl
+                               nxtSt <- getValues nxt >>= TR.renderState mdl
+                               nxtInpSt <- getValues inp' >>= TR.renderInput mdl
+                               error $ "Fixpoint doesn't imply property.\nState:\n"++
+                                 curSt++"\nInput:\n"++curInpSt++"\nNext state:\n"++nxtSt++"\nNext input:\n"++nxtInpSt
+                          )
+    stack $ do
       cur <- TR.createStateVars "" mdl
-      assert $ TR.stateInvariant mdl cur
-      assert $ fp cur
       inp <- TR.createInputVars "" mdl
+      assert $ TR.stateInvariant mdl inp cur
+      assert $ fp cur
       (asserts,real0) <- TR.declareAssertions mdl cur inp (TR.startingProgress mdl)
       assert $ app and' asserts
       (assumps,real1) <- TR.declareAssumptions mdl cur inp real0
       assert $ app and' assumps
       (nxt,real2) <- TR.declareNextState mdl cur inp Nothing real1
-      assert $ TR.stateInvariant mdl nxt
+      nxt_inp <- TR.createInputVars "" mdl
+      assert $ TR.stateInvariant mdl nxt_inp nxt
       assert $ not' $ fp nxt
-      checkSat
-    when incorrectFix (error "Fixpoint is doesn't hold in one transition")
+      incorrectFix <- checkSat
+      when incorrectFix (do
+                             curSt <- getValues cur >>= TR.renderState mdl
+                             curInpSt <- getValues inp >>= TR.renderInput mdl
+                             nxtSt <- getValues nxt >>= TR.renderState mdl
+                             nxtInpSt <- getValues nxt_inp >>= TR.renderInput mdl
+                             fpSt <- liftIO $ mapM (\e -> renderDomainTerm e domain
+                                                   ) abs_fp
+                             liftIO $ do
+                               hPutStrLn stderr $ "Fixpoint "++
+                                 intercalate ", " fpSt++
+                                 " doesn't hold after one transition."
+                               hPutStrLn stderr $ "State:"
+                               hPutStrLn stderr $ curSt
+                               hPutStrLn stderr $ "Input:"
+                               hPutStrLn stderr $ curInpSt
+                               hPutStrLn stderr $ "Next state:"
+                               hPutStrLn stderr $ nxtSt
+                               hPutStrLn stderr $ "Next input:"
+                               hPutStrLn stderr $ nxtInpSt
+                             mapM_ (\e -> stack $ do
+                                     assert $ toDomainTerm e domain nxt
+                                     reachable <- checkSat
+                                     when reachable $ liftIO $ do
+                                       cube <- renderDomainTerm e domain
+                                       hPutStrLn stderr $ "Cube reachable:"
+                                       hPutStrLn stderr $ "  "++cube
+                                  ) abs_fp
+                             liftIO exitFailure
+                        )
 
 newIC3Stats :: IO IC3Stats
 newIC3Stats = do
@@ -1372,6 +1625,13 @@ ic3DumpStats fp = do
          (show $ (round $ 100*(fromIntegral $ numUnliftedErased stats) /
                   (fromIntegral $ numErased stats) :: Int))
    Nothing -> return ()
+  dumpDomain <- asks ic3DumpDomainFile
+  case dumpDomain of
+    Nothing -> return ()
+    Just fn -> do
+      domain <- gets ic3Domain
+      str <- liftIO $ renderDomain domain
+      liftIO $ writeFile fn str
 
 addTiming :: IORef NominalDiffTime -> IORef Int -> IO (AnyBackend IO) -> IO (AnyBackend IO)
 addTiming time_ref num_ref act = do
@@ -1379,3 +1639,18 @@ addTiming time_ref num_ref act = do
   return $ AnyBackend $ timingBackend (\t -> modifyIORef' time_ref (+t) >>
                                              modifyIORef' num_ref (+1)
                                       ) b
+
+addEmulation :: IO (AnyBackend IO) -> IO (AnyBackend IO)
+addEmulation act = do
+  AnyBackend b <- act
+  return $ AnyBackend $ emulateDataTypes b
+
+addDebugging :: String -> IO (AnyBackend IO) -> IO (AnyBackend IO)
+addDebugging name act = do
+  AnyBackend b <- act
+  return $ AnyBackend $ namedDebugBackend name b
+
+addModulusEmulation :: IO (AnyBackend IO) -> IO (AnyBackend IO)
+addModulusEmulation act = do
+  AnyBackend b <- act
+  return $ AnyBackend $ modulusEmulator True b

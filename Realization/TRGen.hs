@@ -156,10 +156,10 @@ instance TransitionRelation TRGen where
                    Just grp -> assertInterp e grp
               ) (trTR trgen)
         return (nxt,gts)
-  stateInvariant trgen st = let (minSt,maxSt) = minMaxBy assignState (trTR trgen)
-                                s = castUntypedExprValue (st Map.! ".s")
-                            in (s .>=. (constant $ assignState minSt)) .&&.
-                               (s .<=. (constant $ assignState maxSt))
+  stateInvariant trgen _ st = let (minSt,maxSt) = minMaxBy assignState (trTR trgen)
+                                  s = castUntypedExprValue (st Map.! ".s")
+                              in (s .>=. (constant $ assignState minSt)) .&&.
+                                 (s .<=. (constant $ assignState maxSt))
   annotationState trgen = trVars trgen
   annotationInput trgen = trNondets trgen
   defaultPredicateExtractor _ = return emptyRSM

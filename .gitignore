@@ -5,3 +5,9 @@
 *.cpachecker.c
 dist
 *.o
+*.output
+*.out
+*.l
+*.s
+test/svcomp/*.l
+test/svcomp/*.ll

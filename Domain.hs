@@ -10,6 +10,7 @@ module Domain
        ,domainAddUniqueUnsafe
        ,domainHash
        ,renderDomainTerm
+       ,renderDomain
        ) where
 
 import Language.SMTLib2
@@ -124,6 +125,12 @@ generalizePredicate dom pred = (qpred,vars)
 quickImplication :: SMTExpr Bool -> SMTExpr Bool -> Maybe Bool
 quickImplication (Const False ()) _ = Just True
 quickImplication _ (Const True ()) = Just True
+quickImplication (Const True ()) (App (SMTOrd Le) (InternalObj a _,InternalObj b _))
+  = Just $ a `tpEq` b
+quickImplication (Const True ()) (App (SMTOrd Ge) (InternalObj a _,InternalObj b _))
+  = Just $ a `tpEq` b
+quickImplication (Const True ()) (App (SMTOrd _) (InternalObj _ _,InternalObj _ _))
+  = Nothing
 quickImplication (App (SMTOrd Lt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Lt) (InternalObj b1 _,InternalObj b2 _))
   = Just $ a1 `tpEq` b1 && a2 `tpEq` b2
 quickImplication (App SMTEq [InternalObj a1 _,InternalObj a2 _]) (App SMTEq [InternalObj b1 _,InternalObj b2 _])
@@ -148,6 +155,10 @@ quickImplication (App (SMTOrd Gt) (InternalObj a1 _,InternalObj a2 _)) (App (SMT
   = Just $ a1 `tpEq` b2 && a2 `tpEq` b1
 quickImplication (App (SMTOrd Lt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Gt) (InternalObj b1 _,InternalObj b2 _))
   = Just $ a1 `tpEq` b2 && a2 `tpEq` b1
+quickImplication (InternalObj a _) (InternalObj b _)
+  = Just $ a `tpEq` b
+quickImplication (InternalObj _ _) _ = Just False
+quickImplication _ (InternalObj _ _) = Just False
 quickImplication _ _ = Nothing
 
 tpEq :: (Typeable a,Eq a,Typeable b) => a -> b -> Bool
@@ -331,3 +342,15 @@ renderDomainPred :: (a -> SMTExpr Bool) -> Domain a -> IO String
 renderDomainPred pred dom
   = withSMTPool (domainPool dom) $
     \vars -> renderExpr (pred vars)
+
+renderDomain :: Domain a -> IO String
+renderDomain dom
+  = withSMTPool (domainPool dom) $
+    \vars -> do
+      nodes <- mapM (\(nd,(pred,_,_)) -> do
+                         res <- renderExpr (pred vars)
+                         return $ "nd"++show nd++"[label=\""++res++"\"];"
+                    ) $ labNodes (domainGraph dom)
+      edges <- mapM (\(n1,n2,_) -> return $ "nd"++show n1++" -> nd"++show n2++";"
+                    ) $ labEdges (domainGraph dom)
+      return $ unlines $ ["digraph domain {"]++nodes++edges++["}"]

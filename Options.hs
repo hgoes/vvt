@@ -1,15 +1,16 @@
 module Options where
 
+import BackendOptions
+
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 
-data Options = Options { optBackendCons :: String
-                       , optBackendLifting :: String
-                       , optBackendDomain :: String
-                       , optBackendBase :: String
-                       , optBackendInit :: String
-                       , optBackendInterp :: String
+data Options = Options { optBackends :: BackendOptions
                        , optEncoding :: Encoding
                        , optOptimizeTR :: Bool
                        , optFunction :: String
@@ -25,14 +26,11 @@ data Options = Options { optBackendCons :: String
 data Encoding = Monolithic
               | BlockWise
               | TRGen
+              | Lisp
+              | Threaded
 
 defaultOptions :: Options
-defaultOptions = Options { optBackendCons = z3
-                         , optBackendLifting = z3
-                         , optBackendDomain = z3
-                         , optBackendBase = z3
-                         , optBackendInit = z3
-                         , optBackendInterp = mathsat
+defaultOptions = Options { optBackends = defaultBackendOptions
                          , optOptimizeTR = False
                          , optEncoding = Monolithic
                          , optFunction = "main"
@@ -44,9 +42,6 @@ defaultOptions = Options { optBackendCons = z3
                          , optKarr = True
                          , optExtraPredicates = Nothing
                          }
-  where
-    z3 = "z3 -smt2 -in"
-    mathsat = "mathsat"
 
 allOpts :: [OptDescr (Options -> Options)]
 allOpts
@@ -60,26 +55,22 @@ allOpts
                                "monolithic" -> Monolithic
                                "blockwise" -> BlockWise
                                "trgen" -> TRGen
+                               "lisp" -> Lisp
+                               "threaded" -> Threaded
                             }) "name")
      "Choose an encoding for the transition relation:\n  monolithic - Translate the whole program graph into one step (default)\n  blockwise - Each LLVM block is its own step\n  trgen - Use the original CTIGAR encoding"
-    ,Option [] ["backend-cons"]
-     (ReqArg (\b opt -> opt { optBackendCons = b }) "cmd")
-     "The SMT solver used for consecution calls [default: z3]"
-    ,Option [] ["backend-lifting"]
-     (ReqArg (\b opt -> opt { optBackendLifting = b }) "cmd")
-     "The SMT solver used for lifting calls [default: z3]"
-    ,Option [] ["backend-domain"]
-     (ReqArg (\b opt -> opt { optBackendDomain = b }) "cmd")
-     "The SMT solver used for abstraction calls [default: z3]"
-    ,Option [] ["backend-base"]
-     (ReqArg (\b opt -> opt { optBackendBase = b }) "cmd")
-     "The SMT solver used for base case feasibility [default: z3]"
-    ,Option [] ["backend-init"]
-     (ReqArg (\b opt -> opt { optBackendInit = b }) "cmd")
-     "The SMT solver used for initiation checks [default: z3]"
-    ,Option [] ["backend-interp"]
-     (ReqArg (\b opt -> opt { optBackendInterp = b }) "cmd")
-     "The SMT solver used for interpolation [default: mathsat]"
+    ,Option [] ["backend"]
+     (ReqArg (\b opt -> case readsPrec 0 b of
+               [(backend,':':solver)]
+                 -> opt { optBackends = setBackend backend solver (optBackends opt)
+                        }) "<backend>:solver")
+     "The SMT solver used for the specified backend."
+    ,Option [] ["debug-backend"]
+     (ReqArg (\b opt -> case readsPrec 0 b of
+               [(backend,[])]
+                 -> opt { optBackends = setDebugBackend backend (optBackends opt)
+                        }) "<backend>")
+     "Output the communication with the specified backend solver."
     ,Option ['t'] ["timeout"]
      (ReqArg (\t opt -> opt { optTimeout = Just $ parseTime t }) "time")
      "Abort the solver after a specified timeout"
@@ -137,6 +128,8 @@ showHelp = do
     usageInfo
     (unlines ["USAGE: hctigar <file>"
              ,"       where <file> is an LLVM bitcode file."
+             ,""
+             ,"  <backend> can be \"cons\", \"lifting\", \"domain\", \"init\" or \"interp\"."
              ]
     ) allOpts
   exitWith ExitSuccess

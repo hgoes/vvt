@@ -12,7 +12,11 @@ class LiftArgs a => PartialArgs a where
   type PartialValue a
   maskValue :: a -> PartialValue a -> [Bool] -> (PartialValue a,[Bool])
   unmaskValue :: a -> Unpacked a -> PartialValue a
-  assignPartial :: a -> PartialValue a -> [SMTExpr Bool]
+  assignPartial :: a -> PartialValue a -> [Maybe (SMTExpr Bool)]
+
+assignPartial' :: PartialArgs a => a -> PartialValue a -> [SMTExpr Bool]
+assignPartial' v p = [ cond
+                     | Just cond <- assignPartial v p ]
 
 instance SMTValue t => PartialArgs (SMTExpr t) where
   type PartialValue (SMTExpr t) = Maybe t
@@ -20,8 +24,8 @@ instance SMTValue t => PartialArgs (SMTExpr t) where
                             then val
                             else Nothing,xs)
   unmaskValue _ val = Just val
-  assignPartial _ Nothing = []
-  assignPartial expr (Just v) = [expr .==. (constantAnn v (extractAnnotation expr))]
+  assignPartial _ Nothing = [Nothing]
+  assignPartial expr (Just v) = [Just $ expr .==. (constantAnn v (extractAnnotation expr))]
 
 instance (PartialArgs a1,PartialArgs a2) => PartialArgs (a1,a2) where
   type PartialValue (a1,a2) = (PartialValue a1,PartialValue a2)

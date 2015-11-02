@@ -505,7 +505,7 @@ instance TransitionRelation Realization where
                                           then act
                                           else not' act
                                         | (blk,act) <- Map.toList blks ]
-  stateInvariant real (blks,_)
+  stateInvariant real _ (blks,_)
     = app or' $
       fmap (app and') $
       exactlyOne [] (Map.elems blks)

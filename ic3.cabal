@@ -2,10 +2,51 @@ Name:           hctigar
 Version:        0.1
 Cabal-Version:  >= 1.2
 Build-Type:     Simple
+Data-Files:     include/assert.h
+                include/pthread.h
+                include/stdlib.h
+                include/vvt.h
 
-Executable hctigar
-  Main-Is:              Main.hs
-  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
-                        smtlib2,smtlib2-debug,smtlib2-timing,
-                        array,resource-pool,mtl,bytestring,attoparsec<0.11,atto-lisp,text,time,linear,data-fix
-  GHC-Options:          -threaded -fwarn-unused-imports
+--Executable hctigar
+--  Main-Is:              Main.hs
+--  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
+--                        smtlib2,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,
+--                        array,resource-pool,mtl,bytestring,attoparsec<0.11,
+--                        atto-lisp,text,time,linear,data-fix,constraints
+--  GHC-Options:          -threaded -fwarn-unused-imports
+
+--Executable vvt-karr
+--  Main-Is:              bin/Karr.hs
+--  Build-Depends:        base,vector,smtlib2
+
+Executable vvt-pp
+  Main-Is:              bin/Pretty.hs
+  Build-Depends:        base,bytestring,atto-lisp,attoparsec<0.13,text,pretty
+
+Executable vvt-bmc
+  Main-Is:              bin/BMC.hs
+  Build-Depends:        mtl,containers,constraints,data-fix,smtlib2,smtlib2-debug,smtlib2-emulated-datatypes
+
+Executable vvt-enc
+  Main-Is:              bin/Encode.hs
+  Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
+
+Executable vvt-verify
+  Main-Is:              bin/Verify.hs
+  GHC-Options:          -threaded
+
+Executable vvt-predicates
+  Main-Is:              bin/Predicates.hs
+
+Executable vvt-opt
+  Extensions:           ViewPatterns,GADTs
+  Main-Is:              bin/Optimize.hs
+  
+Executable vvt
+  Main-Is:              bin/Main.hs
+  Build-Depends:        process,filepath
+  GHC-Options:          -threaded
+
+Executable vvt-svcomp
+  Extensions:           ScopedTypeVariables,ViewPatterns
+  Main-Is:              bin/SVComp.hs

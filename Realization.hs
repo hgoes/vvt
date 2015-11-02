@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeFamilies,MultiParamTypeClasses,FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies,MultiParamTypeClasses,FlexibleContexts,ScopedTypeVariables #-}
 module Realization where
 
 import PartialArgs
@@ -16,7 +16,7 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
   createStateVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (State t)
   createInputVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (Input t)
   initialState :: t -> State t -> SMTExpr Bool
-  stateInvariant :: t -> State t -> SMTExpr Bool
+  stateInvariant :: t -> Input t -> State t -> SMTExpr Bool
   declareNextState :: (Functor m,MonadIO m) => t -> State t -> Input t -> Maybe InterpolationGroup
                       -> RealizationProgress t
                       -> SMT' m (State t,RealizationProgress t)
@@ -29,6 +29,7 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
   annotationState :: t -> ArgAnnotation (State t)
   annotationInput :: t -> ArgAnnotation (Input t)
   renderPartialState :: MonadIO m => t -> PartialValue (State t) -> m String
+  renderPartialInput :: MonadIO m => t -> PartialValue (Input t) -> m String
   -- | Returns a list of suggested predicates and a boolean indicating whether they are guaranteed to be unique
   suggestedPredicates :: t -> [(Bool,State t -> SMTExpr Bool)]
   suggestedPredicates _ = []
@@ -39,3 +40,11 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
                        -> m (PredicateExtractor t,
                              [State t -> SMTExpr Bool])
   startingProgress :: t -> RealizationProgress t
+
+renderState :: (TransitionRelation t,MonadIO m) => t -> Unpacked (State t) -> m String
+renderState (mdl::t) st = renderPartialState mdl
+                          (unmaskValue (undefined::State t) st)
+
+renderInput :: (TransitionRelation t,MonadIO m) => t -> Unpacked (Input t) -> m String
+renderInput (mdl::t) st = renderPartialInput mdl
+                          (unmaskValue (undefined::Input t) st)
