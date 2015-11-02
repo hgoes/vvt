@@ -19,7 +19,7 @@ import qualified Data.Text as T
 data Options = Options { showHelp :: Bool
                        , solver :: String
                        , solverArgs :: [String]
-                       , bmcDepth :: Integer
+                       , bmcDepth :: Maybe Integer
                        , incremental :: Bool
                        , debug :: Bool }
 
@@ -27,13 +27,15 @@ defaultOptions :: Options
 defaultOptions = Options { showHelp = False
                          , solver = "z3"
                          , solverArgs = ["-in","-smt2"]
-                         , bmcDepth = 10
+                         , bmcDepth = Just 10
                          , incremental = False
                          , debug = False }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
-           ,Option ['d'] ["depth"] (ReqArg (\str opt -> opt { bmcDepth = read str }) "n") "The BMC depth"
+           ,Option ['d'] ["depth"] (ReqArg (\str opt -> opt { bmcDepth = case read str of
+                                                                -1 -> Nothing
+                                                                n -> Just n }) "n") "The BMC depth (-1 means no limit)"
            ,Option ['s'] ["solver"] (ReqArg (\str opt -> let solv:args = words str
                                                          in opt { solver = solv
                                                                 , solverArgs = args }) "bin") "The SMT solver executable"
@@ -72,11 +74,11 @@ main = do
                 putStrLn $ "Bug found:"
                 mapM_ putStrLn pbug)
   where
-    bmc :: LispProgram -> Bool -> Integer -> Integer
+    bmc :: LispProgram -> Bool -> Maybe Integer -> Integer
         -> Map T.Text LispValue -> Map T.Text LispValue
         -> [(Map T.Text LispValue,SMTExpr Bool)]
         -> SMT (Maybe [Map T.Text (LispStruct LispUValue)])
-    bmc prog inc l n st inp sts
+    bmc prog inc (Just l) n st inp sts
       | n>=l = do
           if inc
             then assert $ not' $ snd $ head sts
