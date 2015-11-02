@@ -1019,7 +1019,10 @@ realizeDefInstruction thread (castDown -> Just opInst) edge real0 = do
                  Nothing -> error "Left shift with non-constant not supported."
                  Just (IntConst vr)
                    -> (TpInt,\inp -> let ValInt vl = symbolicValue valL inp
-                                     in ValInt (vl * (2 ^ vr))) 
+                                     in ValInt (vl * (2 ^ vr)))
+        SDiv -> (TpInt,\inp -> let ValInt v1 = symbolicValue valL inp
+                                   ValInt v2 = symbolicValue valR inp
+                               in ValInt (div' v1 v2))
         _ -> error $ "Unknown operator: "++show op
   return (InstructionValue { symbolicType = tp
                            , symbolicValue = res
