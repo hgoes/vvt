@@ -12,6 +12,9 @@ extern "C" {
   extern long __nondet_long();
   extern size_t __nondet_size();
   extern bool __nondet_bool();
+  extern char __nondet_char();
+
+  extern void __unsigned_uint(unsigned int arg);
 
   extern void __yield(int loc);
   extern void __yield_internal(int loc);

@@ -11,8 +11,13 @@
 #define __VERIFIER_assert assert
 #define __VERIFIER_nondet_bool __nondet_bool
 #define __VERIFIER_nondet_int __nondet_int
-#define __VERIFIER_nondet_uint __nondet_uint
+unsigned int __VERIFIER_nondet_uint() {
+  unsigned int res = __nondet_uint();
+  __unsigned_uint(res);
+  return res;
+}
 #define __VERIFIER_nondet_long __nondet_long
+#define __VERIFIER_nondet_char __nondet_char
 #define __VERIFIER_nondet_pointer() 0
 
 #define CAS1(v,e,u,r) *r = __sync_bool_compare_and_swap(v,e,u)

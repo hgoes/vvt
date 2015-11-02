@@ -786,6 +786,10 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
      (cond',real1) <- realizeValue thread cond edge real0
      return (Just edge,\inp -> (valBool $ symbolicValue cond' inp) .&&. (act inp),real1)
    "__builtin_assume" -> return (Just edge,act,real0)
+   '_':'_':'u':'n':'s':'i':'g':'n':'e':'d':_ -> do
+     var <- getOperand call 0
+     (var',real1) <- realizeValue thread var edge real0
+     return (Just edge,\inp -> ((valInt $ symbolicValue var' inp) .>=. 0) .&&. (act inp),real1)
    "pthread_exit" -> case thread of
      Nothing -> return (Nothing,act,real0)
      Just th -> do
