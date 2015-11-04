@@ -138,7 +138,7 @@ toLispProgram opts real' = do
                                         (L.Singleton (L.Val (expr'::SMTExpr t)))) gts
                   ) gts arr
               ) Map.empty (gateMp real)
-  gates1 <- if safeSteps opts
+  gates1 <- if safeSteps opts && not dontStep
             then do
               let threads = (Nothing,"main"):[ (Just th,name)
                                              | (th,name) <- Map.toList threadNames ]

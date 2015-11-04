@@ -715,7 +715,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
                         (valCondition vec) (valCondition $ symbolicValue rcond inp))
          hasSelected inp = let ti = getThreadInput thread (snd inp)
                                Just vec = Map.lookup i (nondets ti)
-                           in app or'
+                           in mkOr
                               [ sel .&&. act
                               | (sel,act) <- Map.elems (Map.intersectionWith (\x y -> (x,y))
                                                         (valCondition vec) (valCondition $ symbolicValue rcond inp)) ]
