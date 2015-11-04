@@ -12,6 +12,7 @@ Executable vvt-pp
   Build-Depends:        base,bytestring,atto-lisp,attoparsec<0.13,text,pretty
 
 Executable vvt-bmc
+  Extensions:           OverloadedStrings
   Main-Is:              bin/BMC.hs
   Build-Depends:        mtl,containers,constraints,data-fix,smtlib2,smtlib2-debug
 
