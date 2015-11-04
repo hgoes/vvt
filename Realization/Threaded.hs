@@ -82,7 +82,7 @@ data Realization inp
                 , spawnEvents :: Map (Ptr CallInst) [(inp -> SMTExpr Bool,
                                                       Maybe (InstructionValue inp))]
                 , termEvents :: Map (Ptr CallInst) [(inp -> SMTExpr Bool,
-                                                     InstructionValue inp)]
+                                                     Maybe (InstructionValue inp))]
                 , assertions :: [inp -> SMTExpr Bool]
                 , memoryInit :: Map (Ptr GlobalVariable) AllocVal
                 , mainBlock :: Ptr BasicBlock
@@ -169,7 +169,8 @@ updateThreadReturns :: Realization inp
 updateThreadReturns real st = foldl processTerms st (Map.toList $ termEvents real)
   where
     processTerms st (th,xs) = foldl (processTerm th) st xs
-    processTerm th st (_,val)
+    processTerm th st (_,Nothing) = st
+    processTerm th st (_,Just val)
       = updateThreadStateDesc (Just th)
         (\st' -> st' { threadReturnDesc = case threadReturnDesc st' of
                          Just tp -> case typeUnion tp (symbolicType val) of
@@ -450,6 +451,21 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
                                                              }) (events real2)
                    , gateMp = ngates
                    })
+   "__thread_kill" -> do
+     thId <- getOperand call 0
+     (thId',real1) <- realizeValue thread thId edge real0
+     let rthId = memoryRead thread i thId' edge real1
+     terms <- sequence $ Map.mapWithKey
+              (\th _ -> case Map.lookup th (threads $ programInfo real1) of
+                 Just info -> do
+                   ret <- case Map.lookup (threadFunction info)
+                                   (functionReturns $ programInfo real1) of
+                     Just tp -> fmap Just $ defaultSymValue tp
+                     Nothing -> return Nothing
+                   return [(\inp -> case Map.lookup th (valThreadId $ symbolicValue rthId inp) of
+                              Just cond -> (act inp) .&&. cond,ret)]
+              ) (tpThreadId $ symbolicType rthId)
+     return (Just edge,act,real1 { termEvents = Map.unionWith (++) (termEvents real1) terms })
    "assert" -> do
      val <- getOperand call 0
      (val',real1) <- realizeValue thread val edge real0
@@ -797,7 +813,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
      Just th -> do
        (retVal,real1) <- getOperand call 0 >>= \ret -> realizeValue thread ret edge real0
        return (Nothing,act,
-               real1 { termEvents = Map.insertWith (++) th [(act,retVal)] (termEvents real1) })
+               real1 { termEvents = Map.insertWith (++) th [(act,Just retVal)] (termEvents real1) })
    -- Ignore atomic block denotions
    -- Only important for inserting yield instructions
    "__atomic_begin" -> return (Just edge,act,real0)
@@ -885,7 +901,7 @@ realizeInstruction _ thread blk sblk act (castDown -> Just (ret::Ptr ReturnInst)
     Just th -> do
       (retVal,real1) <- returnInstGetReturnValue ret >>= \ret' -> realizeValue thread ret' edge real0
       return (Nothing,act,
-              real1 { termEvents = Map.insertWith (++) th [(act,retVal)] (termEvents real1) })
+              real1 { termEvents = Map.insertWith (++) th [(act,Just retVal)] (termEvents real1) })
   
 realizeInstruction _ thread blk sblk act instr@(castDown -> Just cmpxchg) edge real0 = do
   ptr <- atomicCmpXchgInstGetPointerOperand cmpxchg
@@ -1489,24 +1505,8 @@ realizeValue thread (castDown -> Just (null::Ptr ConstantPointerNull)) edge real
                            },real)
 realizeValue thread (castDown -> Just undef) edge real = do
   tp <- getType (undef::Ptr UndefValue)
-  res <- defaultValue tp
+  res <- defaultSymValue tp
   return (res,real)
-  where
-    defaultValue :: Ptr Type -> IO (InstructionValue (ProgramState,ProgramInput))
-    defaultValue (castDown -> Just itp) = do
-      bw <- getBitWidth itp
-      return InstructionValue { symbolicType = if bw==1 then TpBool else TpInt
-                              , symbolicValue = if bw==1
-                                                then const $ ValBool $ constant False
-                                                else const $ ValInt $ constant 0
-                              , alternative = Just (IntConst 0) }
-    defaultValue (castDown -> Just (ptp::Ptr PointerType)) = do
-      rtp <- sequentialTypeGetElementType ptp
-             >>= translateType0
-      return InstructionValue { symbolicType = TpPtr Map.empty rtp
-                              , symbolicValue = const $ ValPtr Map.empty rtp
-                              , alternative = Just NullPtr
-                              }
 realizeValue thread (castDown -> Just glob) edge real = do
   isLocal <- globalVariableIsThreadLocal glob
   let ptr = MemoryPtr { memoryLoc = if isLocal then LocalTrg glob else GlobalTrg glob
@@ -1544,6 +1544,22 @@ realizeValue thread (castDown -> Just arg) edge real = do
 realizeValue thread val edge real = do
   str <- valueToString val
   error $ "Cannot realize value: "++str
+
+defaultSymValue :: Ptr Type -> IO (InstructionValue (ProgramState,ProgramInput))
+defaultSymValue (castDown -> Just itp) = do
+  bw <- getBitWidth itp
+  return InstructionValue { symbolicType = if bw==1 then TpBool else TpInt
+                          , symbolicValue = if bw==1
+                                            then const $ ValBool $ constant False
+                                            else const $ ValInt $ constant 0
+                          , alternative = Just (IntConst 0) }
+defaultSymValue (castDown -> Just (ptp::Ptr PointerType)) = do
+  rtp <- sequentialTypeGetElementType ptp
+         >>= translateType0
+  return InstructionValue { symbolicType = TpPtr Map.empty rtp
+                          , symbolicValue = const $ ValPtr Map.empty rtp
+                          , alternative = Just NullPtr
+                          }
 
 translateType :: Map (Ptr CallInst) a -> Map MemoryTrg AllocType -> Ptr Type -> IO (Struct SymType)
 translateType _ _ (castDown -> Just itp) = do

@@ -307,9 +307,11 @@ toLispProgram opts real' = do
                          mkRet ((c,v):vs) = symITE (c input) (symbolicValue v input) (mkRet vs)
                          (term,ret) = case Map.lookup th (termEvents real) of
                            Nothing -> (act,Nothing)
-                           Just [(x,v)] -> (act .&&. (not' (x input)),Just (symbolicValue v input))
-                           Just xs -> (act .&&. (not' $ app and' [ x input | (x,_) <- xs]),
-                                       Just $ mkRet xs)
+                           Just xs -> case [ (x,v) | (x,Just v) <- xs ] of
+                             [] -> (act,Nothing)
+                             [(x,v)] -> (act .&&. (not' (x input)),Just (symbolicValue v input))
+                             xs' -> (act .&&. (not' $ mkAnd [ x input | (x,_) <- xs]),
+                                     Just $ mkRet xs')
                      return $ Map.insert (T.pack $ "run-"++name)
                        (L.LispConstr $
                         L.LispValue (L.Size []) $

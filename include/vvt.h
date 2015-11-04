@@ -43,6 +43,7 @@ extern "C" {
 
   extern void __thread_spawn(__thread_id* ref,void *(thread) (void*),void* arg);
   extern void __thread_join(__thread_id* ref,void** ret);
+  extern void __thread_kill(__thread_id* ref);
   
 #ifdef __cplusplus
 }

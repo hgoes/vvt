@@ -51,6 +51,11 @@ int pthread_join(pthread_t* pthread,void** retval) {
   return 0;
 }
 
+int pthread_kill(pthread_t* pthread,int sig) {
+  __thread_kill(pthread);
+  return 0;
+}
+  
 void pthread_exit(void* retval);
   
 // Mutex functions
