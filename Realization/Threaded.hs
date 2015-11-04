@@ -666,7 +666,9 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge real0
                                                                             Just r -> r
                                                          in ((act inp) .&&. cond,idx))
                                                      (tpPtr $ symbolicType cond')
-                                          , writeContent = rcond { symbolicValue = \inp -> let orig = symbolicValue rcond inp
+                                          , writeContent = rcond { symbolicType = let orig = symbolicType rcond
+                                                                                  in orig { tpCondition = Map.insert thread () (tpCondition orig) }
+                                                                 , symbolicValue = \inp -> let orig = symbolicValue rcond inp
                                                                                            in orig { valCondition = Map.insert thread (constant True) (valCondition orig) }
                                                                  }
                                           , eventThread = thread
