@@ -133,6 +133,11 @@ main = do
        Left False -> do
          (nxt,gts3) <- declareNextState prog st inp Nothing gts2
          ninp <- createInputVars "" prog
+         if compl
+           then assert $ app or' (Map.elems $ Map.intersectionWith
+                                  (\x y -> not' $ valueEq x y)
+                                  st nxt)
+           else return ()
          bmc prog compl inc l (n+1) nxt ninp ((st,app and' asserts):sts)
  
     checkCompleteness :: LispProgram -> Map T.Text LispValue -> SMT Bool
