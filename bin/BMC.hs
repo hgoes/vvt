@@ -16,6 +16,7 @@ import Control.Monad.Trans (liftIO)
 import qualified Data.Text as T
 import qualified Data.AttoLisp as L
 import Data.Typeable (gcast)
+import Data.Time.Clock
 
 data Options = Options { showHelp :: Bool
                        , solver :: String
@@ -23,6 +24,7 @@ data Options = Options { showHelp :: Bool
                        , bmcDepth :: Maybe Integer
                        , incremental :: Bool
                        , completeness :: Bool
+                       , timing :: Bool
                        , debug :: Bool }
 
 defaultOptions :: Options
@@ -32,6 +34,7 @@ defaultOptions = Options { showHelp = False
                          , bmcDepth = Just 10
                          , incremental = False
                          , completeness = False
+                         , timing = False
                          , debug = False }
 
 optDescr :: [OptDescr (Options -> Options)]
@@ -44,6 +47,7 @@ optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Sho
                                                                 , solverArgs = args }) "bin") "The SMT solver executable"
            ,Option ['i'] ["incremental"] (NoArg $ \opt -> opt { incremental = True }) "Run in incremental mode"
            ,Option ['c'] ["completeness"] (NoArg $ \opt -> opt { completeness = True }) "Check completeness"
+           ,Option ['t'] ["timing"] (NoArg $ \opt -> opt { timing = True }) "Output timing information"
            ,Option [] ["debug"] (NoArg $ \opt -> opt { debug = True }) "Output the SMT stream"]
 
 main = do
@@ -59,16 +63,25 @@ main = do
   if showHelp opts
     then putStrLn $ usageInfo "Usage:\n\n    vvt-bmc [OPTIONS]\n\nAvailable options:" optDescr
     else (do
+             startTime <- if timing opts
+                          then fmap Just getCurrentTime
+                          else return Nothing
              prog <- fmap parseLispProgram $ readLispFile stdin
              pipe <- createSMTPipe (solver opts) (solverArgs opts)
              let act = do
                    st0 <- createStateVars "" prog
                    inp0 <- createInputVars "" prog
                    assert $ initialState prog st0
-                   bmc prog (completeness opts) (incremental opts) (bmcDepth opts) 0 st0 inp0 []
+                   bmc prog (completeness opts) (incremental opts) (bmcDepth opts)
+                     0 startTime st0 inp0 []
              res <- if debug opts
-                    then (withSMTBackend ({-emulateDataTypes $-} namedDebugBackend "bmc" $ pipe) act)
-                    else (withSMTBackend ({-emulateDataTypes-} pipe) act)
+                    then (withSMTBackend (namedDebugBackend "bmc" pipe) act)
+                    else (withSMTBackend pipe act)
+             case startTime of
+               Nothing -> return ()
+               Just time -> do
+                 time' <- getCurrentTime
+                 putStrLn $ "Total runtime: "++show (diffUTCTime time' time)
              case res of
               Left compl -> putStrLn $ "No bug found ("++
                             (if compl then "Complete" else "Incomplete")++")"
@@ -80,10 +93,11 @@ main = do
                 mapM_ putStrLn pbug)
   where
     bmc :: LispProgram -> Bool -> Bool -> Maybe Integer -> Integer
+        -> Maybe UTCTime
         -> Map T.Text LispValue -> Map T.Text LispValue
         -> [(Map T.Text LispValue,SMTExpr Bool)]
         -> SMT (Either Bool [Map T.Text (LispStruct LispUValue)])
-    bmc prog compl inc (Just l) n st inp sts
+    bmc prog compl inc (Just l) n startTime st inp sts
       | n>=l = do
           if compl
             then push
@@ -102,10 +116,11 @@ main = do
             return $ Right bug
             else if compl
                  then do
+                   pop
                    isCompl <- checkCompleteness prog st
                    return (Left isCompl)
                  else return $ Left False
-    bmc prog compl inc l n st inp sts = do
+    bmc prog compl inc l n startTime st inp sts = do
       assert $ stateInvariant prog inp st
       (assumps,gts1) <- declareAssumptions prog st inp Map.empty
       mapM_ assert assumps
@@ -113,7 +128,14 @@ main = do
       res <- if inc
              then do
                push
-               liftIO $ putStrLn $ "Level "++show n
+               diff <- case startTime of
+                 Nothing -> return Nothing
+                 Just time -> liftIO $ do
+                   time' <- getCurrentTime
+                   return $ Just $ diffUTCTime time' time
+               liftIO $ putStrLn $ "Level "++show n++(case diff of
+                                                       Nothing -> ""
+                                                       Just diff' -> "("++show diff'++")")
                assert $ app or' $ fmap not' asserts
                r <- checkSat
                if r
@@ -138,7 +160,7 @@ main = do
                                   (\x y -> not' $ valueEq x y)
                                   st nxt)
            else return ()
-         bmc prog compl inc l (n+1) nxt ninp ((st,app and' asserts):sts)
+         bmc prog compl inc l (n+1) startTime nxt ninp ((st,app and' asserts):sts)
  
     checkCompleteness :: LispProgram -> Map T.Text LispValue -> SMT Bool
     checkCompleteness prog st = stack $ do
