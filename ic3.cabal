@@ -15,6 +15,7 @@ Executable vvt-bmc
   Extensions:           OverloadedStrings
   Main-Is:              bin/BMC.hs
   Build-Depends:        mtl,containers,constraints,data-fix,smtlib2,smtlib2-debug
+  GHC-Options:          -threaded
 
 Executable vvt-enc
   Main-Is:              bin/Encode.hs

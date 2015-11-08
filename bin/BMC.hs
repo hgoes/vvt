@@ -17,6 +17,9 @@ import qualified Data.Text as T
 import qualified Data.AttoLisp as L
 import Data.Typeable (gcast)
 import Data.Time.Clock
+import Control.Concurrent
+import Control.Exception (catch)
+import System.Exit
 
 data Options = Options { showHelp :: Bool
                        , solver :: String
@@ -25,6 +28,7 @@ data Options = Options { showHelp :: Bool
                        , incremental :: Bool
                        , completeness :: Bool
                        , timing :: Bool
+                       , timeout :: Maybe Int
                        , debug :: Bool }
 
 defaultOptions :: Options
@@ -35,6 +39,7 @@ defaultOptions = Options { showHelp = False
                          , incremental = False
                          , completeness = False
                          , timing = False
+                         , timeout = Nothing
                          , debug = False }
 
 optDescr :: [OptDescr (Options -> Options)]
@@ -48,7 +53,27 @@ optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Sho
            ,Option ['i'] ["incremental"] (NoArg $ \opt -> opt { incremental = True }) "Run in incremental mode"
            ,Option ['c'] ["completeness"] (NoArg $ \opt -> opt { completeness = True }) "Check completeness"
            ,Option ['t'] ["timing"] (NoArg $ \opt -> opt { timing = True }) "Output timing information"
+           ,Option [] ["timeout"] (ReqArg (\str opt -> opt { timeout = Just $ parseTime str
+                                                           }) "time") "Abort the solver after a specified timeout"
            ,Option [] ["debug"] (NoArg $ \opt -> opt { debug = True }) "Output the SMT stream"]
+
+parseTime :: String -> Int
+parseTime str = parseNumber 0 0 str
+  where
+    parseNumber ful cur [] = ful+1000000*cur
+    parseNumber ful cur ('0':rest) = parseNumber ful (cur*10) rest
+    parseNumber ful cur ('1':rest) = parseNumber ful (cur*10+1) rest
+    parseNumber ful cur ('2':rest) = parseNumber ful (cur*10+2) rest
+    parseNumber ful cur ('3':rest) = parseNumber ful (cur*10+3) rest
+    parseNumber ful cur ('4':rest) = parseNumber ful (cur*10+4) rest
+    parseNumber ful cur ('5':rest) = parseNumber ful (cur*10+5) rest
+    parseNumber ful cur ('6':rest) = parseNumber ful (cur*10+6) rest
+    parseNumber ful cur ('7':rest) = parseNumber ful (cur*10+7) rest
+    parseNumber ful cur ('8':rest) = parseNumber ful (cur*10+8) rest
+    parseNumber ful cur ('9':rest) = parseNumber ful (cur*10+9) rest
+    parseNumber ful cur ('s':rest) = parseNumber (ful+1000000*cur) 0 rest
+    parseNumber ful cur ('m':rest) = parseNumber (ful+60000000*cur) 0 rest
+    parseNumber ful cur ('h':rest) = parseNumber (ful+3600000000*cur) 0 rest
 
 main = do
   args <- getArgs
@@ -74,9 +99,16 @@ main = do
                    assert $ initialState prog st0
                    bmc prog (completeness opts) (incremental opts) (bmcDepth opts)
                      0 startTime st0 inp0 []
-             res <- if debug opts
-                    then (withSMTBackend (namedDebugBackend "bmc" pipe) act)
-                    else (withSMTBackend pipe act)
+                 act' = if debug opts
+                        then (withSMTBackend (namedDebugBackend "bmc" pipe) act)
+                        else (withSMTBackend pipe act)
+             res <- case timeout opts of
+               Nothing -> act'
+               Just to -> do
+                 mainThread <- myThreadId
+                 timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
+                 catch act' (\ex -> case ex of
+                              ExitFailure _ -> return (Left False))
              case startTime of
                Nothing -> return ()
                Just time -> do
