@@ -100,8 +100,8 @@ main = do
                    bmc prog (completeness opts) (incremental opts) (bmcDepth opts)
                      0 startTime st0 inp0 []
                  act' = if debug opts
-                        then (withSMTBackend (namedDebugBackend "bmc" pipe) act)
-                        else (withSMTBackend pipe act)
+                        then (withSMTBackendExitCleanly (namedDebugBackend "bmc" pipe) act)
+                        else (withSMTBackendExitCleanly pipe act)
              res <- case timeout opts of
                Nothing -> act'
                Just to -> do
