@@ -86,7 +86,7 @@ recDependencies prog dep = case todo dep of
   [] -> dependencies dep
   ((name,cat):todo') -> case cat of
     Gate -> case Map.lookup name (programGates prog) of
-      Just (_,var) -> recDependencies prog $ getDependencies var (dep { todo = todo' })
+      Just (_,var,_) -> recDependencies prog $ getDependencies var (dep { todo = todo' })
     State -> case Map.lookup name (programNext prog) of
       Just var -> recDependencies prog $ getDependencies var (dep { todo = todo' })
     Input -> recDependencies prog $ dep { todo = todo' }

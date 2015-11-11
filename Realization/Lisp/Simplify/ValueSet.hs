@@ -40,7 +40,7 @@ replaceConstantProg :: T.Text -> [Integer] -> LispUValue -> LispProgram -> LispP
 replaceConstantProg name idx c prog
   = prog { programNext = fmap (replaceConstant name idx c) (delNext $ programNext prog)
          , programProperty = fmap (replaceConstantExpr name idx c) (programProperty prog)
-         , programGates = fmap (\(tp,var) -> (tp,replaceConstant name idx c var))
+         , programGates = fmap (\(tp,var,ann) -> (tp,replaceConstant name idx c var,ann))
                           (programGates prog)
          , programAssumption = fmap (replaceConstantExpr name idx c) (programAssumption prog)
          , programInvariant = fmap (replaceConstantExpr name idx c) (programInvariant prog)

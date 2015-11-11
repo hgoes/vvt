@@ -27,7 +27,7 @@ generateDependencyMapUp prog = mp2
   where
     mp1 = Map.foldlWithKey (\mp trg var -> depLVar trg var mp
                            ) Map.empty (programNext prog)
-    mp2 = Map.foldlWithKey (\mp trg (_,var) -> depLVar trg var mp
+    mp2 = Map.foldlWithKey (\mp trg (_,var,_) -> depLVar trg var mp
                            ) mp1 (programGates prog)
     depLVar :: T.Text -> LispVar -> DependencyMap -> DependencyMap
     depLVar trg (NamedVar name cat _) mp
@@ -82,4 +82,4 @@ bottomUp deps prog = bottomUp' initTodo initFacts
         var = case Map.lookup sym (programNext prog) of
           Just v -> v
           Nothing -> case Map.lookup sym (programGates prog) of
-            Just (_,v) -> v
+            Just (_,v,_) -> v

@@ -122,7 +122,7 @@ toLispProgram opts real' = do
                        -> translateGate n gate gts
                       ) gts arr
                   ) (GateTranslation Map.empty Map.empty Map.empty) (gateMp real)
-      gates :: Map T.Text (L.LispType,L.LispVar)
+      gates :: Map T.Text (L.LispType,L.LispVar,L.Annotation)
       gates = Map.foldlWithKey
               (\gts tp (_,AnyGateArray arr)
                -> Map.foldlWithKey
@@ -135,7 +135,7 @@ toLispProgram opts real' = do
                            Just p -> Map.insert p
                                      (L.LispType 0 (L.Singleton sort),
                                       L.LispConstr $ L.LispValue (L.Size [])
-                                        (L.Singleton (L.Val (expr'::SMTExpr t)))) gts
+                                        (L.Singleton (L.Val (expr'::SMTExpr t))),Map.empty) gts
                   ) gts arr
               ) Map.empty (gateMp real)
   gates1 <- if safeSteps opts && not dontStep
@@ -159,7 +159,8 @@ toLispProgram opts real' = do
                                             [ app and' $ [not' $ InternalObj
                                                           (L.LispVarAccess act [] []) ()
                                                          | act <- negs ]++
-                                                [InternalObj (L.LispVarAccess inp [] []) ()]])
+                                                [InternalObj (L.LispVarAccess inp [] []) ()]],
+                                   Map.empty)
                                   gts) gates nxt
             else return gates
   let step Nothing = if safeSteps opts then L.NamedVar "rstep-main" L.Gate L.boolType

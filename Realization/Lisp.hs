@@ -39,7 +39,7 @@ data LispProgram
                 , programDataTypes :: DataTypeInfo
                 , programState :: Map T.Text (LispType,Annotation)
                 , programInput :: Map T.Text (LispType,Annotation)
-                , programGates :: Map T.Text (LispType,LispVar)
+                , programGates :: Map T.Text (LispType,LispVar,Annotation)
                 , programNext :: Map T.Text LispVar
                 , programProperty :: [SMTExpr Bool]
                 , programInit :: Map T.Text LispValue
@@ -97,13 +97,16 @@ parseLispProgram descr = case descr of
                   Nothing -> Map.empty
            gates = case Map.lookup "gates" mp of
              Just gts -> let gts' = fmap (\gt -> case gt of
-                                           L.List [L.Symbol name,sort,def]
-                                             -> (name,case parseLispType sort of
-                                                       Just srt -> case parseLispTopVar state inp gates def of
-                                                         Just var -> (srt,var)
-                                                         Nothing -> error $ "Failed to parse gate definition: "++show def
-                                                       Nothing -> error $ "Failed to parse sort: "++show sort
-                                                )
+                                           L.List def -> case parseAnnotation def Map.empty of
+                                             (ann,[L.Symbol name,sort,def])
+                                               -> (name,
+                                                   case parseLispType sort of
+                                                     Just srt -> case parseLispTopVar state inp gates def of
+                                                       Just var -> (srt,var,ann)
+                                                       Nothing -> error $ "Failed to parse gate definition: "++show def
+                                                     Nothing -> error $ "Failed to parse sort: "++show sort
+                                                  )
+                                             _ -> error $ "Failed to parse gate: "++show gt
                                            _ -> error $ "Failed to parse gate: "++show gt
                                          ) gts
                          in Map.fromList gts'
@@ -202,10 +205,11 @@ programToLisp prog = L.List ([L.Symbol "program"]++
     inputLst = [ L.List $ [L.Symbol name
                           ,printLispType sort]++renderAnnotation ann
                | (name,(sort,ann)) <- Map.toList (programInput prog) ]
-    gatesLst = [ L.List [L.Symbol name
-                        ,printLispType sort
-                        ,printLispVar (programDataTypes prog) gate]
-               | (name,(sort,gate)) <- Map.toList (programGates prog) ]
+    gatesLst = [ L.List $ [L.Symbol name
+                          ,printLispType sort
+                          ,printLispVar (programDataTypes prog) gate]++
+                 renderAnnotation ann
+               | (name,(sort,gate,ann)) <- Map.toList (programGates prog) ]
     nextLst = [ L.List [L.Symbol name
                        ,printLispVar (programDataTypes prog) def]
               | (name,def) <- Map.toList (programNext prog) ]
@@ -281,7 +285,7 @@ printLispType (LispType n tp) = case n of
 
 parseLispVarCat :: Map T.Text (LispType,Annotation)
                 -> Map T.Text (LispType,Annotation)
-                -> Map T.Text (LispType,LispVar)
+                -> Map T.Text (LispType,LispVar,Annotation)
                 -> L.Lisp
                 -> Maybe (T.Text,LispVarCat,LispType)
 parseLispVarCat state inps gts (L.Symbol name)
@@ -290,13 +294,13 @@ parseLispVarCat state inps gts (L.Symbol name)
      Nothing -> case Map.lookup name inps of
        Just (tp,_) -> return (name,Input,tp)
        Nothing -> case Map.lookup name gts of
-         Just (tp,_) -> return (name,Gate,tp)
+         Just (tp,_,_) -> return (name,Gate,tp)
          Nothing -> Nothing
 parseLispVarCat _ _ _ _ = Nothing
 
 parseLispTopVar :: Map T.Text (LispType,Annotation)
                 -> Map T.Text (LispType,Annotation)
-                -> Map T.Text (LispType,LispVar)
+                -> Map T.Text (LispType,LispVar,Annotation)
                 -> L.Lisp
                 -> Maybe LispVar
 parseLispTopVar state inps gts lisp
@@ -313,7 +317,7 @@ parseLispTopVar state inps gts lisp
 
 parseLispVar :: Map T.Text (LispType,Annotation)
              -> Map T.Text (LispType,Annotation)
-             -> Map T.Text (LispType,LispVar)
+             -> Map T.Text (LispType,LispVar,Annotation)
              -> L.Lisp
              -> Maybe LispVar
 parseLispVar state inps gts (L.List (L.List (L.Symbol "_":L.Symbol "store":stat):
@@ -349,7 +353,7 @@ lispVarType (LispITE _ ifT _) = lispVarType ifT
 
 parseLispVarAccess :: Map T.Text (LispType,Annotation)
                    -> Map T.Text (LispType,Annotation)
-                   -> Map T.Text (LispType,LispVar)
+                   -> Map T.Text (LispType,LispVar,Annotation)
                    -> L.Lisp
                    -> Maybe LispVarAccess
 parseLispVarAccess state inps gts (L.List (L.List (L.Symbol "_":L.Symbol "select":stat):
@@ -393,7 +397,7 @@ lispVarAccessType (LispEq _ _) = Fix BoolSort
 
 parseLispValue :: Map T.Text (LispType,Annotation)
                -> Map T.Text (LispType,Annotation)
-               -> Map T.Text (LispType,LispVar)
+               -> Map T.Text (LispType,LispVar,Annotation)
                -> L.Lisp
                -> Maybe LispValue
 parseLispValue state inps gates (L.List [L.Symbol "value"
@@ -428,7 +432,7 @@ derefSort lvl sort = (lvl,sort)
 
 parseLispExpr' :: Map T.Text (LispType,Annotation)
                -> Map T.Text (LispType,Annotation)
-               -> Map T.Text (LispType,LispVar)
+               -> Map T.Text (LispType,LispVar,Annotation)
                -> (forall a. SMTType a => SMTExpr a -> b)
                -> L.Lisp
                -> Maybe b
@@ -442,7 +446,7 @@ parseLispExpr' state inps gates app
 
 parseLispExpr :: Map T.Text (LispType,Annotation)
               -> Map T.Text (LispType,Annotation)
-              -> Map T.Text (LispType,LispVar)
+              -> Map T.Text (LispType,LispVar,Annotation)
               -> FunctionParser
               -> (T.Text -> Maybe (SMTExpr Untyped))
               -> DataTypeInfo
@@ -616,7 +620,7 @@ declareVar prog state inps gates (NamedVar name cat _) = case cat of
   Gate -> case Map.lookup name gates of
     Just res -> return (res,gates)
     Nothing -> case Map.lookup name (programGates prog) of
-      Just (tp,nvar) -> while (TranslateGate name) $ do
+      Just (tp,nvar,_) -> while (TranslateGate name) $ do
         (val1,gates1) <- declareVar prog state inps gates nvar
         val2 <- defineValue (T.unpack name) val1
         return (val2,Map.insert name val2 gates1)

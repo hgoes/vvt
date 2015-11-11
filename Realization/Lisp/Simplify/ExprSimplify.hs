@@ -15,7 +15,7 @@ import Debug.Trace
 simplifyProgram :: LispProgram -> LispProgram
 simplifyProgram prog
   = prog { programNext = fmap simplifyVar (programNext prog)
-         , programGates = fmap (\(tp,var) -> (tp,simplifyVar var)) (programGates prog)
+         , programGates = fmap (\(tp,var,ann) -> (tp,simplifyVar var,ann)) (programGates prog)
          , programProperty = fmap simplifyExpr (programProperty prog)
          , programInvariant = fmap simplifyExpr (programInvariant prog)
          , programAssumption = fmap simplifyExpr (programAssumption prog)

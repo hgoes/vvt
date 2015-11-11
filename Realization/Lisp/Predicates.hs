@@ -57,7 +57,7 @@ linearStates prog
 linearExpressions :: LispProgram -> Set (SMTExpr Integer)
 linearExpressions prog = lin5
   where
-    lin1 = foldl (\lin (_,var) -> linearVar var lin
+    lin1 = foldl (\lin (_,var,_) -> linearVar var lin
                  ) Set.empty (programGates prog)
     lin2 = foldl (\lin nxt -> linearVar nxt lin
                  ) lin1 (programNext prog)

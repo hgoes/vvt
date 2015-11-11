@@ -434,7 +434,7 @@ translateVar prog extr (NamedVar name cat tp) = case cat of
   Gate -> case Map.lookup name (gates extr) of
     Just val -> return (val,extr)
     Nothing -> case Map.lookup name (programGates prog) of
-      Just (_,var) -> do
+      Just (_,var,_) -> do
         (lin,extr') <- translateVar prog extr var
         nlin <- defineLinValue (T.unpack name) lin
         return (nlin,extr' { gates = Map.insert name nlin (gates extr') })

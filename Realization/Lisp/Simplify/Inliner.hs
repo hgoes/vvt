@@ -31,9 +31,9 @@ doInlining prog = prog { programState = nstate
                        , programPredicates = npreds }
   where
     inl = Inlining Map.empty (generateDependencyMapUp prog)
-    (ngates,inl1) = inlineList (\prog (tp,var) inl
+    (ngates,inl1) = inlineList (\prog (tp,var,ann) inl
                                 -> let (nvar,ninl) = inlineVar prog var inl
-                                   in ((tp,nvar),ninl))
+                                   in ((tp,nvar,ann),ninl))
                     prog (programGates prog) inl
     (nnext,inl2) = inlineList inlineVar prog (programNext prog) inl1
     (nprop,inl3) = inlineList inlineExpr prog (programProperty prog) inl2
@@ -76,7 +76,7 @@ isSimple (LispConstr val) = case size val of
 
 inlineVar :: LispProgram -> LispVar -> Inlining -> (LispVar,Inlining)
 inlineVar prog v@(NamedVar name cat tp) inl = case cat of
-  Gate -> let def = snd $ (programGates prog) Map.! name
+  Gate -> let (_,def,_) = (programGates prog) Map.! name
               (res,ninl) = getInlining prog name def inl
           in (case res of
                 Nothing -> v
