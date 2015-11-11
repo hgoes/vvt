@@ -19,6 +19,7 @@ data Options = Options { optBackends :: BackendOptions
                        , optVerbosity :: Int
                        , optStats :: Bool
                        , optDumpDomain :: Maybe String
+                       , optSearchStrategy :: Bool
                        }
 
 defaultOptions :: Options
@@ -28,6 +29,7 @@ defaultOptions = Options { optBackends = defaultBackendOptions
                          , optVerbosity = 0
                          , optStats = False
                          , optDumpDomain = Nothing
+                         , optSearchStrategy = False
                          }
 
 allOpts :: [OptDescr (Options -> Options)]
@@ -61,6 +63,8 @@ allOpts
     ,Option [] ["dump-domain"]
      (ReqArg (\file opt -> opt { optDumpDomain = Just file }) "file")
      "Dump the domain graph into a file."
+    ,Option [] ["search-strategy"] (NoArg $ \opt -> opt { optSearchStrategy = True })
+     "Use a heuristic to find better counter examples."
     ]
 
 parseTime :: String -> Int
@@ -121,6 +125,7 @@ main = do
                        (optVerbosity opts)
                        (optStats opts)
                        (optDumpDomain opts)
+                       (optSearchStrategy opts)
             Just to -> do
               mainThread <- myThreadId
               timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
@@ -130,6 +135,7 @@ main = do
                                       (optVerbosity opts)
                                       (optStats opts)
                                       (optDumpDomain opts)
+                                      (optSearchStrategy opts)
                                killThread timeoutThread
                                return (Just res)
                            )

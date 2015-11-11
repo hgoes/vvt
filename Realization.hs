@@ -6,13 +6,14 @@ import PartialArgs
 import Language.SMTLib2
 import Control.Monad.State (MonadIO)
 
-class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t))
+class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t),Show (SearchInfo t))
       => TransitionRelation t where
   type State t
   type Input t
   type RevState t
   type PredicateExtractor t
   type RealizationProgress t
+  type SearchInfo t
   createStateVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (State t)
   createInputVars :: (Functor m,MonadIO m) => String -> t -> SMT' m (Input t)
   initialState :: t -> State t -> SMTExpr Bool
@@ -40,6 +41,9 @@ class (Args (State t),Args (Input t),PartialArgs (State t),PartialArgs (Input t)
                        -> m (PredicateExtractor t,
                              [State t -> SMTExpr Bool])
   startingProgress :: t -> RealizationProgress t
+  -- | After a successful checkSat query, extract the search information
+  getSearchInfo :: t -> State t -> Input t -> RealizationProgress t -> SMT (SearchInfo t)
+  searchStrategy :: t -> Maybe (SearchInfo t -> State t -> Input t -> State t -> RealizationProgress t -> SMT ())
 
 renderState :: (TransitionRelation t,MonadIO m) => t -> Unpacked (State t) -> m String
 renderState (mdl::t) st = renderPartialState mdl

@@ -62,17 +62,18 @@ data IC3Config mdl
            , ic3MaxCTGs :: Int
            , ic3CollectStats :: Bool
            , ic3DumpDomainFile :: Maybe String
+           , ic3UseSearch :: Bool
            }
 
 data IC3Env mdl
   = IC3Env { ic3Domain :: Domain (TR.State mdl) -- The domain talks about the outputs
            , ic3InitialProperty :: Node
-           , ic3Consecution :: Consecution (TR.Input mdl) (TR.State mdl)
+           , ic3Consecution :: Consecution (TR.Input mdl) (TR.State mdl) (TR.RealizationProgress mdl)
            , ic3Lifting :: Lifting mdl
            , ic3Initiation :: SMTPool () (TR.State mdl)
            , ic3Interpolation :: SMTPool () (InterpolationState mdl)
            , ic3LitOrder :: LitOrder
-           , ic3CexState :: Maybe (IORef (State (TR.Input mdl) (TR.State mdl)))
+           , ic3CexState :: Maybe (IORef (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)))
            , ic3Earliest :: Int
            , ic3PredicateExtractor :: TR.PredicateExtractor mdl
            , ic3Stats :: Maybe IC3Stats
@@ -121,34 +122,35 @@ data LiftingState mdl = LiftingState { liftCur :: TR.State mdl
                                      , liftNxtAsserts :: [SMTExpr Bool]
                                      }
 
-data Obligation inp st = Obligation { oblState :: IORef (State inp st)
-                                    , oblLevel :: Int
-                                    , oblDepth :: Int
-                                    } deriving Eq
+data Obligation inp st info = Obligation { oblState :: IORef (State inp st info)
+                                         , oblLevel :: Int
+                                         , oblDepth :: Int
+                                         } deriving Eq
 
-instance Ord (Obligation inp st) where
+instance Ord (Obligation inp st info) where
   compare o1 o2 = case compare (oblLevel o1) (oblLevel o2) of
     EQ -> compare (oblDepth o1) (oblDepth o2)
     r -> r
 
-type Queue inp st = MinQueue (Obligation inp st)
+type Queue inp st info = MinQueue (Obligation inp st info)
 
 -- | In order to deal with exceptions, this is a custom monad.
 newtype IC3 mdl a = IC3 { evalIC3 :: IC3Config mdl -> IORef (IC3Env mdl) -> IO a }
 
-data State inp st = State { stateSuccessor :: Maybe (IORef (State inp st))
-                          , stateLiftedAst :: Maybe (AbstractState st)
-                          , stateFullAst :: Maybe (AbstractState st)
-                          , stateFull :: Unpacked st
-                          , stateInputs :: Unpacked inp
-                          , stateNxtInputs :: Unpacked inp
-                          , stateLifted :: PartialValue st
-                          , stateLiftedInputs :: PartialValue inp
-                          , stateSpuriousLevel :: Int
-                          , stateNSpurious :: Int
-                          , stateSpuriousSucc :: Bool
-                          , stateDomainHash :: Int
-                          }
+data State inp st info = State { stateSuccessor :: Maybe (IORef (State inp st info))
+                               , stateLiftedAst :: Maybe (AbstractState st)
+                               , stateFullAst :: Maybe (AbstractState st)
+                               , stateFull :: Unpacked st
+                               , stateInputs :: Unpacked inp
+                               , stateNxtInputs :: Unpacked inp
+                               , stateLifted :: PartialValue st
+                               , stateLiftedInputs :: PartialValue inp
+                               , stateSpuriousLevel :: Int
+                               , stateNSpurious :: Int
+                               , stateSpuriousSucc :: Bool
+                               , stateDomainHash :: Int
+                               , stateSearchInfo :: info
+                               }
 
 instance Applicative (IC3 mdl) where
   pure x = IC3 (\_ _ -> return x)
@@ -184,7 +186,7 @@ ic3Catch :: Exception e => IC3 mdl a -> (e -> IC3 mdl a) -> IC3 mdl a
 ic3Catch act handle = IC3 $ \cfg ref -> evalIC3 act cfg ref `catch`
                                         (\ex -> evalIC3 (handle ex) cfg ref)
 
-bestAbstraction :: State inp st -> AbstractState st
+bestAbstraction :: State inp st info -> AbstractState st
 bestAbstraction st = case stateLiftedAst st of
   Just abs -> abs
   Nothing -> case stateFullAst st of
@@ -215,8 +217,9 @@ mkIC3Config :: mdl -> BackendOptions
             -> Int -- ^ Verbosity
             -> Bool -- ^ Dump stats?
             -> Maybe String -- ^ Dump domain?
+            -> Bool -- ^ Search strategy?
             -> IC3Config mdl
-mkIC3Config mdl opts verb stats dumpDomain
+mkIC3Config mdl opts verb stats dumpDomain searchS
   = IC3Cfg { ic3Model = mdl
            , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
                                      (if Set.member ConsecutionBackend (optDebugBackend opts)
@@ -250,6 +253,7 @@ mkIC3Config mdl opts verb stats dumpDomain
            , ic3MaxCTGs = 3
            , ic3CollectStats = stats
            , ic3DumpDomainFile = dumpDomain
+           , ic3UseSearch = searchS
            }
   where
     mkPipe cmd debug = let prog:args = words cmd
@@ -316,7 +320,8 @@ runIC3 cfg act = do
                                        , consecutionNxtInput = nxtInp
                                        , consecutionState = cur
                                        , consecutionNxtState = nxt
-                                       , consecutionNxtAsserts = asserts2 })
+                                       , consecutionNxtAsserts = asserts2
+                                       , consecutionGates = real3 })
           (TR.initialState mdl)
   lifting <- createSMTPool ({-addDebugging "lift"-} liftingBackend) $ do
     setOption (ProduceUnsatCores True)
@@ -420,31 +425,39 @@ runIC3 cfg act = do
                           })
   evalIC3 act cfg ref
 
-extractState :: (PartialArgs inp,PartialArgs st)
-                => Maybe (IORef (State inp st))
-                -> ConsecutionVars inp st
-                -> SMT (State inp st)
-extractState (succ::Maybe (IORef (State inp st))) vars = do
+extractState :: (TR.TransitionRelation tr)
+                => tr
+                -> Maybe (IORef (State (TR.Input tr) (TR.State tr) (TR.SearchInfo tr)))
+                -> ConsecutionVars (TR.Input tr) (TR.State tr) (TR.RealizationProgress tr)
+                -> SMT (State (TR.Input tr) (TR.State tr) (TR.SearchInfo tr))
+extractState tr succ vars = do
   inps <- getValues (consecutionInput vars)
   nxtInps <- getValues (consecutionNxtInput vars)
   full <- getValues (consecutionState vars)
+  info <- TR.getSearchInfo tr (consecutionState vars) (consecutionInput vars) (consecutionGates vars)
   return $ State { stateSuccessor = succ
                  , stateLiftedAst = Nothing
                  , stateFullAst = Nothing
                  , stateFull = full
                  , stateInputs = inps
                  , stateNxtInputs = nxtInps
-                 , stateLifted = unmaskValue (undefined::st) full
-                 , stateLiftedInputs = unmaskValue (undefined::inp) inps
+                 , stateLifted = unmaskValue (undefSt succ) full
+                 , stateLiftedInputs = unmaskValue (undefInp succ) inps
                  , stateSpuriousLevel = 0
                  , stateNSpurious = 0
                  , stateSpuriousSucc = False
-                 , stateDomainHash = 0 }
+                 , stateDomainHash = 0
+                 , stateSearchInfo = info }
+  where
+    undefSt :: Maybe (IORef (State inp st info)) -> st
+    undefSt _ = undefined
+    undefInp :: Maybe (IORef (State inp st info)) -> inp
+    undefInp _ = undefined
 
 liftState :: (PartialArgs (TR.State mdl),
               PartialArgs (TR.Input mdl))
-             => Lifting mdl -> State (TR.Input mdl) (TR.State mdl)
-             -> IO (State (TR.Input mdl) (TR.State mdl))
+             => Lifting mdl -> State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)
+             -> IO (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))
 liftState lifting st = do
   nxt <- case stateSuccessor st of
     Nothing -> return $ \lft -> app and' $ liftNxtAsserts lft
@@ -528,7 +541,8 @@ initiationConcrete vals = do
 -- From ConsRefConcrPred
 -- XXX: Henning: Use full state to abstract domain
 updateAbstraction :: TR.TransitionRelation mdl
-                     => IORef (State (TR.Input mdl) (TR.State mdl)) -> IC3 mdl Bool
+                     => IORef (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))
+                     -> IC3 mdl Bool
 updateAbstraction ref = do
   st <- liftIO $ readIORef ref
   dom <- gets ic3Domain
@@ -608,9 +622,9 @@ lift toLift inps nxtInps succ = do
 abstractConsecution :: TR.TransitionRelation mdl
                        => Int -- ^ The level 'i'
                        -> AbstractState (TR.State mdl) -- ^ The possibly inductive abstract state 's'
-                       -> Maybe (IORef (State (TR.Input mdl) (TR.State mdl)))
+                       -> Maybe (IORef (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)))
                        -> IC3 mdl (Either (AbstractState (TR.State mdl))
-                                   (State (TR.Input mdl) (TR.State mdl))
+                                   (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))
                                   )
 abstractConsecution fi abs_st succ = do
   --rebuildConsecution
@@ -619,6 +633,7 @@ abstractConsecution fi abs_st succ = do
     abs_st_str <- renderAbstractState abs_st
     liftIO $ putStrLn ("Original abstract state: "++abs_st_str)
   env <- get
+  cfg <- ask
   res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
     assert $ not' $ toDomainTerm abs_st (ic3Domain env) (consecutionState vars)
     (_,rev) <- foldlM (\(i,mp) (nd,expr,act) -> do
@@ -638,7 +653,30 @@ abstractConsecution fi abs_st succ = do
     res <- checkSat
     if res
       then (do
-               st <- extractState succ vars
+               noSearchState <- extractState (ic3Model cfg) succ vars
+               st <- if ic3UseSearch cfg
+                     then case TR.searchStrategy (ic3Model cfg) of
+                     Nothing -> return noSearchState
+                     Just strat -> case succ of
+                       Nothing -> return noSearchState
+                       Just succ' -> do
+                         succ'' <- liftIO $ readIORef succ'
+                         -- Can we restrict the predecessor to fit our search strategy?
+                         liftIO $ putStr $ "Info: "++show (stateSearchInfo succ'')++"..."
+                         strat (stateSearchInfo succ'')
+                               (consecutionState vars)
+                               (consecutionInput vars)
+                               (consecutionNxtState vars)
+                               (consecutionGates vars)
+                         res' <- checkSat
+                         if res'
+                           then do
+                           liftIO $ putStrLn "Search strategy worked."
+                           extractState (ic3Model cfg) succ vars
+                           else do
+                           liftIO $ putStrLn "Search strategy failed."
+                           return noSearchState
+                     else return noSearchState
                return $ Right st)
       else (do
                core <- getUnsatCore
@@ -661,10 +699,11 @@ abstractConsecution fi abs_st succ = do
 
 concreteConsecution :: TR.TransitionRelation mdl
                        => Int -> PartialValue (TR.State mdl)
-                       -> IORef (State (TR.Input mdl) (TR.State mdl))
-                       -> IC3 mdl (Maybe (IORef (State (TR.Input mdl) (TR.State mdl))))
+                       -> IORef (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))
+                       -> IC3 mdl (Maybe (IORef (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))))
 concreteConsecution fi st succ = do
   env <- get
+  cfg <- ask
   res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
     assert (app or' $ fmap not' $ assignPartial' (consecutionState vars) st)
     {-do
@@ -675,7 +714,7 @@ concreteConsecution fi st succ = do
     sat <- checkSat
     if sat
       then (do
-               rst <- extractState (Just succ) vars
+               rst <- extractState (ic3Model cfg) (Just succ) vars
                return $ Just rst)
       else return Nothing
   case res of
@@ -685,7 +724,8 @@ concreteConsecution fi st succ = do
      return $ Just res'
 
 handleObligations :: TR.TransitionRelation mdl
-                     => Queue (TR.Input mdl) (TR.State mdl) -> IC3 mdl Bool
+                     => Queue (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)
+                     -> IC3 mdl Bool
 handleObligations queue = case Queue.minView queue of
   Nothing -> do
     ic3Debug 3 $ "All obligations handled."
@@ -762,20 +802,20 @@ handleObligations queue = case Queue.minView queue of
                   Just _ -> return ()
                  handleObligations obls)
 
-removeObligations :: IORef (State inp st)
-                     -> Int
-                     -> Queue inp st
-                     -> IC3 mdl (Queue inp st)
+removeObligations :: IORef (State inp st info)
+                  -> Int
+                  -> Queue inp st info
+                  -> IC3 mdl (Queue inp st info)
 removeObligations st depth obls
   = return $ Queue.filter (\obl -> oblState obl /= st ||
                                    oblDepth obl /= depth
                           ) obls
 
 backtrackRefine :: TR.TransitionRelation mdl
-                   => Obligation (TR.Input mdl) (TR.State mdl)
-                   -> Queue (TR.Input mdl) (TR.State mdl)
+                   => Obligation (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)
+                   -> Queue (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)
                    -> Bool
-                   -> IC3 mdl (Queue (TR.Input mdl) (TR.State mdl))
+                   -> IC3 mdl (Queue (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))
 backtrackRefine obl obls enforceRefinement
   = backtrack' (oblState obl) (oblDepth obl) obls
   where
@@ -884,13 +924,14 @@ strengthen = strengthen' True
     strengthen' trivial = do
       tk <- k
       env <- get
+      cfg <- ask
       ic3Debug 2 $ "Trying to get from frontier at level "++show tk++" to error"
       rv <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) tk $ \vars -> do
         assert $ app or' $ fmap not' $ consecutionNxtAsserts vars
         sat <- checkSat
         if sat
           then (do
-                   sti <- extractState Nothing vars
+                   sti <- extractState (ic3Model cfg) Nothing vars
                    return $ Just sti)
           else return Nothing
       case rv of
@@ -919,12 +960,13 @@ check :: TR.TransitionRelation mdl
          -> Int -- ^ Verbosity
          -> Bool -- ^ Dump stats?
          -> Maybe String -- ^ Dump domain?
+         -> Bool -- ^ Use search strategy
          -> IO (Either [Unpacked (TR.State mdl,TR.Input mdl)] [AbstractState (TR.State mdl)])
-check st opts verb stats dumpDomain = do
+check st opts verb stats dumpDomain searchS = do
   let prog:args = words (optBackend opts Map.! Base)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
-  runIC3 (mkIC3Config st opts verb stats dumpDomain) $ do
+  runIC3 (mkIC3Config st opts verb stats dumpDomain searchS) $ do
     case tr of
       Just tr' -> do
         ic3DumpStats Nothing
@@ -1073,10 +1115,10 @@ propagate trivial = do
         else pushCubes is
 
 predecessor :: TR.TransitionRelation mdl
-               => Obligation (TR.Input mdl) (TR.State mdl)
-               -> Queue (TR.Input mdl) (TR.State mdl)
-               -> IORef (State (TR.Input mdl) (TR.State mdl))
-               -> IC3 mdl (Maybe (Queue (TR.Input mdl) (TR.State mdl)))
+               => Obligation (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)
+               -> Queue (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)
+               -> IORef (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))
+               -> IC3 mdl (Maybe (Queue (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl)))
 predecessor obl obls pred
   | oblLevel obl==0 = do
     oblState <- liftIO $ readIORef (oblState obl)
@@ -1097,7 +1139,8 @@ predecessor obl obls pred
     return $ Just $ Queue.insert (Obligation pred 0 (oblDepth obl+1)) obls
 
 elimSpuriousTrans :: TR.TransitionRelation mdl
-                     => IORef (State (TR.Input mdl) (TR.State mdl)) -> Int
+                     => IORef (State (TR.Input mdl) (TR.State mdl) (TR.SearchInfo mdl))
+                     -> Int
                      -> IC3 mdl ()
 elimSpuriousTrans st level = do
   mdl <- asks ic3Model

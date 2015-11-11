@@ -30,7 +30,7 @@ import Prelude hiding (mapM,sequence)
 import Control.Monad.State (runStateT,get,put,lift)
 import Data.List (genericIndex)
 import Control.Monad (mplus)
-import Control.Exception
+import Control.Exception hiding (assert)
 import Control.Monad.Trans (liftIO)
 import Debug.Trace
 
@@ -724,6 +724,9 @@ instance TransitionRelation LispProgram where
   type RevState LispProgram = Map Integer (T.Text,LispRev)
   type PredicateExtractor LispProgram = RSMState (Set T.Text) (T.Text,[Integer])
   type RealizationProgress LispProgram = Map T.Text LispValue
+  type SearchInfo LispProgram = (Map T.Text (LispStruct LispUValue),
+                                 Map T.Text (LispStruct LispUValue),
+                                 Map T.Text (LispStruct LispUValue))
   createStateVars pre prog
     = sequence $ Map.mapWithKey
       (\name (tp,_) -> argVarsAnnNamed (pre++(T.unpack name)) tp
@@ -851,6 +854,25 @@ instance TransitionRelation LispProgram where
         getStruct (Singleton (Val e)) [] = case cast e of
           Just e' -> e'
         getStruct (Struct vals) (i:is) = getStruct (vals `genericIndex` i) is
+  getSearchInfo prog st inp real = do
+    sState <- sequence $ Map.intersectionWith (\val _ -> unliftArgs val getValue) st searchState
+    sInput <- sequence $ Map.intersectionWith (\val _ -> unliftArgs val getValue) inp searchInput
+    sGates <- sequence $ Map.intersectionWith (\val _ -> unliftArgs val getValue) real searchGates
+    return (sState,sInput,sGates)
+    where
+      searchState = Map.filter (\(_,ann) -> Map.member "search" ann
+                               ) (programState prog)
+      searchInput = Map.filter (\(_,ann) -> Map.member "search" ann
+                               ) (programInput prog)
+      searchGates = Map.filter (\(_,_,ann) -> Map.member "search" ann
+                               ) (programGates prog)
+  searchStrategy prog = Just search
+    where
+      eqS var val = assert $ argEq var (liftArgs val (extractArgAnnotation var))
+      search (sSt,sInp,sGts) st inp nxt gts = do
+        sequence_ $ Map.intersectionWith eqS st sSt
+        sequence_ $ Map.intersectionWith eqS inp sInp
+        sequence_ $ Map.intersectionWith eqS gts sGts
 
 while :: LispAction -> a -> a
 while act = mapException (LispException act)
