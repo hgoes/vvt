@@ -570,6 +570,9 @@ translateNonLinExpr prog extr (App fun args) = do
    SMTBuiltIn "exactly-one" _ -> case cast args' of
      Just args'' -> case cast (oneOf args'') of
        Just r -> return (r,extr')
+   SMTBuiltIn "at-most-one" _ -> case cast args' of
+     Just args'' -> case cast (atMostOneOf args'') of
+       Just r -> return (r,extr')
    _ -> return (App fun args',extr')
 translateNonLinExpr _ _ expr = error $ "Cannot translate non-linear expression "++show expr
 
