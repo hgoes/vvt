@@ -17,7 +17,6 @@ import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Backend hiding (setOption,getInfo,toBackend,checkSat,getValue)
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.LowLevel hiding (assert)
 
 import Args
 import SMTPool

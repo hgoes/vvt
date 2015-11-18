@@ -4,7 +4,6 @@ module Realization where
 import Args
 import PartialArgs
 
-import Language.SMTLib2.LowLevel
 import Control.Monad.State (MonadIO)
 import Data.Proxy
 import Data.Typeable

@@ -6,7 +6,6 @@ import Args
 import PartialArgs
 import RSM
 
-import Language.SMTLib2.LowLevel
 import Language.SMTLib2.Pipe hiding (Var)
 import Language.SMTLib2.Internals.Type.Nat
 import Language.SMTLib2.Internals.Type

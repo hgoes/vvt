@@ -6,7 +6,6 @@ module Realization.Lisp.Value where
 import Args
 import PartialArgs
 
-import Language.SMTLib2.LowLevel
 import Language.SMTLib2.Internals.TH
 import Language.SMTLib2.Internals.Type hiding (Constr,Field)
 import Language.SMTLib2.Internals.Type.Nat

@@ -1,7 +1,6 @@
 {-# LANGUAGE ExistentialQuantification,FlexibleContexts #-}
 module SMTPool where
 
-import Language.SMTLib2.LowLevel
 import Language.SMTLib2.Internals.Backend
 --import Language.SMTLib2.Connection
 

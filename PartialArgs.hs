@@ -3,7 +3,6 @@ module PartialArgs where
 
 import Args
 
-import Language.SMTLib2.LowLevel
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type hiding (Constr,Field)
 import qualified Language.SMTLib2.Internals.Backend as B
