@@ -2,7 +2,7 @@
 module SMTPool where
 
 import Language.SMTLib2.Internals.Backend
---import Language.SMTLib2.Connection
+import Language.SMTLib2.Internals.Monad
 
 import Data.Pool
 import Control.Exception
@@ -35,7 +35,7 @@ createSMTPool' createBackend (SMT info) (SMT act)
                    (vars,st2) <- (runStateT act st1) `onException`
                                  (exit b)
                    return $ SMTInstance st2 vars info')
-    (\(SMTInstance { instanceState = st }) -> exit (backend st))
+    (\(SMTInstance { instanceState = st }) -> exit (backend st) >> return ())
     1 5 10
 
 withSMTPool :: (Backend b,SMTMonad b ~ IO) => SMTPool info b a -> (a (Expr b) -> SMT b c) -> IO c

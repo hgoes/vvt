@@ -13,10 +13,12 @@ module Domain
        ,renderDomain
        )-} where
 
+import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
-import Language.SMTLib2.Internals.Backend hiding (setOption,getInfo,toBackend,checkSat,getValue)
+import Language.SMTLib2.Internals.Backend hiding (setOption,getInfo,toBackend,checkSat,getValue,declareVar,defineVar)
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Monad
 
 import Args
 import SMTPool
@@ -93,25 +95,20 @@ initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
               -> IO (Domain a)
 initialDomain verb backend ann alloc = do
   let initInst = do
-        top <- toBackend (Const (BoolValue True))
-        bot <- toBackend (Const (BoolValue False))
+        top <- [expr| true |]
+        bot <- [expr| false |]
         return DomainInstance { domainNodes = Map.fromList
                                                 [(domainTop,top)
                                                 ,(domainBot,bot)]
                                 , domainInstNext = 2
                                 , domainIsFresh = True }
       gArg = runIdentity $ alloc (\rev -> return rev)
-  supportsTimeouts <- do
-    back <- backend
-    withBackendExitCleanly back $ do
-      name <- getInfo SMTSolverName
-      return $ name=="Z3"
+  supportsTimeouts <- withBackendExitCleanly backend $ do
+    name <- getInfo SMTSolverName
+    return $ name=="Z3"
   pool <- createSMTPool' backend initInst $ do
     setOption (ProduceModels True)
-    alloc (\_ -> updateBackend $ \b -> do
-                   (v,b1) <- declareVar b Nothing
-                   B.toBackend b1 (Var v)
-          )
+    alloc (\_ -> declareVar)
   return $ Domain { domainGraph = mkGraph
                                   [(domainTop,(Predicate $ \f _ -> f (Const (BoolValue True)),
                                                DomainExpr (Const (BoolValue True)),Set.empty))
@@ -135,8 +132,8 @@ updateInstance :: Backend b => Domain a -> DomainInstance (Expr b) -> a (Expr b)
 updateInstance dom inst vars
   = foldlM (\cinst nd -> do
                let Just (Predicate prop,_,_) = lab (domainGraph dom) nd
-               cprop <- prop toBackend vars
-               cprop' <- updateBackend $ \b -> defineVar b (Just "pred") cprop
+               cprop <- prop (embedSMT . B.toBackend) vars
+               cprop' <- defineVar cprop
                return (cinst { domainNodes = Map.insert nd cprop (domainNodes cinst)
                              })
            ) (inst { domainInstNext = domainNextNode dom })
@@ -349,17 +346,17 @@ toDomainTerm :: Backend b
 toDomainTerm state dom vars = do
   conj <- mapM (\(nd,act) -> do
                   let Just (Predicate term,_,_) = lab (domainGraph dom) nd
-                  pr <- term toBackend vars
+                  pr <- term (embedSMT . B.toBackend) vars
                   if act
                     then return pr
                     else (do
-                      npr <- toBackend (App Not (Arg pr NoArg))
+                      npr <- [expr| (not pr) |]
                       return npr)
                ) (Vec.toList state)
   case conj of
-    [] -> toBackend (Const (BoolValue True))
+    [] -> [expr| true |]
     [x] -> return x
-    xs -> allEqFromList xs $ \arg -> toBackend (App (Logic And) arg)
+    xs -> [expr| (and # xs) |]
 {-
 toDomainTerms :: AbstractState a -> Domain a -> a -> Vector (Node,SMTExpr Bool,Bool)
 toDomainTerms state dom vars
@@ -371,12 +368,12 @@ toDomainTerms state dom vars
 domainHash :: Domain a -> Int
 domainHash dom = domainNextNode dom
 
-domainRelativize :: (forall v qv fun con field fv t.
+{-domainRelativize :: (forall v qv fun con field fv t.
                      Expression v qv fun con field fv e t
                      -> m (e t))
                  -> (forall t. GetType t => Var b t -> RevComp a t)
                  -> Expr b t
-                 -> a e -> m (e t)
+                 -> a e -> m (e t)-}
 
 {-
 renderDomainTerm :: AbstractState a -> Domain a -> IO String

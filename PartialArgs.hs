@@ -3,6 +3,9 @@ module PartialArgs where
 
 import Args
 
+import Language.SMTLib2
+import Language.SMTLib2.Internals.Monad
+import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type hiding (Constr,Field)
 import qualified Language.SMTLib2.Internals.Backend as B
@@ -14,34 +17,32 @@ import Data.Typeable
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
 
-type Lifting m e con = (forall v qv fun field fv t. GetType t
-                         => Expression v qv fun con field fv e t -> m (e t))
+type Lifting m e = (forall v qv fun con field fv t. GetType t
+                    => Expression v qv fun con field fv e t -> m (e t))
 
-defLifting :: (Backend b,Monad m) => (forall a. SMT b a -> m a)
-           -> Lifting m (B.Expr b) (B.Constr b)
+defLifting :: (B.Backend b,Monad m) => (forall a. SMT b a -> m a)
+           -> Lifting m (B.Expr b)
 defLifting lift e = do
-  e' <- mapExpr err err err return err err return e
-  lift $ updateBackend $ \b -> B.toBackend b e'
+  e' <- mapExpr err err err err err err return e
+  lift $ embedSMT (B.toBackend e')
   where
     err = error "PartialArgs.defLifting: Can't be used on expression with variables/functions/etc."
 
 class Composite a => LiftComp a where
-  type Unpacked a :: (([Type],*) -> *) -> *
-  liftComp :: Monad m => Lifting m e con
-           -> Unpacked a con
+  type Unpacked a
+  liftComp :: Embed m e
+           => Unpacked a
            -> m (a e)
-  unliftComp :: Monad m => (forall t. GetType t => e t -> m (Value con t))
-             -> Lifting m e con
+  unliftComp :: Embed m e => (forall t. GetType t => e t -> m (ConcreteValue t))
              -> a e
-             -> m (Unpacked a con)
+             -> m (Unpacked a)
 
 class LiftComp a => PartialComp a where
-  type Partial a :: (([Type],*) -> *) -> *
-  maskValue :: Proxy a -> Partial a con -> [Bool] -> (Partial a con,[Bool])
-  unmaskValue :: Proxy a -> Unpacked a con -> Partial a con
-  assignPartial :: Monad m => (forall t. GetType t => e t -> Value con t -> m p)
-                -> Lifting m e con
-                -> a e -> Partial a con -> m [Maybe p]
+  type Partial a
+  maskValue :: Proxy a -> Partial a -> [Bool] -> (Partial a,[Bool])
+  unmaskValue :: Proxy a -> Unpacked a -> Partial a
+  assignPartial :: Embed m e => (forall t. GetType t => e t -> ConcreteValue t -> m p)
+                -> a e -> Partial a -> m [Maybe p]
 
-data PValue con t = NoPValue
-                  | PValue (Value con t)
+data PValue t = NoPValue
+              | PValue (ConcreteValue t)

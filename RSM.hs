@@ -48,34 +48,38 @@ createCoeffs instrs = do
                   , coeffsConst = c
                   }
 
-notAllZero :: Backend b => Coeffs b var -> Expr b BoolType
-notAllZero coeffs = let args = [ [expr| (not (= c 0)) |] | c <- Map.elems (coeffsVar coeffs) ]
-                     in [expr| (or # args) |]
+notAllZero :: Backend b => Coeffs b var -> SMT b (Expr b BoolType)
+notAllZero coeffs = do
+  args <- sequence [ [expr| (not (= c 0)) |] | c <- Map.elems (coeffsVar coeffs) ]
+  [expr| (or # args) |]
 
-createLine :: (Backend b,Ord var) => Coeffs b var -> Map var Integer -> SMT (Expr b BoolType)
-createLine coeffs vars
-  = [expr| (= lhs rhs) |]
-  where
-    lhs = case Map.elems $ Map.intersectionWith (\c i -> let i' = constant (IntValueC i)
-                                                         in [expr| (* c i') |]
-                                                ) (coeffsVar coeffs) vars of
-          [x] -> x
-          xs -> [expr| (+ # xs) |]
-    rhs = coeffsConst coeffs
+createLine :: (Backend b,Ord var) => Coeffs b var -> Map var Integer -> SMT b (Expr b BoolType)
+createLine coeffs vars = do
+  lhs <- case Map.elems $ Map.intersectionWith (\c i -> do
+                                                   i' <- constant (IntValueC i)
+                                                   [expr| (* c i') |]
+                                               ) (coeffsVar coeffs) vars of
+         [x] -> x
+         xs -> do
+           rxs <- sequence xs
+           [expr| (+ # rxs) |]
+  let rhs = coeffsConst coeffs
+  [expr| (= lhs rhs) |]
 
 createLines :: (Backend b,Ord var) => Coeffs b var -> Set (Map var Integer)
                -> SMT b (Map (ClauseId b) (Map var Integer))
 createLines coeffs points = do
   res <- mapM (\point -> do
-                  cid <- assertId (createLine coeffs point)
+                  cid <- createLine coeffs point >>= assertId
                   return (cid,point)
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: (Backend b,Ord var) => Coeffs b var -> SMT b [(var -> Expr b IntType) -> Expr b BoolType]
+extractLine :: (Backend b,Ord var) => Coeffs b var
+            -> SMT b [(var -> Expr b IntType) -> Expr b BoolType]
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
-  let rcoeffs' = Map.mapMaybe (\c -> if c==0
+  let rcoeffs' = Map.mapMaybe (\c -> if c==IntValueC 0
                                      then Nothing
                                      else Just c
                               ) rcoeffs
@@ -118,8 +122,7 @@ mineStates backend st
       | Set.size cls <= 2 = return Nothing
       | Set.size cls > 6 = return $ Just (Set.empty,[])
     mineClass vars cls = do
-      b <- backend
-      res <- SMT.withBackendExitCleanly b $ do
+      res <- withBackendExitCleanly backend $ do
         setOption (ProduceUnsatCores True)
         setOption (ProduceModels True)
         coeffs <- createCoeffs vars

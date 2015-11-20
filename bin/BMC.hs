@@ -7,13 +7,13 @@ import System.IO
 import System.Console.GetOpt hiding (NoArg)
 import qualified System.Console.GetOpt as Opt
 import System.Environment
-import Language.SMTLib2.LowLevel
+import Language.SMTLib2
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Pipe (createPipe)
 import Language.SMTLib2.Z3
 import Language.SMTLib2.Internals.Expression
 import qualified Language.SMTLib2.Internals.Backend as B
---import Language.SMTLib2.DatatypeEmulator
+import Language.SMTLib2.Internals.Embed
 import Args
 import PartialArgs
 import Data.Map (Map)
@@ -61,26 +61,18 @@ main = do
     then putStrLn $ usageInfo "Usage:\n\n    vvt-bmc [OPTIONS]\n\nAvailable options:" optDescr
     else (do
              prog <- fmap parseProgram $ readLispFile stdin
-             pipe <- createPipe (solver opts) (solverArgs opts)
+             let pipe = createPipe (solver opts) (solverArgs opts)
              --let pipe = z3Solver
              let act :: forall b. (Backend b,MonadIO (B.SMTMonad b))
-                     => SMT b (Maybe [Unpacked (State LispProgram) (B.Constr b)])
+                     => SMT b (Maybe [Unpacked (State LispProgram)])
                  act = do
-                   st0 <- createComposite (\(LispRev (LispName name) _)
-                                           -> updateBackend $ \b -> do
-                                              (v,b1) <- B.declareVar b (Just $ T.unpack name)
-                                              B.toBackend b1 (Var v)
-                                          ) (programState prog)
-                   inp0 <- createComposite (\(LispRev (LispName name) _)
-                                            -> updateBackend $ \b -> do
-                                               (v,b1) <- B.declareVar b (Just $ T.unpack name)
-                                               B.toBackend b1 (Var v)
-                                           ) (programInput prog)
-                   init <- initialState (\e -> updateBackend $ \b -> B.toBackend b e) prog st0
-                   updateBackend' $ \b -> B.assert b init
+                   st0 <- createComposite (\_ -> declareVar) (programState prog)
+                   inp0 <- createComposite (\_ -> declareVar) (programInput prog)
+                   init <- initialState prog st0
+                   assert init
                    bmc prog (incremental opts) (bmcDepth opts) 0 st0 inp0 []
              res <- if debug opts
-                    then (withBackend (namedDebugBackend "bmc" $ pipe) act)
+                    then (withBackend (fmap (namedDebugBackend "bmc") pipe) act)
                     else (withBackend pipe act)
              case res of
               Nothing -> putStrLn "No bug found."
@@ -91,54 +83,40 @@ main = do
         => t -> Bool -> Integer -> Integer
         -> State t (B.Expr b) -> Input t (B.Expr b)
         -> [(State t (B.Expr b),B.Expr b BoolType)]
-        -> SMT b (Maybe [Unpacked (State t) (B.Constr b)])
+        -> SMT b (Maybe [Unpacked (State t)])
     bmc prog inc l n st inp sts
       | n>=l = do
           if inc
-            then do
-              cond <- toBackend $ App Not $ Arg (snd $ head sts) NoArg
-              updateBackend' $ \b -> B.assert b cond
-            else do
-              cond <- allEqFromList (fmap snd sts) $ \arg -> toBackend $ App (Logic Or) arg
-              cond' <- toBackend $ App Not (Arg cond NoArg)
-              updateBackend' $ \b -> B.assert b cond'
+            then let (_,cond):_ = sts
+                 in [expr| (not cond) |] >>= assert
+            else let conds = fmap snd sts
+                 in [expr| (not (or # conds)) |] >>= assert
           res <- checkSat
           case res of
             Sat -> fmap Just $
-                   mapM (\(st,_) -> unliftComp (\e -> updateBackend $ \b -> B.getValue b e)
-                                               (defLifting id) st
+                   mapM (\(st,_) -> unliftComp getValue st
                         ) sts
             Unsat -> return Nothing
     bmc prog inc l n st inp sts = do
-      invar <- stateInvariant (\e -> updateBackend $ \b -> B.toBackend b e) prog st inp
-      updateBackend' $ \b -> B.assert b invar
+      invar <- stateInvariant prog st inp
+      assert invar
       let gts0 = startingProgress prog
       (assumps,gts1) <- declareAssumptions
-                        (\e -> updateBackend $ \b -> B.toBackend b e)
-                        (\name e -> updateBackend $ \b -> do
-                           (v,b1) <- B.defineVar b name e
-                           B.toBackend b1 (Var v))
+                        (\name e -> [define| e |])
                         prog st inp gts0
-      mapM_ (\e -> updateBackend' $ \b -> B.assert b e) assumps
+      mapM_ assert assumps
       (asserts,gts2) <- declareAssertions
-                        (\e -> updateBackend $ \b -> B.toBackend b e)
-                        (\name e -> updateBackend $ \b -> do
-                           (v,b1) <- B.defineVar b name e
-                           B.toBackend b1 (Var v))
+                        (\name e -> [define| e |])
                         prog st inp gts1
       res <- if inc
              then stack $ do
                liftIO $ putStrLn $ "Level "++show n
-               negProp <- mapM (\e -> toBackend $ App Not (Arg e NoArg)) asserts
-                          >>= \lst -> allEqFromList lst $
-                                      \arg -> toBackend $ App (Logic Or) arg
-               updateBackend' $ \b -> B.assert b negProp
+               negProp <- [expr| (not (or # asserts)) |]
+               assert negProp
                r <- checkSat
                case r of
                  Sat -> do
-                          vals <- mapM (\st -> unliftComp (\e -> updateBackend $
-                                                                 \b -> B.getValue b e)
-                                               (defLifting id) st
+                          vals <- mapM (\st -> unliftComp getValue st
                                        ) (st:(fmap fst sts))
                           return $ Just vals
                  Unsat -> return Nothing
@@ -147,15 +125,10 @@ main = do
        Just bug -> return $ Just bug
        Nothing -> do
          (nxt,gts3) <- declareNextState
-                       (\e -> updateBackend $ \b -> B.toBackend b e)
-                       (\name e -> updateBackend $ \b -> do
-                          (v,b1) <- B.defineVar b name e
-                          B.toBackend b1 (Var v))
+                       (\name e -> [define| e |])
                        prog st inp gts2
          ninp <- createComposite (\_ --(LispRev (LispName name) _)
-                                  -> updateBackend $ \b -> do
-                                       (v,b1) <- B.declareVar b Nothing --(Just $ T.unpack name)
-                                       B.toBackend b1 (Var v)
+                                  -> declareVar
                                  ) (inputAnnotation prog)
-         conjAss <- allEqFromList asserts $ \arg -> toBackend $ App (Logic And) arg
+         conjAss <- [expr| (and # asserts) |]
          bmc prog inc l (n+1) nxt ninp ((st,conjAss):sts)

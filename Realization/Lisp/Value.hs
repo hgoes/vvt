@@ -9,6 +9,8 @@ import PartialArgs
 import Language.SMTLib2.Internals.TH
 import Language.SMTLib2.Internals.Type hiding (Constr,Field)
 import Language.SMTLib2.Internals.Type.Nat
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Expression
 
 import Data.List (genericIndex,genericLength,genericReplicate)
 import Data.Foldable
@@ -101,17 +103,17 @@ data LispValue (sig :: (Nat,Struct Type)) (e::Type -> *)
   = LispValue { size :: !(Size e (Fst sig))
               , value :: !(LispStruct (LispVal e (Fst sig)) (Snd sig)) }
 
-data LispUVal (sig :: (Nat,Struct Type)) con where
-  LispU :: GetStructType tps => !(LispStruct (Value con) tps) -> LispUVal '(Z,tps) con
-  LispUArray :: KnownNat n => !([LispUVal '(n,tps) con]) -> LispUVal '(S n,tps) con
+data LispUVal (sig :: (Nat,Struct Type)) where
+  LispU :: GetStructType tps => !(LispStruct ConcreteValue tps) -> LispUVal '(Z,tps)
+  LispUArray :: KnownNat n => !([LispUVal '(n,tps)]) -> LispUVal '(S n,tps)
 
-instance GShow con => Show (LispUVal sig con) where
+instance Show (LispUVal sig) where
   showsPrec p (LispU x) = showsPrec p x
   showsPrec p (LispUArray arr) = showListWith (showsPrec 0) arr
 
-data LispPVal (sig :: (Nat,Struct Type)) con where
-  LispP :: GetStructType tps => !(LispStruct (PValue con) tps) -> LispPVal '(Z,tps) con
-  LispPArray :: KnownNat n => !([LispPVal '(n,tps) con]) -> LispPVal '(S n,tps) con
+data LispPVal (sig :: (Nat,Struct Type)) where
+  LispP :: GetStructType tps => !(LispStruct PValue tps) -> LispPVal '(Z,tps)
+  LispPArray :: KnownNat n => !([LispPVal '(n,tps)]) -> LispPVal '(S n,tps)
 
 data LispVal e lvl tp where
   Val :: GetType (LispType n tp) => !(e (LispType n tp)) -> LispVal e n tp
@@ -124,7 +126,7 @@ data LispArrayIndex e (lvl::Nat) (rlvl::Nat) (tp::Type) where
          -> LispArrayIndex e (S lvl) n tp
 
 data LispIndex (tp :: Struct Type) (res :: Type) where
-  ValGet :: LispIndex (Singleton tp) tp
+  ValGet :: GetType tp => LispIndex (Singleton tp) tp
   ValIdx :: (KnownNat n,IndexableStruct tps n)
          => !(Proxy n)
          -> !(LispIndex (Idx tps n) res)
@@ -141,11 +143,13 @@ instance GShow e => Show (LispVal e lvl tp) where
 instance GShow e => GShow (LispVal e lvl) where
   gshowsPrec = showsPrec
 
-getIndex :: (Embed e,GetType tp) => LispArrayIndex e lvl rlvl tp
+getIndex :: (Embed m e,GetType tp) => LispArrayIndex e lvl rlvl tp
          -> LispVal e lvl tp
-         -> LispVal e rlvl tp
-getIndex ArrGet (Val val) = Val val
-getIndex (ArrIdx i is) (Val val) = getIndex is (Val [expr| (select val i) |])
+         -> m (LispVal e rlvl tp)
+getIndex ArrGet (Val val) = return (Val val)
+getIndex (ArrIdx i is) (Val val) = do
+  e <- [expr| (select val i) |]
+  getIndex is (Val e)
 
 accessVal :: Monad m
           => LispIndex tp res
@@ -159,20 +163,17 @@ accessVal (ValIdx pr is) (LStruct tps) f = do
   (res,ntps) <- accessStruct tps pr (\tp -> accessVal is tp f)
   return (res,LStruct ntps)
 
-accessArray :: (Monad m)
-            => (forall t'. GetType t'
-                => Expression v qv fun con field fv e t'
-                -> m (e t'))
-            -> LispArrayIndex e lvl rlvl tp
+accessArray :: (Embed m e)
+            => LispArrayIndex e lvl rlvl tp
             -> LispVal e lvl tp
             -> (LispVal e rlvl tp -> m (a,LispVal e rlvl tp))
             -> m (a,LispVal e lvl tp)
-accessArray l ArrGet el f = f el
-accessArray l (ArrIdx i is) (Val arr) f = do
-  el <- l $ App Select $ Arg arr $ Arg i NoArg
-  (res,nel) <- accessArray l is (Val el) f
+accessArray ArrGet el f = f el
+accessArray (ArrIdx i is) (Val arr) f = do
+  el <- [expr| (select arr i) |]
+  (res,nel) <- accessArray is (Val el) f
   narr <- case nel of
-    Val el' -> l $ App Store $ Arg arr $ Arg el' $ Arg i NoArg
+    Val el' -> [expr| (store arr el' i) |]
   return (res,Val narr)
 
 instance GEq e => GEq (LispStruct e) where
@@ -221,6 +222,66 @@ data RevValue sig t where
   RevSize :: KnownNat rlvl
           => Proxy rlvl
           -> RevValue '(S lvl,tps) (LispType rlvl IntType)
+
+instance GEq (LispIndex tps) where
+  geq (ValGet::LispIndex tps1 t1) (ValGet::LispIndex tps2 t2)
+    = case eqT :: Maybe (t1 :~: t2) of
+    Just Refl -> Just Refl
+    Nothing -> Nothing
+  geq (ValIdx (_::Proxy p1) i1) (ValIdx (_::Proxy p2) i2)
+    = case eqT :: Maybe (p1 :~: p2) of
+    Just Refl -> case geq i1 i2 of
+      Just Refl -> Just Refl
+      Nothing -> Nothing
+    Nothing -> Nothing
+  geq _ _ = Nothing
+
+-- Don't inline compareLispIndex here or the instance becomes incoherent (Don't ask me...)
+instance GCompare (LispIndex tps) where
+  gcompare = compareLispIndex
+
+compareLispIndex :: LispIndex tps t1 -> LispIndex tps t2 -> GOrdering t1 t2
+compareLispIndex (ValGet::LispIndex tps1 t1) (ValGet::LispIndex tps2 t2)
+  = case eqT :: Maybe (t1 :~: t2) of
+    Just Refl -> GEQ
+    Nothing -> case compare (typeRep (Proxy::Proxy t1)) (typeRep (Proxy::Proxy t2)) of
+      LT -> GLT
+      GT -> GGT
+compareLispIndex ValGet _ = GLT
+compareLispIndex _ ValGet = GGT
+compareLispIndex (ValIdx (p1::Proxy n1) i1) (ValIdx (p2::Proxy n2) i2)
+  = case eqT :: Maybe (n1 :~: n2) of
+  Just Refl -> case compareLispIndex i1 i2 of
+    GEQ -> GEQ
+    GLT -> GLT
+    GGT -> GGT
+  Nothing -> case compare (typeRep p1) (typeRep p2) of
+    LT -> GLT
+    GT -> GGT
+
+instance GEq (RevValue sig) where
+  geq (RevVar i1) (RevVar i2) = case geq i1 i2 of
+    Just Refl -> Just Refl
+    Nothing -> Nothing
+  geq (RevSize (_::Proxy lvl1)) (RevSize (_::Proxy lvl2))
+    = case eqT :: Maybe (lvl1 :~: lvl2) of
+    Just Refl -> Just Refl
+    Nothing -> Nothing
+  geq _ _ = Nothing
+
+instance GCompare (RevValue sig) where
+  gcompare (RevVar i1) (RevVar i2) = case gcompare i1 i2 of
+    GEQ -> GEQ
+    GLT -> GLT
+    GGT -> GGT
+  gcompare (RevVar _) _ = GLT
+  gcompare _ (RevVar _) = GGT
+  gcompare (RevSize (p1::Proxy lvl1)) (RevSize (p2::Proxy lvl2))
+    = case eqT :: Maybe (lvl1 :~: lvl2) of
+    Just Refl -> GEQ
+    Nothing -> case compare (typeRep p1) (typeRep p2) of
+      LT -> GLT
+      GT -> GGT
 
 instance (KnownNat lvl,GetStructType tps) => Composite (LispValue '(lvl,tps)) where
   type CompDescr (LispValue '(lvl,tps)) = ()
@@ -281,20 +342,20 @@ instance (KnownNat lvl,GetStructType tps) => Composite (LispValue '(lvl,tps)) wh
 
 instance (KnownNat lvl,GetStructType tps) => LiftComp (LispValue '(lvl,tps)) where
   type Unpacked (LispValue '(lvl,tps)) = LispUVal '(lvl,tps)
-  liftComp f (LispU str) = do
-    str' <- liftStruct f str
+  liftComp (LispU str) = do
+    str' <- liftStruct str
     return $ LispValue { size = NoSize
                        , value = str' }
-  liftComp f (LispUArray xs) = do
-    xs' <- mapM (liftComp f) xs
-    liftValues f xs'
-  unliftComp f g (val :: LispValue '(lvl,tp) e) = case natPred (Proxy::Proxy lvl) of
+  liftComp (LispUArray xs) = do
+    xs' <- mapM liftComp xs
+    liftValues xs'
+  unliftComp f (val :: LispValue '(lvl,tp) e) = case natPred (Proxy::Proxy lvl) of
     NoPred -> do
       str <- extractStruct f (value val)
       return $ LispU str
     Pred _ -> do
-      vals <- unliftValue f g val
-      vals' <- mapM (unliftComp f g) vals
+      vals <- unliftValue f val
+      vals' <- mapM (unliftComp f) vals
       return $ LispUArray vals'
 
 instance (KnownNat lvl,GetStructType tps) => PartialComp (LispValue '(lvl,tps)) where
@@ -302,14 +363,14 @@ instance (KnownNat lvl,GetStructType tps) => PartialComp (LispValue '(lvl,tps)) 
   maskValue _ (LispP str) xs = let (str',xs') = maskStruct str xs
                                in (LispP str',xs')
     where
-      maskStruct :: LispStruct (PValue con) tps' -> [Bool] -> (LispStruct (PValue con) tps',[Bool])
+      maskStruct :: LispStruct PValue tps' -> [Bool] -> (LispStruct PValue tps',[Bool])
       maskStruct (LSingleton NoPValue) (_:xs) = (LSingleton NoPValue,xs)
       maskStruct (LSingleton (PValue _)) (False:xs) = (LSingleton NoPValue,xs)
       maskStruct (LSingleton (PValue v)) (True:xs) = (LSingleton (PValue v),xs)
       maskStruct (LStruct str) xs = let (str',xs') = maskStructs str xs
                                     in (LStruct str',xs')
-      maskStructs :: StructArgs (PValue con) tps' -> [Bool]
-                  -> (StructArgs (PValue con) tps',[Bool])
+      maskStructs :: StructArgs PValue tps' -> [Bool]
+                  -> (StructArgs PValue tps',[Bool])
       maskStructs NoSArg xs = (NoSArg,xs)
       maskStructs (SArg y ys) xs = let (y',xs1) = maskStruct y xs
                                        (ys',xs2) = maskStructs ys xs1
@@ -324,11 +385,11 @@ instance (KnownNat lvl,GetStructType tps) => PartialComp (LispValue '(lvl,tps)) 
   unmaskValue pr (LispUArray xs) = case pr of
     (_::Proxy (LispValue '(S lvl',tp)))
       -> LispPArray (fmap (unmaskValue (Proxy::Proxy (LispValue '(lvl',tp)))) xs)
-  assignPartial f g val (LispP str) = assignStruct f (value val) str
+  assignPartial f val (LispP str) = assignStruct f (value val) str
     where
-      assignStruct :: Monad m => (forall t. GetType t => e t -> Value con t -> m p)
+      assignStruct :: Embed m e => (forall t. GetType t => e t -> ConcreteValue t -> m p)
                    -> LispStruct (LispVal e Z) tps'
-                   -> LispStruct (PValue con) tps'
+                   -> LispStruct PValue tps'
                    -> m [Maybe p]
       assignStruct f (LSingleton (Val x)) (LSingleton (PValue val)) = do
         r <- f x val
@@ -336,100 +397,94 @@ instance (KnownNat lvl,GetStructType tps) => PartialComp (LispValue '(lvl,tps)) 
       assignStruct _ _ (LSingleton NoPValue) = return [Nothing]
       assignStruct f (LStruct xs) (LStruct ys) = assignStructs f xs ys
 
-      assignStructs :: Monad m => (forall t. GetType t => e t -> Value con t -> m p)
+      assignStructs :: Embed m e => (forall t. GetType t => e t -> ConcreteValue t -> m p)
                     -> StructArgs (LispVal e Z) tps'
-                    -> StructArgs (PValue con) tps'
+                    -> StructArgs PValue tps'
                     -> m [Maybe p]
       assignStructs _ NoSArg NoSArg = return []
       assignStructs f (SArg x xs) (SArg y ys) = do
         r1 <- assignStruct f x y
         r2 <- assignStructs f xs ys
         return $ r1++r2
-  assignPartial f g val (LispPArray xs) = do
+  assignPartial f val (LispPArray xs) = do
     lst <- mapM (\(x,n) -> do
-                   (asgnSize,nval) <- indexValue f g n val
-                   rest <- assignPartial f g nval x
+                   (asgnSize,nval) <- indexValue f n val
+                   rest <- assignPartial f nval x
                    return (Just asgnSize:rest)
                 ) (zip xs [0..])
     return $ concat lst
 
-indexValue :: Monad m => (forall t. GetType t => e t -> Value con t -> m p)
-           -> Lifting m e con
+indexValue :: Embed m e => (forall t. GetType t => e t -> ConcreteValue t -> m p)
            -> Integer
            -> LispValue '(S lvl,tps) e
            -> m (p,LispValue '(lvl,tps) e)
-indexValue f g x val = do
-  let idx = IntValue x
-  (res,sz) <- indexSize f g idx (size val)
-  nval <- indexValue' f g idx (value val)
+indexValue f x val = do
+  let idx = IntValueC x
+  (res,sz) <- indexSize f idx (size val)
+  nval <- indexValue' f idx (value val)
   return (res,LispValue sz nval)
   where
-    indexSize :: Monad m => (forall t. GetType t => e t -> Value con t -> m p)
-              -> Lifting m e con
-              -> Value con IntType -> Size e (S lvl)
+    indexSize :: Embed m e => (forall t. GetType t => e t -> ConcreteValue t -> m p)
+              -> ConcreteValue IntType -> Size e (S lvl)
               -> m (p,Size e lvl)
-    indexSize f g n (Size x NoSize) = do
+    indexSize f n (Size x NoSize) = do
       res <- f x n
       return (res,NoSize)
-    indexSize f g n (Size x xs@(Size _ _)) = do
-      (res,xs') <- indexSize f g n xs
-      n' <- g $ Const n
-      x' <- g $ App Select $ Arg x $ Arg n' NoArg
+    indexSize f n (Size x xs@(Size _ _)) = do
+      (res,xs') <- indexSize f n xs
+      n' <- embedConst n
+      x' <- [expr| (select x n') |]
       return (res,Size x' xs')
 
-    indexValue' :: Monad m => (forall t. GetType t => e t -> Value con t -> m p)
-                -> Lifting m e con
-                -> Value con IntType
+    indexValue' :: Embed m e => (forall t. GetType t => e t -> ConcreteValue t -> m p)
+                -> ConcreteValue IntType
                 -> LispStruct (LispVal e (S lvl)) tps
                 -> m (LispStruct (LispVal e lvl) tps)
-    indexValue' f g n = mapLispStructM
-                        (\_ ((Val x)::LispVal e (S lvl) tp)
-                         -> case deriveLispTypeCtx' (Proxy::Proxy lvl)
-                                                    (Proxy::Proxy tp) of
-                               Dict -> do
-                                 n' <- g $ Const n
-                                 x' <- g $ App Select $ Arg x $ Arg n' NoArg
-                                 return $ Val x')
+    indexValue' f n = mapLispStructM
+                      (\_ ((Val x)::LispVal e (S lvl) tp)
+                       -> case deriveLispTypeCtx' (Proxy::Proxy lvl)
+                                                  (Proxy::Proxy tp) of
+                          Dict -> do
+                            n' <- embedConst n
+                            x' <- [expr| (select x n') |]
+                            return $ Val x')
 
-extractStruct :: Monad m => (forall t. GetType t => e t -> m (Value con t))
+extractStruct :: Monad m => (forall t. GetType t => e t -> m (ConcreteValue t))
               -> LispStruct (LispVal e Z) tps
-              -> m (LispStruct (Value con) tps)
+              -> m (LispStruct ConcreteValue tps)
 extractStruct f = mapLispStructM (\_ (Val x) -> f x)
 
-unliftValue :: Monad m => (forall t. GetType t => e t -> m (Value con t))
-            -> Lifting m e con
+unliftValue :: Embed m e => (forall t. GetType t => e t -> m (ConcreteValue t))
             -> LispValue '(S lvl,tps) e
             -> m [LispValue '(lvl,tps) e]
-unliftValue f g val = do
-  szs <- unliftSize f g (size val)
-  vals <- unliftStruct f g szs (value val)
+unliftValue f val = do
+  szs <- unliftSize f (size val)
+  vals <- unliftStruct f szs (value val)
   return $ zipWith LispValue szs vals
 
-unliftStruct :: Monad m => (forall t. GetType t => e t -> m (Value con t))
-             -> Lifting m e con
+unliftStruct :: Embed m e => (forall t. GetType t => e t -> m (ConcreteValue t))
              -> [Size e lvl]
              -> LispStruct (LispVal e (S lvl)) tps
              -> m [LispStruct (LispVal e lvl) tps]
-unliftStruct f g szs (LSingleton (Val x :: LispVal e (S lvl) tp))
+unliftStruct f szs (LSingleton (Val x :: LispVal e (S lvl) tp))
   = case deriveLispTypeCtx' (Proxy::Proxy lvl) (Proxy::Proxy tp) of
       Dict -> mapM (\(idx,sz) -> do
-                       idx' <- g $ Const $ IntValue idx
-                       el <- g $ App Select (Arg x (Arg idx' NoArg))
+                       idx' <- embedConst $ IntValueC idx
+                       el <- [expr| (select x idx') |]
                        return $ LSingleton (Val el)
                    ) (zip [0..] szs)
-unliftStruct f g szs (LStruct vals) = do
-  vals' <- unliftStructs f g szs vals
+unliftStruct f szs (LStruct vals) = do
+  vals' <- unliftStructs f szs vals
   return $ fmap LStruct vals'
 
-unliftStructs :: Monad m => (forall t. GetType t => e t -> m (Value con t))
-              -> Lifting m e con
+unliftStructs :: Embed m e => (forall t. GetType t => e t -> m (ConcreteValue t))
               -> [Size e lvl]
               -> StructArgs (LispVal e (S lvl)) tps
               -> m [StructArgs (LispVal e lvl) tps]
-unliftStructs f g szs NoSArg = return $ fmap (const NoSArg) szs
-unliftStructs f g szs (SArg x xs) = do
-  x' <- unliftStruct f g szs x
-  xs' <- unliftStructs f g szs xs
+unliftStructs f szs NoSArg = return $ fmap (const NoSArg) szs
+unliftStructs f szs (SArg x xs) = do
+  x' <- unliftStruct f szs x
+  xs' <- unliftStructs f szs xs
   return $ zipWith SArg x' xs'
 
 deriveLispTypeCtx' :: GetType (LispType (S lvl) t) => Proxy lvl -> Proxy t
@@ -438,72 +493,71 @@ deriveLispTypeCtx' (_::Proxy lvl) (_::Proxy t)
   = case getType :: Repr (LispType (S lvl) t) of
       ArrayRepr (Arg IntRepr NoArg) repr -> Dict
 
-unliftSize :: Monad m => (forall t. GetType t => e t -> m (Value con t))
-           -> Lifting m e con
+unliftSize :: Embed m e => (forall t. GetType t => e t -> m (ConcreteValue t))
            -> Size e (S lvl) -> m [Size e lvl]
-unliftSize f g (Size x NoSize) = do
-  IntValue val <- f x
+unliftSize f (Size x NoSize) = do
+  IntValueC val <- f x
   return $ genericReplicate val NoSize
-unliftSize f g (Size x xs@(Size _ _)) = do
-  xs' <- unliftSize f g xs
+unliftSize f (Size x xs@(Size _ _)) = do
+  xs' <- unliftSize f xs
   mapM (\(idx,sz) -> do
-           idx' <- g $ Const $ IntValue idx
-           el <- g $ App Select $ Arg x $ Arg idx' NoArg
+           idx' <- embedConst $ IntValueC idx
+           el <- [expr| (select x idx') |]
            return (Size el sz)
        ) (zip [0..] xs')
 
-liftValues :: Monad m => Lifting m e con -> [LispValue '(lvl,tp) e]
+liftValues :: Embed m e => [LispValue '(lvl,tp) e]
            -> m (LispValue '(S lvl,tp) e)
-liftValues f xs = do
-  sz <- liftSizes f (fmap size xs)
-  val <- liftStructs f (fmap value xs)
+liftValues xs = do
+  sz <- liftSizes (fmap size xs)
+  val <- liftStructs (fmap value xs)
   return $ LispValue sz val
 
-liftSizes :: Monad m => Lifting m e con -> [Size e lvl] -> m (Size e (S lvl))
-liftSizes f xs = liftSizes' f (genericLength xs) xs
+liftSizes :: Embed m e => [Size e lvl] -> m (Size e (S lvl))
+liftSizes xs = liftSizes' (genericLength xs) xs
 
-liftSizes' :: Monad m => Lifting m e con -> Integer -> [Size e lvl] -> m (Size e (S lvl))
-liftSizes' f len xs@(x:_) = case x of
+liftSizes' :: Embed m e => Integer -> [Size e lvl] -> m (Size e (S lvl))
+liftSizes' len xs@(x:_) = case x of
   NoSize -> do
-    sz <- f $ Const $ IntValue len
+    sz <- embedConst (IntValueC len)
     return $ Size sz NoSize
   Size _ (_::Size e lvl') -> do
-    sz <- liftSizeArr f (Proxy::Proxy lvl') (fmap (\(Size x _) -> x) xs)
-    szs <- liftSizes' f len (fmap (\(Size _ r) -> r) xs)
+    sz <- liftSizeArr (Proxy::Proxy lvl') (fmap (\(Size x _) -> x) xs)
+    szs <- liftSizes' len (fmap (\(Size _ r) -> r) xs)
     return $ Size sz szs
   where
-    liftSizeArr :: (Monad m,KnownNat n,GetType (LispType n IntType))
-                => Lifting m e con -> Proxy n
+    liftSizeArr :: (Embed m e,KnownNat n,GetType (LispType n IntType))
+                => Proxy n
                 -> [e (LispType n IntType)]
                 -> m (e (LispType (S n) IntType))
-    liftSizeArr f lvl lst = do
-      c <- f (Const $ IntValue 0)
-      arr <- leveledConst f lvl c
-      listArray f arr lst
+    liftSizeArr lvl lst = do
+      c <- embedConst (IntValueC 0)
+      arr <- leveledConst lvl c
+      listArray arr lst
 
-liftStruct :: Monad m => Lifting m e con
-           -> LispStruct (Value con) tps
+liftStruct :: Embed m e
+           => LispStruct ConcreteValue tps
            -> m (LispStruct (LispVal e Z) tps)
-liftStruct f = mapLispStructM (const $ fmap Val . f . Const)
+liftStruct = mapLispStructM (const $ fmap Val . embedConst)
 
-liftStructs :: Monad m => Lifting m e con
-            -> [LispStruct (LispVal e lvl) tp]
+liftStructs :: Embed m e
+            => [LispStruct (LispVal e lvl) tp]
             -> m (LispStruct (LispVal e (S lvl)) tp)
-liftStructs f xs@(x:_) = case x of
-  LSingleton _ -> fmap LSingleton $ liftVal f (fmap (\(LSingleton x) -> x) xs)
-  LStruct _ -> fmap LStruct (liftStructs' f (fmap (\(LStruct x) -> x) xs))
+liftStructs xs@(x:_) = case x of
+  LSingleton _ -> fmap LSingleton $ liftVal (fmap (\(LSingleton x) -> x) xs)
+  LStruct _ -> fmap LStruct (liftStructs' (fmap (\(LStruct x) -> x) xs))
   where
-    liftStructs' :: Monad m => Lifting m e con
-                 -> [StructArgs (LispVal e lvl) tp]
+    liftStructs' :: Embed m e
+                 => [StructArgs (LispVal e lvl) tp]
                  -> m (StructArgs (LispVal e (S lvl)) tp)
-    liftStructs' f (NoSArg:_) = return NoSArg
-    liftStructs' f xs@(SArg _ _:_) = do
-      y <- liftStructs f $ fmap (\(SArg x _) -> x) xs
-      ys <- liftStructs' f $ fmap (\(SArg _ x) -> x) xs
+    liftStructs' (NoSArg:_) = return NoSArg
+    liftStructs' xs@(SArg _ _:_) = do
+      y <- liftStructs $ fmap (\(SArg x _) -> x) xs
+      ys <- liftStructs' $ fmap (\(SArg _ x) -> x) xs
       return $ SArg y ys
 
-liftVal :: Monad m => Lifting m e con -> [LispVal e lvl tp] -> m (LispVal e (S lvl) tp)
-liftVal f xs@(Val _:_) = fmap Val $ listArray' f (fmap (\(Val x) -> x) xs)
+liftVal :: Embed m e => [LispVal e lvl tp] -> m (LispVal e (S lvl) tp)
+liftVal xs@(Val _:_) = fmap Val $ listArray' (fmap (\(Val x) -> x) xs)
 
 deriveLispTypeCtx :: (KnownNat lvl,GetType tp) => Proxy lvl -> Proxy tp
                   -> Dict (GetType (LispType lvl tp))
@@ -512,37 +566,34 @@ deriveLispTypeCtx pr repr = case natPred pr of
   Pred n -> case deriveLispTypeCtx n repr of
     Dict -> Dict
 
-leveledConst :: (Monad m,KnownNat lvl,GetType t)
-             => Lifting m e con -> Proxy lvl -> e t -> m (e (LispType lvl t))
-leveledConst f lvl (c::e t) = case natPred lvl of
+leveledConst :: (Embed m e,KnownNat lvl,GetType t)
+             => Proxy lvl -> e t -> m (e (LispType lvl t))
+leveledConst lvl (c::e t) = case natPred lvl of
   NoPred -> return c
   Pred lvl' -> case deriveLispTypeCtx lvl' (Proxy::Proxy t) of
     Dict -> do
-      x <- leveledConst f lvl' c
-      f $ App ConstArray (Arg x NoArg)
+      x <- leveledConst lvl' c
+      embed $ App ConstArray (Arg x NoArg)
 
-listArray' :: (Monad m,GetType t) => Lifting m e con -> [e t] -> m (e (ArrayType '[IntType] t))
-listArray' f (xs::[e t]) = do
-  c <- f (Const $ defaultValue (Proxy::Proxy t))
-  listArray f c xs
+listArray' :: (Embed m e,GetType t) => [e t] -> m (e (ArrayType '[IntType] t))
+listArray' (xs::[e t]) = do
+  c <- embedConst $ defaultValue (Proxy::Proxy t)
+  listArray c xs
   where
-    defaultValue :: GetType t => Proxy t -> Value con t
+    defaultValue :: GetType t => Proxy t -> ConcreteValue t
     defaultValue (_::Proxy t) = case getType :: Repr t of
-      BoolRepr -> BoolValue False
-      IntRepr -> IntValue 0
-      RealRepr -> RealValue 0
-      BitVecRepr _ -> BitVecValue 0
+      BoolRepr -> BoolValueC False
+      IntRepr -> IntValueC 0
+      RealRepr -> RealValueC 0
+      BitVecRepr _ -> BitVecValueC 0
 
-listArray :: (Monad m,GetType t) => Lifting m e con -> e t -> [e t]
+listArray :: (Embed m e,GetType t) => e t -> [e t]
           -> m (e (ArrayType '[IntType] t))
-listArray f def els = do
-  arr <- f $ App ConstArray (Arg def NoArg)
+listArray def els = do
+  arr <- embed $ App ConstArray (Arg def NoArg)
   (arr',_) <- foldlM (\(arr,n) x -> do
-                         i <- f $ Const $ IntValue n
-                         arr' <- f $ App Store (Arg arr $
-                                                Arg x $
-                                                Arg i
-                                                NoArg)
+                         i <- embedConst (IntValueC n)
+                         arr' <- [expr| (store arr x i) |]
                          return (arr',n+1)
                      ) (arr,0) els
   return arr'

@@ -4,6 +4,11 @@ module Realization where
 import Args
 import PartialArgs
 
+import Language.SMTLib2
+import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Embed
+
 import Control.Monad.State (MonadIO)
 import Data.Proxy
 import Data.Typeable
@@ -16,44 +21,29 @@ class (PartialComp (State t),PartialComp (Input t))
   type RealizationProgress t :: (Type -> *) -> *
   stateAnnotation :: t -> CompDescr (State t)
   inputAnnotation :: t -> CompDescr (Input t)
-  initialState :: (Monad m,Typeable con)
-               => (forall t. GetType t
-                   => Expression v qv fun con field fv e t
-                   -> m (e t))
-               -> t
+  initialState :: (Embed m e,Typeable (EmConstr m e))
+               => t
                -> State t e
                -> m (e BoolType)
-  stateInvariant :: (Monad m,Typeable con)
-                 => (forall t. GetType t
-                     => Expression v qv fun con field fv e t
-                     -> m (e t))
-                 ->t -> State t e -> Input t e
+  stateInvariant :: (Embed m e,Typeable (EmConstr m e))
+                 => t -> State t e -> Input t e
                  -> m (e BoolType)
-  declareNextState :: (Monad m,Typeable con)
+  declareNextState :: (Embed m e,Typeable (EmConstr m e))
                    => (forall t. GetType t
-                       => Expression v qv fun con field fv e t
-                       -> m (e t))
-                   -> (forall t. GetType t
                        => Maybe String -> e t -> m (e t))
                    -> t
                    -> State t e -> Input t e
                    -> RealizationProgress t e
                    -> m (State t e,RealizationProgress t e)
-  declareAssumptions :: (Monad m,Typeable con)
+  declareAssumptions :: (Embed m e,Typeable (EmConstr m e))
                      => (forall t. GetType t
-                         => Expression v qv fun con field fv e t
-                         -> m (e t))
-                     -> (forall t. GetType t
                          => Maybe String -> e t -> m (e t))
                      -> t
                      -> State t e -> Input t e
                      -> RealizationProgress t e
                      -> m ([e BoolType],RealizationProgress t e)
-  declareAssertions :: (Monad m,Typeable con)
+  declareAssertions :: (Embed m e,Typeable (EmConstr m e))
                     => (forall t. GetType t
-                        => Expression v qv fun con field fv e t
-                        -> m (e t))
-                    -> (forall t. GetType t
                         => Maybe String -> e t -> m (e t))
                     -> t
                     -> State t e -> Input t e
