@@ -15,10 +15,10 @@ module Domain
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
-import Language.SMTLib2.Internals.Backend hiding (setOption,getInfo,toBackend,checkSat,getValue,declareVar,defineVar)
-import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Monad
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Backend (SMTMonad)
 
 import Args
 import SMTPool
@@ -38,28 +38,13 @@ import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 import Data.Typeable
 import Data.GADT.Compare
+import Data.GADT.Show
+import Data.Dependent.Map (DMap)
+import qualified Data.Dependent.Map as DMap
 
 -- Test Modules
 --import Language.SMTLib2.Pipe
 import "mtl" Control.Monad.Trans (liftIO)
-
-newtype Predicate a
-  = Predicate (forall m e v qv fun con field fv. Monad m
-               => (forall t. GetType t
-                   => Expression v qv fun con field fv e t
-                   -> m (e t)) -> a e -> m (e BoolType))
-
-newtype DomainExpr a t
-  = DomainExpr (Expression (RevComp a) NoVar NoFun NoCon NoField NoVar (DomainExpr a) t)
-
-instance Composite a => GEq (DomainExpr a) where
-  geq (DomainExpr x) (DomainExpr y) = geq x y
-instance Composite a => GCompare (DomainExpr a) where
-  gcompare (DomainExpr x) (DomainExpr y) = gcompare x y
-instance Composite a => Eq (DomainExpr a t) where
-  (==) = defaultEq
-instance Composite a => Ord (DomainExpr a t) where
-  compare = defaultCompare
 
 data DomainVar a = forall t. GetType t => DomainVar (RevComp a t)
 
@@ -67,8 +52,9 @@ data DomainVar a = forall t. GetType t => DomainVar (RevComp a t)
 --   An edge from A to B signifies that A includes B
 data Domain a = forall b. (Backend b,SMTMonad b ~ IO)
                 => Domain { domainGArg :: a (RevComp a)
-                          , domainGraph :: Gr (Predicate a,DomainExpr a BoolType,Set (DomainVar a)) ()
-                          , domainNodesRev :: Map (DomainExpr a BoolType) Node
+                          , domainGraph :: Gr (CompositeExpr a BoolType,
+                                               DMap (RevComp a) NoVar) ()
+                          , domainNodesRev :: Map (CompositeExpr a BoolType) Node
                           , domainNextNode :: Node
                           , domainPool :: SMTPool (DomainInstance (Expr b)) b a
                           , domainVerbosity :: Int
@@ -88,12 +74,8 @@ initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
               => Int -- ^ How verbose the domain should be (0 = no output)
               -> IO b -- ^ A function to create SMT backends
               -> CompDescr a -- ^ The annotation for the data type abstracted by the domain
-              -> (forall m e. Monad m
-                  => (forall t. GetType t
-                      => RevComp a t -> m (e t)) -> m (a e)
-                 ) -- ^ An SMT action to create an instance of the abstracted data type
               -> IO (Domain a)
-initialDomain verb backend ann alloc = do
+initialDomain verb backend ann = do
   let initInst = do
         top <- [expr| true |]
         bot <- [expr| false |]
@@ -102,23 +84,21 @@ initialDomain verb backend ann alloc = do
                                                 ,(domainBot,bot)]
                                 , domainInstNext = 2
                                 , domainIsFresh = True }
-      gArg = runIdentity $ alloc (\rev -> return rev)
+      gArg = runIdentity $ createComposite (\rev -> return rev) ann
   supportsTimeouts <- withBackendExitCleanly backend $ do
     name <- getInfo SMTSolverName
     return $ name=="Z3"
   pool <- createSMTPool' backend initInst $ do
     setOption (ProduceModels True)
-    alloc (\_ -> declareVar)
+    createComposite (\_ -> declareVar) ann
   return $ Domain { domainGraph = mkGraph
-                                  [(domainTop,(Predicate $ \f _ -> f (Const (BoolValue True)),
-                                               DomainExpr (Const (BoolValue True)),Set.empty))
-                                  ,(domainBot,(Predicate $ \f _ -> f (Const (BoolValue False)),
-                                               DomainExpr (Const (BoolValue False)),Set.empty))]
+                                  [(domainTop,(CompositeExpr (Const (BoolValue True)),DMap.empty))
+                                  ,(domainBot,(CompositeExpr (Const (BoolValue False)),DMap.empty))]
                                   [(domainTop,domainBot,())]
                   , domainGArg = gArg
                   , domainNodesRev = Map.fromList
-                                     [(DomainExpr (Const (BoolValue True)),domainTop)
-                                     ,(DomainExpr (Const (BoolValue False)),domainBot)]
+                                     [(CompositeExpr (Const (BoolValue True)),domainTop)
+                                     ,(CompositeExpr (Const (BoolValue False)),domainBot)]
                   , domainNextNode = 2
                   , domainPool = pool
                   , domainVerbosity = verb
@@ -127,12 +107,12 @@ initialDomain verb backend ann alloc = do
                                     else Nothing
                   }
 
-updateInstance :: Backend b => Domain a -> DomainInstance (Expr b) -> a (Expr b)
+updateInstance :: (Backend b,Composite a) => Domain a -> DomainInstance (Expr b) -> a (Expr b)
                -> SMT b (DomainInstance (Expr b))
 updateInstance dom inst vars
   = foldlM (\cinst nd -> do
-               let Just (Predicate prop,_,_) = lab (domainGraph dom) nd
-               cprop <- prop (embedSMT . B.toBackend) vars
+               let Just (prop,_) = lab (domainGraph dom) nd
+               cprop <- concretizeExpr vars prop
                cprop' <- defineVar cprop
                return (cinst { domainNodes = Map.insert nd cprop (domainNodes cinst)
                              })
@@ -142,89 +122,97 @@ updateInstance dom inst vars
 domainTop,domainBot :: Node
 domainTop = 0
 domainBot = 1
-{-
-generalizePredicate :: Domain a -> (a -> SMTExpr Bool) -> (SMTExpr Bool,Set Integer)
-generalizePredicate dom pred = (qpred,vars)
-  where
-    qpred = pred (domainGArg dom)
-    (vars,_) = foldExpr (\cur expr
-                         -> (case expr of
-                              InternalObj i _ -> case cast i of
-                                Just i' -> Set.insert i' cur
-                                Nothing -> cur
-                              _ -> cur,expr)
-                        ) Set.empty qpred
 
-quickImplication :: SMTExpr Bool -> SMTExpr Bool -> Maybe Bool
-quickImplication (Const False ()) _ = Just True
-quickImplication _ (Const True ()) = Just True
-quickImplication (Const True ()) (App (SMTOrd Le) (InternalObj a _,InternalObj b _))
-  = Just $ a `tpEq` b
-quickImplication (Const True ()) (App (SMTOrd Ge) (InternalObj a _,InternalObj b _))
-  = Just $ a `tpEq` b
-quickImplication (Const True ()) (App (SMTOrd _) (InternalObj _ _,InternalObj _ _))
-  = Nothing
-quickImplication (App (SMTOrd Lt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Lt) (InternalObj b1 _,InternalObj b2 _))
-  = Just $ a1 `tpEq` b1 && a2 `tpEq` b2
-quickImplication (App SMTEq [InternalObj a1 _,InternalObj a2 _]) (App SMTEq [InternalObj b1 _,InternalObj b2 _])
-  | a1 `tpEq` b1 && a2 `tpEq` b2 = Just True
-  | a1 `tpEq` b2 && a2 `tpEq` b1 = Just True
-  | otherwise = Just False
---quickImplication (App (SMTOrd Lt) _) (App SMTEq _) = Just False
---quickImplication (App SMTEq _) (App (SMTOrd Lt) _) = Just False
-quickImplication (App (SMTOrd Le) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Le) (InternalObj b1 _,InternalObj b2 _))
-  = Just $ a1 `tpEq` b1 && a2 `tpEq` b2
-quickImplication (App (SMTOrd Lt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Le) (InternalObj b1 _,InternalObj b2 _))
-  = Just $ a1 `tpEq` b1 && a2 `tpEq` b2
-quickImplication (App (SMTOrd Le) (InternalObj _ _,InternalObj _ _)) (App (SMTOrd Lt) (InternalObj _ _,InternalObj _ _))
+quickImplication :: (Extract i e)
+                 => AnalyzedExpr i e BoolType
+                 -> AnalyzedExpr i e BoolType
+                 -> Maybe Bool
+quickImplication [expr| false |] _ = Just True
+quickImplication _ [expr| true |] = Just True
+quickImplication [expr| true |] [expr| (<=.int (var $a) (var $b)) |]
+  = Just (defaultEq a b)
+quickImplication [expr| true |] [expr| (>=.int (var $a) (var $b)) |]
+  = Just (defaultEq a b)
+quickImplication
+  [expr| (<.int (var $a1) (var $a2)) |]
+  [expr| (<.int (var $b1) (var $b2)) |]
+  = Just $ (defaultEq a1 b1) && (defaultEq a2 b2)
+quickImplication
+  [expr| (= (var $a1) (var $a2)) |]
+  [expr| (= (var $b1) (var $b2)) |]
+  = Just $ ((defaultEq a1 b1) && (defaultEq a2 b2)) ||
+    ((defaultEq a1 b2) && (defaultEq a2 b1))
+quickImplication
+  [expr| (<=.int (var $a1) (var $a2)) |]
+  [expr| (<=.int (var $b1) (var $b2)) |]
+  = Just (defaultEq a1 b1 && defaultEq a2 b2)
+quickImplication
+  [expr| (<.int (var $a1) (var $a2)) |]
+  [expr| (<=.int (var $b1) (var $b2)) |]
+  = Just (defaultEq a1 b1 && defaultEq a2 b2)
+quickImplication
+  [expr| (<=.int (var $_) (var $_)) |]
+  [expr| (<.int (var $_) (var $_)) |]
   = Just False
-quickImplication (App (SMTOrd Gt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Gt) (InternalObj b1 _,InternalObj b2 _))
-  = Just $ a1 `tpEq` b1 && a2 `tpEq` b2
-quickImplication (App (SMTOrd Gt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Le) (InternalObj b1 _,InternalObj b2 _))
-  = Just $ a2 `tpEq` b1 && a1 `tpEq` b2
-quickImplication (App (SMTOrd Le) (InternalObj _ _,InternalObj _ _)) (App (SMTOrd Gt) (InternalObj _ _,InternalObj _ _))
+quickImplication
+  [expr| (>.int (var $a1) (var $a2)) |]
+  [expr| (>.int (var $b1) (var $b2)) |]
+  = Just (defaultEq a1 b1 && defaultEq a2 b2)
+quickImplication
+  [expr| (>.int (var $a1) (var $a2)) |]
+  [expr| (<=.int (var $b1) (var $b2)) |]
+  = Just (defaultEq a2 b1 && defaultEq a1 b2)
+quickImplication
+  [expr| (<=.int (var $_) (var $_)) |]
+  [expr| (>.int (var $_) (var $_)) |]
   = Just False
-quickImplication (App (SMTOrd Gt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Lt) (InternalObj b1 _,InternalObj b2 _))
-  = Just $ a1 `tpEq` b2 && a2 `tpEq` b1
-quickImplication (App (SMTOrd Lt) (InternalObj a1 _,InternalObj a2 _)) (App (SMTOrd Gt) (InternalObj b1 _,InternalObj b2 _))
-  = Just $ a1 `tpEq` b2 && a2 `tpEq` b1
-quickImplication (InternalObj a _) (InternalObj b _)
-  = Just $ a `tpEq` b
-quickImplication (InternalObj _ _) _ = Just False
-quickImplication _ (InternalObj _ _) = Just False
+quickImplication
+  [expr| (>.int (var $a1) (var $a2)) |]
+  [expr| (<.int (var $b1) (var $b2)) |]
+  = Just (defaultEq a1 b2 && defaultEq a2 b1)
+quickImplication
+  [expr| (<.int (var $a1) (var $a2)) |]
+  [expr| (>.int (var $b1) (var $b2)) |]
+  = Just (defaultEq a1 b2 && defaultEq a2 b1)
+quickImplication
+  [expr| (var $a) |]
+  [expr| (var $b) |]
+  = Just (defaultEq a b)
+quickImplication [expr| (var $_) |] _
+  = Just False
+quickImplication _ [expr| (var $_) |]
+  = Just False
 quickImplication _ _ = Nothing
 
-tpEq :: (Typeable a,Eq a,Typeable b) => a -> b -> Bool
-tpEq x y = case cast y of
-  Just y' -> x==y'
-
-checkImplication :: SMTExpr Bool -> SMTExpr Bool -> SMT Bool
+checkImplication :: Backend b => Expr b BoolType -> Expr b BoolType -> SMT b Bool
 checkImplication e1 e2 = stack $ do
   assert e1
-  assert (not' e2)
+  [expr| (not e2) |] >>= assert
   r <- checkSat
-  return $ not r
+  return $ r==Unsat
 
 -- | Like `domainAdd` but the caller has to guarantee that the predicate is neither a sub- nor a super-set of any predicate in the domain.
-domainAddUniqueUnsafe :: Args a => (a -> SMTExpr Bool) -> Domain a -> IO (Node,Domain a)
+domainAddUniqueUnsafe :: Composite a => CompositeExpr a BoolType
+                      -> Domain a
+                      -> IO (Node,Domain a)
 domainAddUniqueUnsafe pred dom = do
-  let (qpred,vars) = generalizePredicate dom pred
+  let vars = collectRevVars DMap.empty pred
       newNd = domainNextNode dom
-      gr0 = insNode (newNd,(pred,qpred,vars)) (domainGraph dom)
+      gr0 = insNode (newNd,(pred,vars)) (domainGraph dom)
       gr1 = insEdge (domainTop,newNd,()) gr0
       gr2 = insEdge (newNd,domainBot,()) gr1
   return (newNd,dom { domainGraph = gr2
                     , domainNextNode = succ newNd
-                    , domainNodesRev = Map.insert qpred newNd
+                    , domainNodesRev = Map.insert pred newNd
                                        (domainNodesRev dom)
                     })
 
 -- | Add a new predicate to the domain.
 --   Returns the node representing the new predicate.
-domainAdd :: Args a => (a -> SMTExpr Bool) -- ^ The predicate as a boolean function over the abstracted data type.
+domainAdd :: Composite a => CompositeExpr a BoolType -- ^ The predicate.
           -> Domain a -- ^ The domain to which to add the predicate
           -> IO (Node,Domain a)
-domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
+domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
   Just nd -> return (nd,dom)
   Nothing -> do
     Just parents <- findParents domainTop
@@ -235,11 +223,11 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
      [] -> do
        if domainVerbosity dom >= 2
          then (do
-                  termStr <- renderDomainPred pred dom
-                  liftIO $ putStrLn $ "Adding predicate "++termStr)
+                  --termStr <- renderDomainPred pred dom
+                  liftIO $ putStrLn $ "Adding predicate "++show pred)
          else return ()
        let newNd = domainNextNode dom
-           gr0 = insNode (newNd,(pred,qpred,vars)) (domainGraph dom)
+           gr0 = insNode (newNd,(pred,vars)) (domainGraph dom)
            gr1 = foldl (\cgr parent
                         -> let (Just (pred,_,pterm,succs),cgr') = match parent cgr
                                succs' = foldl (\csucc x -> delete ((),x) csucc) succs childs
@@ -254,40 +242,52 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                        ) gr1 childs
        return (newNd,dom { domainGraph = gr2
                          , domainNextNode = succ newNd
-                         , domainNodesRev = Map.insert qpred newNd
+                         , domainNodesRev = Map.insert pred newNd
                                             (domainNodesRev dom)
                          })
   where
-    (qpred,vars) = generalizePredicate dom pred
-    poseQuery query = do
-      res <- withSMTPool' (domainPool dom) $
+    vars = collectRevVars DMap.empty pred
+    apred = analyze' () pred
+    poseQuery :: Composite a => Domain a
+              -> (forall b. Backend b => DomainInstance (Expr b) -> a (Expr b) -> SMT b [Expr b BoolType])
+              -> IO Bool
+    poseQuery dom query = do
+      res <- case dom of
+        Domain { domainPool = pool }
+          -> withSMTPool' pool $
              \inst vars -> do
                ninst <- updateInstance dom inst vars
                let ninst' = ninst { domainIsFresh = False }
-                   query' = query ninst' vars
+               query' <- query ninst' vars
                res <- stack $ do
                  mapM_ assert query'
-                 checkSat' Nothing (noLimits { limitTime = domainTimeout dom })
+                 checkSatWith Nothing (noLimits { limitTime = domainTimeout dom })
                case res of
                 Sat -> return (Right (True,ninst'))
                 Unsat -> return (Right (False,ninst'))
                 Unknown -> do
                   if domainIsFresh ninst
                     then (do
-                             strs <- mapM renderExpr query'
+                             let strs :: [String]
+                                 strs = fmap (\e -> gshowsPrec 0 e "") query'
                              return $ Left (Just strs))
                     else return $ Left Nothing
       case res of
        Left (Just exprs) -> error $ "Solver got stuck while trying to check "++
-                            show exprs
-       Left Nothing -> poseQuery query
+                            show (exprs::[String])
+       Left Nothing -> poseQuery dom query
        Right res -> return res
     findParents cur = do
       let curCtx = context (domainGraph dom) cur
-          (curTermF,curTermQ,curTermVars) = lab' curCtx
-      impl <- case quickImplication qpred curTermQ of
+          (curTerm,curTermVars) = lab' curCtx
+      impl <- case quickImplication apred (analyze' () curTerm) of
                Just r -> return r
-               Nothing -> fmap not $ poseQuery (\inst vars -> [pred vars,not' $ curTermF vars])
+               Nothing -> fmap not $ poseQuery dom
+                          (\inst vars -> do
+                              pred' <- concretizeExpr vars pred
+                              term' <- concretizeExpr vars curTerm
+                              nterm <- [expr| (not term') |]
+                              return [pred',nterm])
       if not impl
         then return Nothing
         else (do
@@ -297,10 +297,15 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                    xs -> return $ Just (Set.unions xs))
     findChildren cur = do
       let curCtx = context (domainGraph dom) cur
-          (curTermF,curTermQ,curTermVars) = lab' curCtx
-      impl <- case quickImplication curTermQ qpred of
+          (curTerm,curTermVars) = lab' curCtx
+      impl <- case quickImplication (analyze' () curTerm) apred of
                Just r -> return r
-               Nothing -> fmap not $ poseQuery (\inst vars -> [curTermF vars,not' $ pred vars])
+               Nothing -> fmap not $ poseQuery dom
+                          (\inst vars -> do
+                              term' <- concretizeExpr vars curTerm
+                              pred' <- concretizeExpr vars pred
+                              npred <- [expr| (not pred') |]
+                              return [term',npred])
       if not impl
         then return Nothing
         else (do
@@ -310,43 +315,46 @@ domainAdd pred dom = case Map.lookup qpred (domainNodesRev dom) of
                    xs -> return $ Just (Set.unions xs))
 
 -- | Create an abstract state from a concrete state.
-domainAbstract :: (a -> SMT b (Expr b BoolType))  -- ^ An expression which describes the concrete state
+domainAbstract :: Composite a
+               => CompositeExpr a BoolType  -- ^ An expression which describes the concrete state
                -> Node -- ^ A property that must be considered
                -> Domain a -- ^ The domain to use for the abstraction
                -> IO (AbstractState a)
 domainAbstract expr mustUse dom = do
-  Right res <- withSMTPool' (domainPool dom) $ \inst vars -> do
-    ninst <- updateInstance dom inst vars
-    lst <- stack $ do
-      updateBackend' $ \b -> assert b (expr vars)
-      let reprs = filter (\(nd,_) -> nd/=domainTop && nd/=domainBot) $
-                  Map.toList $ domainNodes ninst
-      sol <- checkSat
-      when (not sol) (error $ "Concrete state "++show (expr vars)++
-                      " doesn't have a valid abstraction")
-      mapM (\(nd,repr) -> do
-               let Just (_,_,predVars) = lab (domainGraph dom) nd
-               if nd==mustUse || (Set.null $ Set.difference predVars exprVars)
-                 then (do
-                          c <- getValue repr
-                          return $ Just (nd,c))
-                 else return Nothing
-           ) reprs
-    return (Right (catMaybes lst,ninst))
+  Right res <- case dom of
+    Domain { domainPool = pool }
+      -> withSMTPool' pool $ \inst vars -> do
+      ninst <- updateInstance dom inst vars
+      lst <- stack $ do
+        concretizeExpr vars expr >>= assert
+        let reprs = filter (\(nd,_) -> nd/=domainTop && nd/=domainBot) $
+                    Map.toList $ domainNodes ninst
+        sol <- checkSat
+        when (sol/=Sat) (error $ "Concrete state "++show expr++
+                         " doesn't have a valid abstraction")
+        mapM (\(nd,repr) -> do
+                 let Just (_,predVars) = lab (domainGraph dom) nd
+                 if nd==mustUse || (DMap.null $ DMap.difference predVars exprVars)
+                   then (do
+                            BoolValueC c <- getValue repr
+                            return $ Just (nd,c))
+                   else return Nothing
+             ) reprs
+      return (Right (catMaybes lst,ninst))
   return (Vec.fromList res)
   where
-    (_,exprVars) = generalizePredicate dom expr
--}
+    exprVars = collectRevVars DMap.empty expr
+
 -- | Create an SMT expression that represents an abstract state.
-toDomainTerm :: Backend b
+toDomainTerm :: (Embed m e,Composite a)
              => AbstractState a -- ^ The abstract state to represent
              -> Domain a -- ^ The domain to use (The abstract state must have been created using this domain)
-             -> a (Expr b) -- ^ An instance of the abstracted data type
-             -> SMT b (Expr b BoolType)
+             -> a e -- ^ An instance of the abstracted data type
+             -> m (e BoolType)
 toDomainTerm state dom vars = do
   conj <- mapM (\(nd,act) -> do
-                  let Just (Predicate term,_,_) = lab (domainGraph dom) nd
-                  pr <- term (embedSMT . B.toBackend) vars
+                  let Just (pred,_) = lab (domainGraph dom) nd
+                  pr <- concretizeExpr vars pred
                   if act
                     then return pr
                     else (do
@@ -368,40 +376,26 @@ toDomainTerms state dom vars
 domainHash :: Domain a -> Int
 domainHash dom = domainNextNode dom
 
-{-domainRelativize :: (forall v qv fun con field fv t.
-                     Expression v qv fun con field fv e t
-                     -> m (e t))
-                 -> (forall t. GetType t => Var b t -> RevComp a t)
-                 -> Expr b t
-                 -> a e -> m (e t)-}
-
+renderDomainTerm :: Composite a => AbstractState a -> Domain a -> String
+renderDomainTerm st (Domain { domainGraph = gr })
+  = let exprs = [ if act
+                  then show pred
+                  else "!"++show pred
+                | (nd,act) <- Vec.toList st,
+                  let Just (pred,_) = lab gr nd]
+    in "{"++intercalate ", " exprs++"}"
 {-
-renderDomainTerm :: AbstractState a -> Domain a -> IO String
-renderDomainTerm st dom
-  = withSMTPool (domainPool dom) $
-    \vars -> do
-      let exprs = [ if act
-                    then term vars
-                    else not' $ term vars
-                  | (nd,act) <- Vec.toList st,
-                    let Just (term,_,_) = lab (domainGraph dom) nd]
-      strs <- mapM renderExpr exprs
-      return $ "{"++intercalate ", " strs++"}"
-
 renderDomainPred :: (a -> SMTExpr Bool) -> Domain a -> IO String
 renderDomainPred pred dom
   = withSMTPool (domainPool dom) $
     \vars -> renderExpr (pred vars)
-
-renderDomain :: Domain a -> IO String
-renderDomain dom
-  = withSMTPool (domainPool dom) $
-    \vars -> do
-      nodes <- mapM (\(nd,(pred,_,_)) -> do
-                         res <- renderExpr (pred vars)
-                         return $ "nd"++show nd++"[label=\""++res++"\"];"
-                    ) $ labNodes (domainGraph dom)
-      edges <- mapM (\(n1,n2,_) -> return $ "nd"++show n1++" -> nd"++show n2++";"
-                    ) $ labEdges (domainGraph dom)
-      return $ unlines $ ["digraph domain {"]++nodes++edges++["}"]
 -}
+
+renderDomain :: Composite a => Domain a -> String
+renderDomain (Domain { domainGraph = gr })
+  = unlines $ ["digraph domain {"]++nodes++edges++["}"]
+  where
+    nodes = fmap (\(nd,(pred,_)) -> "nd"++show nd++"[label=\""++show pred++"\"];"
+                 ) (labNodes gr)
+    edges = fmap (\(n1,n2,_) -> "nd"++show n1++" -> nd"++show n2++";"
+                 ) (labEdges gr)
