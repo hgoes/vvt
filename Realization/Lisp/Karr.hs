@@ -109,13 +109,16 @@ getKarrTrans' prog = do
   extr1 <- makeKarrExtractor prog
   (invars,extr2) <- makeInvariants prog extr1
   mapM_ assert invars
-  checkSat
-  (initPc,extr3) <- makeInitPCs prog extr2
-  (initLin,extr4) <- makeInitLins prog extr3
-  (nxtPc,extr5) <- makeNextPCs prog extr4
-  (nxtLin,extr6) <- makeNextLins prog extr5
-  trans <- traceTrans extr6 nxtPc nxtLin (Set.singleton initPc) Set.empty initPc []
-  return (allLinears extr4,initPc,initLin,trans)
+  res <- checkSat
+  if not res
+    then return (Map.empty,Map.empty,[],[])
+    else do
+    (initPc,extr3) <- makeInitPCs prog extr2
+    (initLin,extr4) <- makeInitLins prog extr3
+    (nxtPc,extr5) <- makeNextPCs prog extr4
+    (nxtLin,extr6) <- makeNextLins prog extr5
+    trans <- traceTrans extr6 nxtPc nxtLin (Set.singleton initPc) Set.empty initPc []
+    return (allLinears extr4,initPc,initLin,trans)
   where
     traceTrans extr nxtPc nxtLin done queue st res = do
       trgs <- stack $ do
@@ -566,6 +569,9 @@ translateNonLinExpr prog extr (App fun args) = do
   case fun of
    SMTBuiltIn "exactly-one" _ -> case cast args' of
      Just args'' -> case cast (oneOf args'') of
+       Just r -> return (r,extr')
+   SMTBuiltIn "at-most-one" _ -> case cast args' of
+     Just args'' -> case cast (atMostOneOf args'') of
        Just r -> return (r,extr')
    _ -> return (App fun args',extr')
 translateNonLinExpr _ _ expr = error $ "Cannot translate non-linear expression "++show expr

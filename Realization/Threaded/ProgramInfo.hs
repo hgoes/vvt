@@ -13,18 +13,19 @@ import qualified Data.Map as Map
 data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , entryPoints :: Map (Ptr BasicBlock,Int) ()
                              , threadFunction :: Ptr Function
-                             , threadArg :: Maybe (Ptr Argument,Ptr Type)
+                             , threadArg :: Maybe (Ptr Argument,Either (Ptr Type) (Ptr IntegerType))
                              , threadSliceMapping :: Map Integer [(Ptr BasicBlock,Int)]
                              , spawnQuantity :: Quantity
                              }
 
 data AllocInfo = AllocInfo { allocQuantity :: Quantity
-                           , allocType :: Ptr Type
+                           , allocType :: AllocKind
                            , allocSize :: Maybe (Ptr Value) }
 
 data ProgramInfo = ProgramInfo { mainThread :: ThreadInfo
                                , threads :: Map (Ptr CallInst) ThreadInfo
                                , allocations :: Map (Ptr Instruction) AllocInfo
+                               , functionReturns :: Map (Ptr Function) (Ptr Type)
                                }
 
 getProgramInfo :: Ptr Module -> Ptr Function -> IO ProgramInfo
@@ -39,7 +40,8 @@ getProgramInfo mod mainFun = do
                                            , threadSliceMapping = slMp
                                            , spawnQuantity = Finite 1 }
                  , threads = Map.empty
-                 , allocations = Map.empty })
+                 , allocations = Map.empty
+                 , functionReturns = Map.empty })
   where
     applyLocs [] pi = return pi
     applyLocs ((ThreadSpawnLocation { spawningInstruction = inst
@@ -53,7 +55,7 @@ getProgramInfo mod mainFun = do
            (entries,order,slMp) <- getSlicing fun
            nlocs <- getThreadSpawns' mod fun
            arg <- getThreadArgument fun
-           applyLocs (locs++(fmap (\l -> l { quantity = (quantity l)*n }) nlocs))
+           applyLocs (locs++(fmap (updateQuantity (*n)) nlocs))
              (pi { threads = Map.insert inst (ThreadInfo { blockOrder = order
                                                          , entryPoints = entries
                                                          , threadFunction = fun
@@ -67,3 +69,13 @@ getProgramInfo mod mainFun = do
                                    , allocSize' = sz }):locs) pi
       = applyLocs locs (pi { allocations = Map.insert inst (AllocInfo n tp sz)
                                            (allocations pi) })
+    applyLocs ((ReturnLocation { returningFunction = fun
+                               , returnedType = tp
+                               }):locs) pi
+      = applyLocs locs (pi { functionReturns = Map.insertWith
+                                               (\tp1 tp2 -> if tp1==tp2
+                                                            then tp1
+                                                            else error $ "vvt-enc: Conflicting return types in thread.")
+                                               fun tp
+                                               (functionReturns pi)
+                           })

@@ -49,6 +49,8 @@ class (PartialComp (State t),PartialComp (Input t))
                     -> State t e -> Input t e
                     -> RealizationProgress t e
                     -> m ([e BoolType],RealizationProgress t e)
+  isEndState :: (Embed m e)
+             => t -> State t e -> m (e BoolType)
   {-createRevState :: Backend b => String -> t -> SMT b (State t (Expr b),RevState t)
   relativizeExpr :: (GetType a,Backend b) => t -> RevState t -> Expr b a -> (State t (Expr b) -> SMT b (Expr b a))
   renderPartialState :: Backend b => t -> Partial (State t) (Constr b) -> SMT b String

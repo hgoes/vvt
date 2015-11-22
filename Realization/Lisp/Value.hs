@@ -240,6 +240,17 @@ instance GEq (LispIndex tps) where
 instance GCompare (LispIndex tps) where
   gcompare = compareLispIndex
 
+instance Show (LispIndex tps tp) where
+  showsPrec p ValGet = showString "ValGet"
+  showsPrec p (ValIdx n idx) = showParen (p>10) $
+                               showString "ValIdx " .
+                               showsPrec 11 (natVal n) .
+                               showChar ' ' .
+                               showsPrec 11 idx
+
+instance GShow (LispIndex idx) where
+  gshowsPrec = showsPrec
+
 compareLispIndex :: LispIndex tps t1 -> LispIndex tps t2 -> GOrdering t1 t2
 compareLispIndex (ValGet::LispIndex tps1 t1) (ValGet::LispIndex tps2 t2)
   = case eqT :: Maybe (t1 :~: t2) of
@@ -282,6 +293,17 @@ instance GCompare (RevValue sig) where
     Nothing -> case compare (typeRep p1) (typeRep p2) of
       LT -> GLT
       GT -> GGT
+
+instance Show (RevValue sig t) where
+  showsPrec p (RevVar idx) = showParen (p>10) $
+                             showString "RevVar " .
+                             showsPrec 11 idx
+  showsPrec p (RevSize lvl) = showParen (p>10) $
+                              showString "RevSize " .
+                              showsPrec 11 (natVal lvl)
+
+instance GShow (RevValue sig) where
+  gshowsPrec = showsPrec
 
 instance (KnownNat lvl,GetStructType tps) => Composite (LispValue '(lvl,tps)) where
   type CompDescr (LispValue '(lvl,tps)) = ()
@@ -338,7 +360,35 @@ instance (KnownNat lvl,GetStructType tps) => Composite (LispValue '(lvl,tps)) wh
         Just Refl -> i
         Nothing -> case is of
           Size _ _ -> getSize idx is
-
+  eqComposite v1 v2 = do
+    eqS <- eqSize (size v1) (size v2)
+    eqV <- eqStruct (value v1) (value v2)
+    let eqs = eqS++eqV
+    [expr| (and # eqs) |]
+    where
+      eqSize :: Embed m e => Size e n -> Size e n -> m [e BoolType]
+      eqSize NoSize NoSize = return []
+      eqSize (Size x xs) (Size y ys) = do
+        eq <- [expr| (= x y) |]
+        eqs <- eqSize xs ys
+        return (eq:eqs)
+      eqStruct :: Embed m e
+               => LispStruct (LispVal e n) tps'
+               -> LispStruct (LispVal e n) tps'
+               -> m [e BoolType]
+      eqStruct (LSingleton (Val x)) (LSingleton (Val y)) = do
+        e <- [expr| (= x y) |]
+        return [e]
+      eqStruct (LStruct xs) (LStruct ys) = eqStructArgs xs ys
+      eqStructArgs :: Embed m e
+                   => StructArgs (LispVal e n) tps'
+                   -> StructArgs (LispVal e n) tps'
+                   -> m [e BoolType]
+      eqStructArgs NoSArg NoSArg = return []
+      eqStructArgs (SArg x xs) (SArg y ys) = do
+        e <- eqStruct x y
+        es <- eqStructArgs xs ys
+        return (e++es)
 
 instance (KnownNat lvl,GetStructType tps) => LiftComp (LispValue '(lvl,tps)) where
   type Unpacked (LispValue '(lvl,tps)) = LispUVal '(lvl,tps)

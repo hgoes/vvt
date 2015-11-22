@@ -26,6 +26,7 @@ import qualified Data.Vector as Vec
 import qualified Data.IntSet as IntSet
 import Data.IORef
 import Control.Monad (when)
+import Control.Applicative (Applicative(..))
 import "mtl" Control.Monad.Trans (MonadIO,liftIO)
 import "mtl" Control.Monad.Reader (MonadReader(..),ask,asks)
 import "mtl" Control.Monad.State (MonadState,gets)
@@ -924,21 +925,23 @@ check st opts verb stats dumpDomain = do
   let prog:args = words (optBackend opts Map.! Base)
   backend <- createSMTPipe prog args -- >>= namedDebugBackend "base"
   tr <- withSMTBackendExitCleanly backend (baseCases st)
-  case tr of
-    Just tr' -> return (Left tr')
-    Nothing -> runIC3 (mkIC3Config st opts verb stats dumpDomain)
-               ((do
-                     addSuggestedPredicates
-                     extend
-                     extend
-                     res <- checkIt
-                     ic3DumpStats (case res of
-                                     Left _ -> Nothing
-                                     Right fp -> Just fp)
-                     return res
-                ) `ic3Catch` (\ex -> do
-                                  ic3DumpStats Nothing
-                                  throw (ex::SomeException)))
+  runIC3 (mkIC3Config st opts verb stats dumpDomain) $ do
+    case tr of
+      Just tr' -> do
+        ic3DumpStats Nothing
+        return (Left tr')
+      Nothing -> (do
+                      addSuggestedPredicates
+                      extend
+                      extend
+                      res <- checkIt
+                      ic3DumpStats (case res of
+                                      Left _ -> Nothing
+                                      Right fp -> Just fp)
+                      return res
+                 ) `ic3Catch` (\ex -> do
+                                   ic3DumpStats Nothing
+                                   throw (ex::SomeException))
   where
     checkIt = do
       ic3DebugAct 1 (do
@@ -1252,9 +1255,9 @@ interpolateState j s inp = do
 
     splitInterpolant (App (SMTLogic And) es) = concat (fmap splitInterpolant es)
     -- Henning: Maybe it's a good idea not to refine with equalities:
-    splitInterpolant (App SMTEq [lhs,rhs]) = case cast lhs of
-      Just (_::SMTExpr Integer) -> [App (SMTOrd Ge) (lhs,rhs)
-                                   ,App (SMTOrd Gt) (lhs,rhs)]
+    splitInterpolant (App SMTEq [lhs,rhs]) = case cast (lhs,rhs) of
+      Just ((lhs',rhs')::(SMTExpr Integer,SMTExpr Integer)) -> [App (SMTOrd Ge) (lhs',rhs')
+                                                               ,App (SMTOrd Gt) (lhs',rhs')]
       Nothing -> [App SMTEq [lhs,rhs]]
     splitInterpolant (App (SMTOrd Gt) (lhs,rhs)) = [App (SMTOrd Ge) (lhs,rhs)
                                                    ,App (SMTOrd Gt) (lhs,rhs)]
@@ -1636,11 +1639,6 @@ addTiming time_ref num_ref act = do
   return $ AnyBackend $ timingBackend (\t -> modifyIORef' time_ref (+t) >>
                                              modifyIORef' num_ref (+1)
                                       ) b
-
-addEmulation :: IO (AnyBackend IO) -> IO (AnyBackend IO)
-addEmulation act = do
-  AnyBackend b <- act
-  return $ AnyBackend $ emulateDataTypes b
 
 addDebugging :: String -> IO (AnyBackend IO) -> IO (AnyBackend IO)
 addDebugging name act = do

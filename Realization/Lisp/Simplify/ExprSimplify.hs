@@ -7,6 +7,8 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals
 import Language.SMTLib2.Internals.Operators
 import Data.Typeable
+import Data.List
+import Data.Either
 
 import Debug.Trace
 
@@ -119,6 +121,23 @@ optimizeFun (SMTLogic Or) args = case [ arg | arg <- args
 optimizeFun (SMTLogic Implies) [_,Const True _] = Const True ()
 optimizeFun SMTNot (Const False _) = Const True ()
 optimizeFun SMTNot (Const True _) = Const False ()
+optimizeFun (SMTArith Plus) xs = case dyns of
+  [] -> Const c ann
+  [d]
+    | c==0 -> d
+  _ -> App (SMTArith Plus) $ if c==0
+                             then dyns
+                             else dyns++[Const c ann]
+  where
+    c = sum consts
+    (consts,dyns) = partitionEithers
+                    (fmap (\x -> case x of
+                             Const n _ -> Left n
+                             _ -> Right x
+                          ) xs)
+    ann = case dyns of
+      x:_ -> extractAnnotation x
+optimizeFun SMTEq [Const x _,Const y _] = Const (x==y) ()
 optimizeFun f arg = App f arg
 
 asBoolConst :: SMTExpr Bool -> Maybe Bool

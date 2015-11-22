@@ -10,14 +10,16 @@ import Language.SMTLib2.Internals
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
 
-import Data.Map (Map)
-import qualified Data.Map as Map
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.List
 import Data.Maybe (catMaybes)
 import Data.Typeable (cast,gcast)
 import Data.Constraint
 import Control.Monad.Trans
+import System.IO
+import Control.Monad
 
 import Debug.Trace
 
@@ -26,26 +28,54 @@ data ValueSet = ValueSet { valueMask :: [(T.Text,[[Int]])]
                          , vsize :: !Int
                          }
 
-valueSetAnalysis :: Int -> LispProgram -> IO LispProgram
-valueSetAnalysis threshold prog = do
-  vs <- deduceValueSet threshold prog
+valueSetAnalysis :: Int -> Int -> String -> LispProgram -> IO LispProgram
+valueSetAnalysis verbosity threshold solver prog = do
+  vs <- deduceValueSet verbosity threshold solver prog
+  when (verbosity >= 1)
+    (hPutStrLn stderr $ "Value set:\n"++showValueSet vs)
   let consts = getConstants vs
-  return $ foldl (\prog' (name,idx,c) -> replaceConstantProg name (fmap fromIntegral idx) c prog') prog consts
+  return $ foldl' (\prog' (name,idx,c) -> replaceConstantProg name (fmap fromIntegral idx) c prog') prog consts
 
 replaceConstantProg :: T.Text -> [Integer] -> LispUValue -> LispProgram -> LispProgram
 replaceConstantProg name idx c prog
-  = prog { programNext = fmap (replaceConstant name idx c) (del $ programNext prog)
+  = prog { programNext = fmap (replaceConstant name idx c) (delNext $ programNext prog)
          , programProperty = fmap (replaceConstantExpr name idx c) (programProperty prog)
          , programGates = fmap (\(tp,var) -> (tp,replaceConstant name idx c var))
                           (programGates prog)
          , programAssumption = fmap (replaceConstantExpr name idx c) (programAssumption prog)
          , programInvariant = fmap (replaceConstantExpr name idx c) (programInvariant prog)
-         , programState = del (programState prog)
-         , programInit = del (programInit prog)
+         , programState = delType (programState prog)
+         , programInit = delInit (programInit prog)
          }
   where
-    del :: Map T.Text a -> Map T.Text a
-    del mp = if idx==[] then Map.delete name mp else mp
+    delInit mp = if idx==[] then Map.delete name mp
+                 else Map.adjust (\val -> val { value = delEntry idx (value val) }
+                                 ) name mp
+    delType mp = if idx==[] then Map.delete name mp
+                 else Map.adjust (\(tp,ann) -> (tp { typeBase = delEntry idx (typeBase tp)
+                                                   },ann)
+                                 ) name mp
+    delNext mp = if idx==[] then Map.delete name mp
+                 else Map.adjust (\var -> delVarEntry idx var
+                                 ) name mp
+
+delEntry :: [Integer] -> LispStruct a -> LispStruct a
+delEntry [] _ = Struct []
+delEntry (i:is) (Struct elems) = Struct (del' 0 elems)
+  where
+    del' n (x:xs) = if i==n
+                    then delEntry is x:xs
+                    else x:del' (n+1) xs
+
+delVarEntry :: [Integer] -> LispVar -> LispVar
+delVarEntry [] v = LispConstr $ LispValue (error "Size of deleted entry accessed.") (Struct [])
+delVarEntry _ v@(NamedVar _ _ _) = v
+delVarEntry idx (LispStore v idx' didx val)
+  = if idx==idx'
+    then delVarEntry idx v
+    else LispStore (delVarEntry idx v) idx' didx val
+delVarEntry idx (LispITE c ifT ifF) = LispITE c (delVarEntry idx ifT) (delVarEntry idx ifF)
+delVarEntry idx (LispConstr val) = LispConstr $ val { value = delEntry idx (value val) }
 
 replaceConstant :: T.Text -> [Integer] -> LispUValue -> LispVar -> LispVar
 replaceConstant name idx c var@(NamedVar name' cat tp)
@@ -78,10 +108,11 @@ replaceConstant name idx c (LispITE cond ifT ifF)
             (replaceConstant name idx c ifF)
 
 replaceConstantExpr :: T.Text -> [Integer] -> LispUValue -> SMTExpr t -> SMTExpr t
-replaceConstantExpr name idx c (InternalObj (cast -> Just acc) ann)
+replaceConstantExpr name idx c e@(InternalObj (cast -> Just acc) ann)
   = case acc of
      LispVarAccess (NamedVar name' State tp) idx' dyn
        | name==name' && idx==idx' -> access c dyn
+       | name==name' -> e
        where
          access :: SMTType t => LispUValue -> [SMTExpr Integer] -> SMTExpr t
          access (LispUValue x) [] = case gcast (constant $ derefConst (undefined::SMTExpr Integer) x) of
@@ -113,11 +144,13 @@ replaceConstantExpr name idx c (App fun args)
                     (extractArgAnnotation args)
 replaceConstantExpr _ _ _ e = e
 
-deduceValueSet :: Int -> LispProgram -> IO ValueSet
-deduceValueSet threshold prog = do
-  pipe <- createSMTPipe "z3" ["-smt2","-in"]
+deduceValueSet :: Int -> Int -> String -> LispProgram -> IO ValueSet
+deduceValueSet verbosity threshold solver prog = do
+  let bin:args = words solver
+  pipe <- createSMTPipe bin args
   let pipe' = debugBackend pipe
-  withSMTBackend pipe $ initialValueSet threshold prog >>= refineValueSet threshold prog
+  withSMTBackend pipe $ initialValueSet threshold prog
+    >>= refineValueSet verbosity threshold prog
 
 getConstants :: ValueSet -> [(T.Text,[Int],LispUValue)]
 getConstants vs = getConstants' 0 (valueMask vs)
@@ -159,12 +192,16 @@ addState :: [LispUValue] -> ValueSet -> ValueSet
 addState vs vals = vals { values = vs:values vals
                         , vsize = (vsize vals)+1 }
 
-refineValueSet :: MonadIO m => Int -> LispProgram -> ValueSet -> SMT' m ValueSet
-refineValueSet threshold prog vs = stack $ do
+refineValueSet :: (Functor m,MonadIO m) => Int -> Int -> LispProgram -> ValueSet -> SMT' m ValueSet
+refineValueSet verbosity threshold prog vs = stack $ do
   cur <- createStateVars "" prog
   inp <- createInputVars "" prog
   (nxt,_) <- declareNextState prog cur inp Nothing (startingProgress prog)
-  getValues cur nxt vs
+  res <- getValues cur nxt vs
+  when (verbosity>=2) $ do
+    liftIO $ hPutStrLn stderr $ "Current value set:"
+    liftIO $ hPutStrLn stderr $ showValueSet res
+  return res
   where
     getValues cur nxt vs = do
       nvs <- stack $ do
@@ -181,7 +218,7 @@ refineValueSet threshold prog vs = stack $ do
         Just vs' -> getValues cur nxt vs'
         Nothing -> return vs
             
-initialValueSet :: MonadIO m => Int -> LispProgram -> SMT' m ValueSet
+initialValueSet :: (Functor m,MonadIO m) => Int -> LispProgram -> SMT' m ValueSet
 initialValueSet threshold prog = stack $ do
   vars <- createStateVars "" prog
   assert $ initialState prog vars

@@ -117,7 +117,6 @@ instance Show (LispName sig) where
 deriving instance Show (LispValue t LispExpr)
 deriving instance Show (Size LispExpr lvl)
 deriving instance Show (LispExpr e)
-deriving instance Show (LispIndex tps tp)
 deriving instance Show (LispArrayIndex LispExpr lvl rlvl e)
 deriving instance Show (LispVar LispExpr t)
 deriving instance Show (Annotation n)
@@ -742,6 +741,11 @@ data LispRev tp where
           -> RevValue '(lvl,tps) tp
           -> LispRev tp
 
+deriving instance Show (LispRev tp)
+
+instance GShow LispRev where
+  gshowsPrec = showsPrec
+
 instance TransitionRelation LispProgram where
   type State LispProgram = LispState 
   type Input LispProgram = LispState
@@ -988,6 +992,11 @@ instance Composite LispState where
     return $ LispState (DMap.fromAscList lst')
     where
       lst = DMap.toAscList ann
+  eqComposite (LispState mp1) (LispState mp2) = do
+    eqs <- sequence [ eqComposite v1 v2
+                    | (name@(LispName _) :=> (LispValue' v1)) <- DMap.toList mp1
+                    , let LispValue' v2 = mp2 DMap.! name ]
+    [expr| (and # eqs) |]
 
 newtype LispConcr = LispConcr (DMap LispName LispUVal)
 
@@ -1158,6 +1167,7 @@ parseLispProgram descr = case descr of
                                              L.List [L.Symbol name,def]
                                                -> case parseLispTopVar state inp gates def of
                                                    Just var -> (name,var)
+                                                   Nothing -> error $ "Failed to parse next value of "++show name++": "++show def
                                              _ -> error $ "Failed to parse next expression: "++show nxt
                                            ) nxts
                           in Map.fromList nxts'
@@ -1373,8 +1383,8 @@ parseLispVar state inps gts (L.List [L.List [L.Symbol "_",L.Symbol "ite"]
                                     ,cond,ifT,ifF]) = do
   cond' <- parseLispExpr' state inps gts (\e -> case cast e of
                                                  Just e' -> e') cond
-  ifT' <- parseLispVar state inps gts ifT
-  ifF' <- parseLispVar state inps gts ifF
+  ifT' <- parseLispTopVar state inps gts ifT
+  ifF' <- parseLispTopVar state inps gts ifF
   return (LispITE cond' ifT' ifF')
 parseLispVar state inps gts lisp
   = (do

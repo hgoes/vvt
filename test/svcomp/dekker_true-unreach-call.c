@@ -25,6 +25,7 @@ void *thr1(void* arg) {
   // end: critical section
   turn = 1;
   flag1 = 0;
+  return 0;
 }
 
 void *thr2(void* arg) {
@@ -42,6 +43,7 @@ void *thr2(void* arg) {
   // end: critical section
   turn = 1;
   flag2 = 0;
+  return 0;
 }
 
 int main() {

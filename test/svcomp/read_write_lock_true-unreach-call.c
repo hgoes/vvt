@@ -36,6 +36,7 @@ void *writer(void* arg) { //writer
   __VERIFIER_atomic_take_write_lock();  
   x = 3;
   w = 0;
+  return 0;
 }
 
 void *reader(void* arg) { //reader
@@ -45,6 +46,7 @@ void *reader(void* arg) { //reader
   y = l;
   assert(y == x);
   __VERIFIER_atomic_release_read_lock();
+  return 0;
 }
 
 int main() {

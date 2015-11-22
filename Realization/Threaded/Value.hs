@@ -13,23 +13,24 @@ import LLVM.FFI
 import Foreign.Ptr (Ptr)
 import Data.Typeable
 import Data.List (genericIndex,genericReplicate,genericLength)
-import Prelude hiding (mapM)
 import Data.Traversable
 import Data.Foldable
 import System.IO.Unsafe
 import Data.Maybe (mapMaybe,catMaybes)
+import Prelude hiding (sequence,mapM)
 import Debug.Trace
 
 data Struct a = Singleton { singleton :: a }
               | Struct { struct :: [Struct a] }
               deriving (Eq,Ord,Typeable,Functor,Foldable,Traversable)
 
-data SymVal = ValBool { valBool :: SMTExpr Bool }
-            | ValInt { valInt :: SMTExpr Integer }
-            | ValPtr { valPtr :: Map MemoryPtr (SMTExpr Bool,[SMTExpr Integer])
-                     , valPtrType :: Struct SymType }
-            | ValThreadId { valThreadId :: Map (Ptr CallInst) (SMTExpr Bool) }
-            | ValVector { valVector :: [SymVal] }
+data SymVal = ValBool { valBool :: !(SMTExpr Bool) }
+            | ValInt { valInt :: !(SMTExpr Integer) }
+            | ValPtr { valPtr :: !(Map MemoryPtr (SMTExpr Bool,[SMTExpr Integer]))
+                     , valPtrType :: !(Struct SymType) }
+            | ValThreadId { valThreadId :: !(Map (Ptr CallInst) (SMTExpr Bool)) }
+            | ValCondition { valCondition :: !(Map (Maybe (Ptr CallInst)) (SMTExpr Bool)) }
+            | ValVector { valVector :: ![SymVal] }
             deriving (Eq,Ord,Show,Typeable)
 
 data SymArray = ArrBool { arrBool :: SMTExpr (SMTArray (SMTExpr Integer) Bool) }
@@ -38,6 +39,7 @@ data SymArray = ArrBool { arrBool :: SMTExpr (SMTArray (SMTExpr Integer) Bool) }
                                                   [SMTExpr (SMTArray (SMTExpr Integer) Integer)])
                        , arrPtrType :: Struct SymType }
               | ArrThreadId { arrThreadId :: Map (Ptr CallInst) (SMTExpr (SMTArray (SMTExpr Integer) Bool)) }
+              | ArrCondition { arrCondition :: Map (Maybe (Ptr CallInst)) (SMTExpr (SMTArray (SMTExpr Integer) Bool)) }
               | ArrVector { arrVector :: [SymArray] }
               deriving (Eq,Ord,Show,Typeable)
 
@@ -46,6 +48,7 @@ data SymType = TpBool
              | TpPtr { tpPtr :: Map MemoryPtr ()
                      , tpPtrType :: Struct SymType }
              | TpThreadId { tpThreadId :: Map (Ptr CallInst) () }
+             | TpCondition { tpCondition :: Map (Maybe (Ptr CallInst)) () }
              | TpVector { tpVector :: [SymType] }
              deriving (Eq,Ord,Show,Typeable)
 
@@ -72,15 +75,46 @@ data AccessPattern = StaticAccess Integer
                    | DynamicAccess
                    deriving (Eq,Ord,Typeable)
 
-defaultIf :: SMTExpr Bool -> SymVal -> SymVal
-defaultIf cond (ValBool v) = ValBool (ite cond (constant False) v)
-defaultIf cond (ValInt v) = ValInt (ite cond (constant 0) v)
-defaultIf cond (ValPtr ptr tp) = ValPtr (fmap (\(c,idx) -> (constant False,
-                                                            fmap (const $ constant 0) idx)
-                                              ) ptr) tp
-defaultIf cond (ValThreadId mp) = ValThreadId $ fmap (const $ constant False) mp
-defaultIf cond (ValVector vals) = ValVector $ fmap (defaultIf cond) vals
+data MemoryAccessResult a
+  = Success a
+  | Invalid
+  | TypeError
+  | CondAccess (SMTExpr Bool) (MemoryAccessResult a) (MemoryAccessResult a)
+  deriving (Eq,Ord,Typeable)
 
+typeIntersection :: SymType -> SymType -> Maybe SymType
+typeIntersection TpBool TpBool = Just TpBool
+typeIntersection TpInt TpInt = Just TpInt
+typeIntersection (TpPtr trg1 tp1) (TpPtr trg2 tp2) = do
+  ntp <- sequence $ zipStruct typeIntersection tp1 tp2
+  return $ TpPtr (Map.intersection trg1 trg2) ntp
+typeIntersection (TpCondition t1) (TpCondition t2)
+  = Just $ TpCondition (Map.intersection t1 t2)
+typeIntersection (TpVector v1) (TpVector v2) = do
+  ntps <- sequence $ zipWith typeIntersection v1 v2
+  return $ TpVector ntps
+typeIntersection _ _ = Nothing
+
+typeUnion :: SymType -> SymType -> Maybe SymType
+typeUnion TpBool TpBool = Just TpBool
+typeUnion TpInt TpInt = Just TpInt
+typeUnion (TpPtr trg1 tp1) (TpPtr trg2 tp2) = do
+  ntp <- sequence $ zipStruct typeUnion tp1 tp2
+  return $ TpPtr (Map.union trg1 trg2) ntp
+typeUnion (TpCondition t1) (TpCondition t2)
+  = Just $ TpCondition (Map.union t1 t2)
+typeUnion (TpVector v1) (TpVector v2) = do
+  ntps <- sequence $ zipWith typeUnion v1 v2
+  return $ TpVector ntps
+typeUnion (TpThreadId t1) (TpThreadId t2)
+  = Just $ TpThreadId $ Map.union t1 t2
+typeUnion _ _ = Nothing
+
+zipStruct :: (a -> b -> c) -> Struct a -> Struct b -> Struct c
+zipStruct f (Singleton x) (Singleton y) = Singleton (f x y)
+zipStruct f (Struct xs) (Struct ys)
+  = Struct (zipWith (zipStruct f) xs ys)
+      
 defaultValue :: SymType -> SymVal
 defaultValue TpBool = ValBool (constant False)
 defaultValue TpInt = ValInt (constant 0)
@@ -91,6 +125,8 @@ defaultValue (TpPtr mp tp)
             ) mp) tp
 defaultValue (TpThreadId mp)
   = ValThreadId (fmap (const $ constant False) mp)
+defaultValue (TpCondition mp)
+  = ValCondition (fmap (const $ constant False) mp)
 defaultValue (TpVector tps) = ValVector (fmap defaultValue tps)
 
 valEq :: SymVal -> SymVal -> SMTExpr Bool
@@ -110,6 +146,13 @@ valEq (ValPtr x _) (ValPtr y _) = case catMaybes $ Map.elems mp of
       rest <- idxEq xs ys
       return $ (x.==.y):rest
 valEq (ValThreadId x) (ValThreadId y) = case Map.elems mp of
+  [] -> constant False
+  [x] -> x
+  xs -> app or' xs
+  where
+    mp = Map.intersectionWith condEq x y
+    condEq c1 c2 = c1 .&&. c2
+valEq (ValCondition x) (ValCondition y) = case Map.elems mp of
   [] -> constant False
   [x] -> x
   xs -> app or' xs
@@ -173,24 +216,21 @@ derefPointer idx mp
                             in (DynamicAccess:restPat,i:restDyn)
     toAccess [] = ([],[])
 
-
 withOffset :: Show b
-           => (Struct b -> c -> (Maybe (a,Struct b),c)) -> Integer
-           -> Struct b -> c -> (Maybe (a,Struct b),c)
-withOffset f n (Struct xs) st = (do
-                                    (obj,nxs) <- res
-                                    return (obj,Struct nxs),nst)
+            => (Struct b -> c -> (MemoryAccessResult a,Struct b,c))
+            -> Integer
+            -> Struct b
+            -> c
+            -> (MemoryAccessResult a,Struct b,c)
+withOffset f n (Struct xs) st = (res,Struct nxs,nst)
   where
-    (res,nst) = withStruct n xs
-    withStruct 0 (x:xs') = let (res,nst) = f x st
-                           in (do
-                                  (obj,nx) <- res
-                                  return (obj,nx:xs'),nst)
-    withStruct n (x:xs') = let (res,nst) = withStruct (n-1) xs'
-                           in (do
-                                  (obj,nxs) <- res
-                                  return (obj,x:nxs),nst)
-    withStruct _ [] = error $ "withOffset: "++show xs++" "++show n
+    (res,nxs,nst) = withStruct n xs
+    withStruct 0 (x:xs) = let (res,nx,nst) = f x st
+                          in (res,nx:xs,nst)
+    withStruct n (x:xs) = let (res,nxs,nst) = withStruct (n-1) xs
+                          in (res,x:nxs,nst)
+    withStruct _ [] = (Invalid,[],st)
+withOffset _ n obj st = error $ "withOffset: Cannot index "++show obj++" with "++show n
 
 symITE :: SMTExpr Bool -> SymVal -> SymVal -> SymVal
 symITE cond (ValBool x) (ValBool y) = ValBool (ite cond x y)
@@ -203,6 +243,9 @@ symITE cond (ValPtr x tp) (ValPtr y _)
 symITE cond (ValThreadId x) (ValThreadId y)
   = ValThreadId (Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
                  (fmap (.&&. cond)) (fmap (.&&. (not' cond))) x y)
+symITE cond (ValCondition x) (ValCondition y)
+  = ValCondition (Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
+                  (fmap (.&&. cond)) (fmap (.&&. (not' cond))) x y)
 symITE cond (ValVector v1) (ValVector v2)
   = ValVector $ zipWith (symITE cond) v1 v2
 symITE cond v1 v2 = error $ "Cannot ITE differently typed values "++show v1++" and "++show v2
@@ -224,6 +267,8 @@ arrITE cond (ArrPtr x tp) (ArrPtr y _)
     tp
 arrITE cond (ArrThreadId x) (ArrThreadId y)
   = ArrThreadId $ Map.intersectionWith (ite cond) x y
+arrITE cond (ArrCondition x) (ArrCondition y)
+  = ArrCondition $ Map.intersectionWith (ite cond) x y
 arrITE cond (ArrVector x) (ArrVector y)
   = ArrVector $ zipWith (arrITE cond) x y
 
@@ -245,60 +290,47 @@ structITEs comb xs = Struct (zipStructs (fmap (\(Struct x,c) -> (x,c)) xs))
                     zipStructs (fmap (\(_:xs,c) -> (xs,c)) xs)
 
 withDynOffset :: (SMTExpr Bool -> b -> b -> b)
-              -> ([(a,SMTExpr Bool)] -> a)
-              -> (Struct b -> c -> (Maybe (a,Struct b),c))
-              -> SMTExpr Integer
-              -> [Struct b] -> c -> (Maybe (a,[Struct b]),c)
-withDynOffset ite comb f n xs st
-  = (case catMaybes $ fmap snd lst of
-      [] -> Nothing
-      conds -> Just (comb [ (obj,cond) | (cond,obj,_) <- conds ],
-                     fmap (\(x,r) -> case r of
-                            Just (c,_,nx) -> structITE ite c nx x
-                            Nothing -> x
-                          ) lst),nst)
+               -> (Struct b -> c -> (MemoryAccessResult a,Struct b,c))
+               -> SMTExpr Integer
+               -> [Struct b]
+               -> c
+               -> (MemoryAccessResult a,[Struct b],c)
+withDynOffset ite f n xs st = with 0 xs st
   where
-    (nst,lst) = it 0 xs st
-    it i (x:xs) st = let (res,st1) = f x st
-                         (st2,rest) = it (i+1) xs st1
-                     in (st2,(x,case res of
-                               Just (obj,nx) -> Just (n.==.(constant i),obj,nx)
-                               Nothing -> Nothing):rest)
-    it i [] st = (st,[])
+    with i (x:xs) st = let (res,nx,st1) = f x st
+                           (ress,nxs,st2) = with (i+1) xs st1
+                           cond = n .==. (constant i)
+                       in (CondAccess cond res ress,
+                           structITE ite cond nx x:nxs,
+                           st2)
+    with i [] st = (Invalid,[],st)
 
 accessStruct :: Show b
-             => (SMTExpr Bool -> b -> b -> b)
-             -> ([(a,SMTExpr Bool)] -> a)
-             -> (b -> c -> (Maybe (a,b),c))
-             -> [Either Integer (SMTExpr Integer)]
-             -> Struct b
-             -> c
-             -> (Maybe (a,Struct b),c)
-accessStruct _ _ f [] (Singleton x) st = (nval,nst)
+              => (SMTExpr Bool -> b -> b -> b)
+              -> (b -> c -> (MemoryAccessResult a,b,c))
+              -> [Either Integer (SMTExpr Integer)]
+              -> Struct b
+              -> c
+              -> (MemoryAccessResult a,Struct b,c)
+accessStruct _ f [] (Singleton x) st = (res,Singleton nx,nst)
   where
-    (res,nst) = f x st
-    nval = do
-      (obj,nx) <- res
-      return (obj,Singleton nx)
-accessStruct ite comb f (Left i:is) s st
-  = withOffset (accessStruct ite comb f is) i s st
-accessStruct ite comb f (Right i:is) (Struct s) st
-  = (do
-        (obj,ns) <- res
-        return (obj,Struct ns),nst)
+    (res,nx,nst) = f x st
+accessStruct ite f (Left i:is) s st
+  = withOffset (accessStruct ite f is) i s st
+accessStruct ite f (Right i:is) (Struct s) st
+  = (res,Struct ns,nst)
   where
-    (res,nst) = withDynOffset ite comb (accessStruct ite comb f is) i s st
+    (res,ns,nst) = withDynOffset ite (accessStruct ite f is) i s st
 
-accessArray :: (SymVal -> c -> (Maybe (a,SymVal),c)) -> SMTExpr Integer
+accessArray :: (SymVal -> c -> (MemoryAccessResult a,SymVal,c))
+            -> SMTExpr Integer
             -> SymArray
             -> c
-            -> (Maybe (a,SymArray),c)
+            -> (MemoryAccessResult a,SymArray,c)
 accessArray f idx arr st
-  = (do
-        (obj,nval) <- res
-        return (obj,insertValue idx nval arr),nst)
+  = (res,insertValue idx nval arr,nst)
   where
-    (res,nst) = f (extractValue idx arr) st
+    (res,nval,nst) = f (extractValue idx arr) st
 
 extractValue :: SMTExpr Integer -> SymArray -> SymVal
 extractValue idx (ArrBool arr) = ValBool (select arr idx)
@@ -307,6 +339,8 @@ extractValue idx (ArrPtr arr tp)
   = ValPtr (fmap (\(conds,idxs) -> (select conds idx,fmap (\i -> select i idx) idxs)) arr) tp
 extractValue idx (ArrThreadId arr)
   = ValThreadId (fmap (\conds -> select conds idx) arr)
+extractValue idx (ArrCondition arr)
+  = ValCondition (fmap (\conds -> select conds idx) arr)
 extractValue idx (ArrVector arrs)
   = ValVector (fmap (extractValue idx) arrs)
 
@@ -323,74 +357,79 @@ insertValue idx (ValThreadId t) (ArrThreadId ts)
   = ArrThreadId (Map.intersectionWith
                  (\nval arr -> store arr idx nval)
                  t ts)
+insertValue idx (ValCondition t) (ArrCondition ts)
+  = ArrCondition (Map.intersectionWith
+                  (\nval arr -> store arr idx nval)
+                  t ts)
 insertValue idx (ValVector vals) (ArrVector arr)
   = ArrVector (zipWith (insertValue idx) vals arr)
 
-accessAlloc :: ([(a,SMTExpr Bool)] -> a)
-            -> (SymVal -> c -> (Maybe (a,SymVal),c))
+accessAlloc :: (SymVal -> c -> (MemoryAccessResult a,SymVal,c))
             -> [Either Integer (SMTExpr Integer)]
             -> AllocVal
             -> c
-            -> (Maybe (a,AllocVal),c)
-accessAlloc comb f idx@(Left i:is) (ValStatic s) st
-  = (do
-        (obj,ns) <- res
-        return (obj,ValStatic ns),nst)
+            -> (MemoryAccessResult a,AllocVal,c)
+accessAlloc f idx@(Left i:is) (ValStatic s) st
+  = (res,ValStatic ns,nst)
   where
-    (res,nst) = accessStatic i s
-    accessStatic 0 (s:ss) = let (res,nst) = accessStruct symITE comb f is s st
-                            in (do
-                                   (obj,ns) <- res
-                                   return (obj,ns:ss),nst)
-    accessStatic n (s:ss) = let (res,nst) = accessStatic (n-1) ss
-                            in (do
-                                   (obj,nss) <- res
-                                   return (obj,s:nss),nst)
-accessAlloc comb f (Right i:is) (ValStatic s) st
-  = (do
-        (obj,ns) <- res
-        return (obj,ValStatic ns),nst)
+    (res,ns,nst) = accessStatic i s
+    accessStatic 0 (s:ss) = let (res,ns,nst) = accessStruct symITE f is s st
+                            in (res,ns:ss,nst)
+    accessStatic n (s:ss) = let (res,nss,nst) = accessStatic (n-1) ss
+                            in (res,s:nss,nst)
+    accessStatic _ [] = (Invalid,[],st)
+accessAlloc f (Right i:is) (ValStatic s) st
+  = (res,ValStatic ns,nst)
   where
-    (res,nst) = withDynOffset symITE comb (accessStruct symITE comb f is) i s st
-accessAlloc comb f [] (ValStatic (x:xs)) st
-  = (do
-        (obj,nx) <- res
-        return (obj,ValStatic (nx:xs)),nst)
+    (res,ns,nst) = withDynOffset symITE (accessStruct symITE f is) i s st
+accessAlloc f [] (ValStatic (x:xs)) st
+  = (res,ValStatic $ nx:xs,nst)
   where
-    (res,nst) = accessStruct symITE comb f [] x st
-accessAlloc comb f (i:is) (ValDynamic arrs sz) st
-  = (do
-        (obj,narrs) <- res
-        return (obj,ValDynamic arrs sz),nst)
+    (res,nx,nst) = accessStruct symITE f [] x st
+accessAlloc f (i:is) (ValDynamic arrs sz) st
+  = (res,ValDynamic narrs sz,nst)
   where
-    (res,nst) = accessStruct arrITE comb (accessArray nf i') is arrs st
-     -- Make sure that the model stays deterministic by loading default values for out-of-bounds indices
-    nf val = f (defaultIf ((i' .>=. sz) .||. (i' .<. 0)) val)
+    (res,narrs,nst) = accessStruct arrITE (accessArray nf i') is arrs st
+    nf val st = let (acc,res,nst) = f val st
+                in (CondAccess (i' .>=. sz) Invalid acc,res,nst)
     i' = case i of
       Left i -> constant i
       Right i -> i
 
 accessAllocTyped :: SymType
-                 -> ([(a,SMTExpr Bool)] -> a)
                  -> (SymVal -> c -> (a,SymVal,c))
                  -> [Either Integer (SMTExpr Integer)]
                  -> AllocVal
                  -> c
-                 -> (a,AllocVal,c)
-accessAllocTyped tp comb f idx val st
-  = case accessAlloc comb (\val st -> if sameType tp (extractArgAnnotation val)
-                                      then (let (obj,nval,nst) = f val st
-                                            in (Just (obj,nval),nst))
-                                      else (Nothing,st)
-                          ) idx val st of
-     (Just (obj,nval),nst) -> (obj,nval,nst)
-     (Nothing,_) -> error $ "accessAllocTyped: Type error while accessing "++show val++" with "++show idx
+                 -> (MemoryAccessResult a,AllocVal,c)
+accessAllocTyped tp f idx val st
+  = accessAlloc (\val st -> if sameType tp (extractArgAnnotation val)
+                            then (let (obj,nval,nst) = f val st
+                                  in (Success obj,nval,nst))
+                            else (TypeError,val,st)
+                ) idx val st
+
+accessAllocTypedIgnoreErrors :: SymType
+                             -> (SymVal -> c -> (SymVal,c))
+                             -> [Either Integer (SMTExpr Integer)]
+                             -> AllocVal
+                             -> c
+                             -> (SymVal,AllocVal,c)
+accessAllocTypedIgnoreErrors tp f idx val st
+  = (combine res,nval,nst)
+  where
+    (res,nval,nst) = accessAllocTyped tp (\val st -> let (nval,nst) = f val st
+                                                     in (nval,nval,nst)) idx val st
+    combine (Success x) = x
+    combine (CondAccess c x y) = symITE c (combine x) (combine y)
+    combine _ = defaultValue tp
 
 sameType :: SymType -> SymType -> Bool
 sameType TpBool TpBool = True
 sameType TpInt TpInt = True
 sameType (TpPtr _ tp1) (TpPtr _ tp2) = sameStructType tp1 tp2
 sameType (TpThreadId _) (TpThreadId _) = True
+sameType (TpCondition _) (TpCondition _) = True
 sameType (TpVector v1) (TpVector v2) = sameVector v1 v2
   where
     sameVector [] [] = True
@@ -457,6 +496,15 @@ addSymGate gts (TpThreadId trgs) f name
                                         in (ngts,cond)
                           ) gts trgs
     in (ValThreadId trgExprs,ngts)
+addSymGate gts (TpCondition trgs) f name
+  = let (ngts,trgExprs) = Map.mapAccumWithKey
+                          (\gts th _ -> let gt = Gate { gateTransfer = (Map.! th).valCondition.f
+                                                      , gateAnnotation = ()
+                                                      , gateName = name }
+                                            (cond,ngts) = addGate gts gt
+                                        in (ngts,cond)
+                          ) gts trgs
+    in (ValCondition trgExprs,ngts)
 addSymGate gts (TpVector tps) f name
   = let (ngts,nvals) = mapAccumL (\gts (tp,i) -> let (val,ngts) = addSymGate gts tp ((!!i).valVector.f) name
                                                  in (ngts,val)
@@ -619,6 +667,9 @@ instance Args SymVal where
   foldExprs f s ~(ValThreadId conds) (TpThreadId ths) = do
     (s',conds') <- foldExprs f s conds ths
     return (s',ValThreadId conds')
+  foldExprs f s ~(ValCondition conds) (TpCondition ths) = do
+    (s',conds') <- foldExprs f s conds ths
+    return (s',ValCondition conds')
   foldExprs f s ~(ValVector vals) (TpVector tps) = do
     (s',vals') <- foldExprs f s vals tps
     return (s',ValVector vals')
@@ -642,6 +693,7 @@ instance Args SymVal where
   extractArgAnnotation (ValInt _) = TpInt
   extractArgAnnotation (ValPtr conds tp) = TpPtr (fmap (const ()) conds) tp
   extractArgAnnotation (ValThreadId conds) = TpThreadId (fmap (const ()) conds)
+  extractArgAnnotation (ValCondition conds) = TpCondition (fmap (const ()) conds)
   extractArgAnnotation (ValVector vals) = TpVector (fmap extractArgAnnotation vals)
   toArgs TpBool es = case es of
     [] -> Nothing
@@ -659,6 +711,9 @@ instance Args SymVal where
   toArgs (TpThreadId ths) es = do
     (conds,rest) <- toArgs ths es
     return (ValThreadId conds,rest)
+  toArgs (TpCondition ths) es = do
+    (conds,rest) <- toArgs ths es
+    return (ValCondition conds,rest)
   toArgs (TpVector tps) es = do
     (vals,rest) <- toArgs tps es
     return (ValVector vals,rest)
@@ -666,11 +721,13 @@ instance Args SymVal where
   getTypes _ TpInt = [ProxyArg (undefined::Integer) ()]
   getTypes _ (TpPtr trgs tp) = getTypes (undefined::Map MemoryPtr (SMTExpr Bool)) trgs
   getTypes _ (TpThreadId ths) = getTypes (undefined::Map (Ptr CallInst) (SMTExpr Bool)) ths
+  getTypes _ (TpCondition ths) = getTypes (undefined::Map (Maybe (Ptr CallInst)) (SMTExpr Bool)) ths
   getTypes _ (TpVector tps) = getTypes (undefined::[SymVal]) tps
   fromArgs (ValBool e) = [UntypedExpr e]
   fromArgs (ValInt e) = [UntypedExpr e]
   fromArgs (ValPtr conds _) = fromArgs conds
   fromArgs (ValThreadId conds) = fromArgs conds
+  fromArgs (ValCondition conds) = fromArgs conds
   fromArgs (ValVector vals) = fromArgs vals
 
 instance Args SymArray where
@@ -687,6 +744,9 @@ instance Args SymArray where
   foldExprs f s ~(ArrThreadId conds) (TpThreadId ths) = do
     (s',conds') <- foldExprs f s conds (fmap (\_ -> ((),())) ths)
     return (s',ArrThreadId conds')
+  foldExprs f s ~(ArrCondition conds) (TpCondition ths) = do
+    (s',conds') <- foldExprs f s conds (fmap (\_ -> ((),())) ths)
+    return (s',ArrCondition conds')
   foldExprs f s ~(ArrVector arrs) (TpVector tps) = do
     (s',arrs') <- foldExprs f s arrs tps
     return (s',ArrVector arrs')
@@ -706,6 +766,10 @@ instance Args SymArray where
     let lst' = fmap (\(ArrThreadId x,y) -> (x,y)) lst
     (ns,rlst,res) <- foldsExprs f s lst' (fmap (\_ -> ((),())) conds)
     return (ns,fmap ArrThreadId rlst,ArrThreadId res)
+  foldsExprs f s lst (TpCondition conds) = do
+    let lst' = fmap (\(ArrCondition x,y) -> (x,y)) lst
+    (ns,rlst,res) <- foldsExprs f s lst' (fmap (\_ -> ((),())) conds)
+    return (ns,fmap ArrCondition rlst,ArrCondition res)
   foldsExprs f s lst (TpVector tps) = do
     let lst' = fmap (\(ArrVector x,y) -> (x,y)) lst
     (ns,rlst,res) <- foldsExprs f s lst' tps
@@ -714,6 +778,7 @@ instance Args SymArray where
   extractArgAnnotation (ArrInt _) = TpInt
   extractArgAnnotation (ArrPtr mp tp) = TpPtr (fmap (const ()) mp) tp
   extractArgAnnotation (ArrThreadId mp) = TpThreadId (fmap (const ()) mp)
+  extractArgAnnotation (ArrCondition mp) = TpCondition (fmap (const ()) mp)
   extractArgAnnotation (ArrVector arrs) = TpVector (fmap extractArgAnnotation arrs)
   toArgs TpBool es = do
     (arr,rest) <- toArgs ((),()) es
@@ -727,6 +792,9 @@ instance Args SymArray where
   toArgs (TpThreadId trgs) es = do
     (conds,rest) <- toArgs (fmap (const ((),())) trgs) es
     return (ArrThreadId conds,rest)
+  toArgs (TpCondition trgs) es = do
+    (conds,rest) <- toArgs (fmap (const ((),())) trgs) es
+    return (ArrCondition conds,rest)
   toArgs (TpVector arrs) es = do
     (arrs,rest) <- toArgs arrs es
     return (ArrVector arrs,rest)
@@ -738,12 +806,16 @@ instance Args SymArray where
   getTypes _ (TpThreadId trgs)
     = getTypes (undefined::Map (Ptr CallInst) (SMTExpr (SMTArray (SMTExpr Integer) Bool)))
       (fmap (const ((),())) trgs)
+  getTypes _ (TpCondition trgs)
+    = getTypes (undefined::Map (Maybe (Ptr CallInst)) (SMTExpr (SMTArray (SMTExpr Integer) Bool)))
+      (fmap (const ((),())) trgs)
   getTypes _ (TpVector tps)
     = getTypes (undefined::[SymArray]) tps
   fromArgs (ArrBool arr) = [UntypedExpr arr]
   fromArgs (ArrInt arr) = [UntypedExpr arr]
   fromArgs (ArrPtr arrs _) = fromArgs arrs
   fromArgs (ArrThreadId arrs) = fromArgs arrs
+  fromArgs (ArrCondition arrs) = fromArgs arrs
   fromArgs (ArrVector arrs) = fromArgs arrs
   
 instance Args a => Args (Struct a) where
