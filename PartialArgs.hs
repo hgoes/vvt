@@ -17,17 +17,6 @@ import Data.Typeable
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
 
-type Lifting m e = (forall v qv fun con field fv t. GetType t
-                    => Expression v qv fun con field fv e t -> m (e t))
-
-defLifting :: (B.Backend b,Monad m) => (forall a. SMT b a -> m a)
-           -> Lifting m (B.Expr b)
-defLifting lift e = do
-  e' <- mapExpr err err err err err err return e
-  lift $ embedSMT (B.toBackend e')
-  where
-    err = error "PartialArgs.defLifting: Can't be used on expression with variables/functions/etc."
-
 class Composite a => LiftComp a where
   type Unpacked a
   liftComp :: Embed m e
@@ -46,3 +35,8 @@ class LiftComp a => PartialComp a where
 
 data PValue t = NoPValue
               | PValue (ConcreteValue t)
+
+assignEq :: (Embed m e,GetType t) => e t -> ConcreteValue t -> m (e BoolType)
+assignEq var c = do
+  val <- embedConst c
+  [expr| (= var val) |]

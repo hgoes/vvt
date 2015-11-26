@@ -4,7 +4,7 @@ import Realization
 import Realization.Lisp.Value
 import Args
 import PartialArgs
---import RSM
+import RSM
 
 import Language.SMTLib2
 import Language.SMTLib2.Pipe hiding (Var)
@@ -20,6 +20,8 @@ import Data.GADT.Compare
 import Data.GADT.Show
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Typeable
 import qualified Data.AttoLisp as L
@@ -38,7 +40,7 @@ import Control.Monad.Trans
 data LispName (sig :: (Nat,Struct Type)) where
   LispName :: (KnownNat lvl,GetStructType tp) => T.Text -> LispName '(lvl,tp)
 
-newtype Annotation (sig :: k) = Annotation (Map T.Text L.Lisp)
+newtype Annotation (sig :: k) = Annotation { getAnnotation :: Map T.Text L.Lisp }
 
 data NoRef (t :: k) = NoRef deriving Show
 
@@ -46,7 +48,7 @@ data LispProgram
   = LispProgram { programAnnotation :: Map T.Text L.Lisp
                 , programState :: DMap LispName Annotation
                 , programInput :: DMap LispName Annotation
-                , programGates :: DMap LispName (LispVar LispExpr)
+                , programGates :: DMap LispName LispGate
                 , programNext :: DMap LispName (LispVar LispExpr)
                 , programProperty :: [LispExpr BoolType]
                 , programInit :: DMap LispName LispInit
@@ -54,6 +56,9 @@ data LispProgram
                 , programAssumption :: [LispExpr BoolType]
                 , programPredicates :: [LispExpr BoolType]
                 } deriving Show
+
+data LispGate (sig :: (Nat,Struct Type)) = LispGate { gateDefinition :: LispVar LispExpr sig
+                                                    , gateAnnotation :: Annotation sig }
 
 newtype LispInit sig = LispInit (LispValue sig LispExpr)
 
@@ -70,7 +75,7 @@ data LispVar e (sig :: (Nat,Struct Type)) where
   LispITE :: e BoolType -> LispVar e sig -> LispVar e sig -> LispVar e sig
 
 data LispExpr (t::Type) where
-  LispExpr :: Expression NoRef NoRef NoRef NoRef NoRef NoRef LispExpr t
+  LispExpr :: Expression NoRef NoRef NoRef NoRef NoRef NoRef NoRef LispExpr t
            -> LispExpr t
   LispRef :: LispVar LispExpr '(lvl,tps)
           -> LispIndex tps tp -> LispArrayIndex LispExpr lvl rlvl tp
@@ -120,6 +125,7 @@ deriving instance Show (LispExpr e)
 deriving instance Show (LispArrayIndex LispExpr lvl rlvl e)
 deriving instance Show (LispVar LispExpr t)
 deriving instance Show (Annotation n)
+deriving instance Show (LispGate sig)
 
 instance GShow LispName where
   gshowsPrec = showsPrec
@@ -128,6 +134,9 @@ instance GShow LispExpr where
   gshowsPrec = showsPrec
 
 instance GShow NoRef where
+  gshowsPrec = showsPrec
+
+instance GShow LispGate where
   gshowsPrec = showsPrec
 
 instance ShowTag LispName LispInit where
@@ -140,6 +149,9 @@ instance ShowTag LispName Annotation where
   showTaggedPrec _ = showsPrec
 
 instance ShowTag LispName LispUVal where
+  showTaggedPrec _ = showsPrec
+
+instance ShowTag LispName LispGate where
   showTaggedPrec _ = showsPrec
 
 data LispException = LispException LispAction SomeException deriving Typeable
@@ -187,10 +199,11 @@ programToLisp prog = L.List (L.Symbol "program":elems)
     gates = if DMap.null (programGates prog)
             then []
             else [L.List (L.Symbol "gates":gates')]
-    gates' = [ L.List [L.Symbol name
-                      ,lispSortToLisp nm
-                      ,lispVarToLisp lvar]
-             | (nm@(LispName name)) :=> lvar
+    gates' = [ L.List $ [L.Symbol name
+                        ,lispSortToLisp nm
+                        ,lispVarToLisp (gateDefinition gate)]++
+               (annToLisp (getAnnotation $ gateAnnotation gate))
+             | (nm@(LispName name)) :=> gate
                  <- DMap.toAscList (programGates prog) ]
     next = if DMap.null (programNext prog)
            then []
@@ -232,6 +245,7 @@ lispExprToLisp (LispExpr e)
     (error "No constructors")
     (error "No fields")
     (error "No fun args")
+    (error "No let exprs")
     (return.lispExprToLisp) e
 lispExprToLisp (LispRef var idx dyn)
   = case (idx',dyn') of
@@ -442,7 +456,7 @@ parseVarMap lst
                 ) lst
 
 parseGates :: Map T.Text LispSort -> Map T.Text LispSort -> [L.Lisp]
-           -> (DMap LispName (LispVar LispExpr),Map T.Text LispSort)
+           -> (DMap LispName LispGate,Map T.Text LispSort)
 parseGates st inps lst = (mp1,mp2)
   where
     mp1 = DMap.fromList [ (LispName name :: LispName '(lvl,tp)) :=>
@@ -450,13 +464,14 @@ parseGates st inps lst = (mp1,mp2)
                                 (\e -> case gcast e of
                                    Just e' -> return e'
                                    Nothing -> throwE $ "type error") of
-                             Right var -> var
+                             Right var -> LispGate var (Annotation ann)
                              Left err -> error $ "Cannot parse gate: "++show name++"; "++show def++" ["++err++"]")
-                        | (name,LispSort (_::Proxy lvl) (_::Proxy tp),def) <- lst' ]
-    mp2 = Map.fromList [ (name,srt) | (name,srt,_) <- lst' ]
+                        | (name,LispSort (_::Proxy lvl) (_::Proxy tp),def,ann) <- lst' ]
+    mp2 = Map.fromList [ (name,srt) | (name,srt,_,_) <- lst' ]
     lst' = fmap parseGate lst
-    parseGate (L.List [L.Symbol name,sort,def])
-      = (name,parseLispType sort LispSort,def)
+    parseGate (L.List descr) = case parseAnnotation descr Map.empty of
+      (ann,[L.Symbol name,sort,def])
+        -> (name,parseLispType sort LispSort,def,ann)
 
 parseNexts :: Map T.Text LispSort -> Map T.Text LispSort -> Map T.Text LispSort
            -> [L.Lisp]
@@ -644,7 +659,7 @@ parseLispExpr state inps gates srt expr f
   where
     parser = LispParser { parseFunction = \_ _ _ _ _ _ -> throwE $ "Invalid function"
                         , parseDatatype = \_ _ -> throwE $ "Invalid datatype"
-                        , parseVar = \_ _ _ _ _ -> throwE $ "Invalid variable"
+                        , parseVar = \_ _ _ _ _ _ -> throwE $ "Invalid variable"
                         , parseRecursive = parseLispExpr state inps gates
                         , registerQVar = \_ _ -> (NoRef,parser)
                         , registerLetVar = \_ _ -> (NoRef,parser) }
@@ -737,7 +752,8 @@ newtype LispValue' e sig = LispValue' (LispValue sig e)
 newtype LispState e = LispState (DMap LispName (LispValue' e))
 
 data LispRev tp where
-  LispRev :: LispName '(lvl,tps)
+  LispRev :: (KnownNat lvl,GetStructType tps)
+          => LispName '(lvl,tps)
           -> RevValue '(lvl,tps) tp
           -> LispRev tp
 
@@ -746,10 +762,32 @@ deriving instance Show (LispRev tp)
 instance GShow LispRev where
   gshowsPrec = showsPrec
 
+instance GEq LispRev where
+  geq (LispRev name1 rev1) (LispRev name2 rev2) = do
+    Refl <- geq name1 name2
+    Refl <- geq rev1 rev2
+    return Refl
+
+instance Eq (LispRev tp) where
+  (==) = defaultEq
+
+instance GCompare LispRev where
+  gcompare (LispRev name1 rev1) (LispRev name2 rev2) = case gcompare name1 name2 of
+    GLT -> GLT
+    GGT -> GGT
+    GEQ -> case gcompare rev1 rev2 of
+      GLT -> GLT
+      GGT -> GGT
+      GEQ -> GEQ
+
+instance Ord (LispRev tp) where
+  compare = defaultCompare
+
 instance TransitionRelation LispProgram where
   type State LispProgram = LispState 
   type Input LispProgram = LispState
   type RealizationProgress LispProgram = LispState
+  type PredicateExtractor LispProgram = RSMState (Set T.Text) (LispRev IntType)
   stateAnnotation = programState
   inputAnnotation = programInput
   initialState prog st
@@ -791,6 +829,64 @@ instance TransitionRelation LispProgram where
                             return $ name :=> (LispValue' nvar)
                          ) lst) gts
     return (LispState $ DMap.fromAscList nlst,ngts)
+  suggestedPredicates prog
+    = [ (False,mkCompExpr (\st -> relativize st (LispState DMap.empty)
+                                  (\_ -> undefined) expr
+                          ) (programState prog))
+      | expr <- programPredicates prog ]
+  defaultPredicateExtractor _ = return emptyRSM
+  extractPredicates prog rsm (LispConcr full) (LispPart part) = liftIO $ do
+    (rsm2,lines) <- mineStates (createPipe "z3" ["-smt2","-in"]) rsm1
+    return (rsm2,concat $ fmap (\ln -> [mkLine Ge ln
+                                       ,mkLine Gt ln]) lines)
+    where
+      rsm1 = addRSMState activePc ints rsm
+      pcs = DMap.filterWithKey (\name val -> case DMap.lookup name (programState prog) of
+                                   Just (Annotation ann) -> case Map.lookup "pc" ann of
+                                     Just (L.Symbol "true") -> True
+                                     _ -> False
+                               ) full
+      activePc :: Set T.Text
+      activePc = Set.fromList [ name
+                              | (LispName name)
+                                :=> (LispU (LSingleton (BoolValueC True))) <- DMap.toList pcs ]
+      ints :: Map (LispRev IntType) Integer
+      ints = Map.fromList
+             [ (LispRev name (RevVar idx),val)
+             | name :=> (LispPVal' (LispP p)) <- DMap.toList part
+             , (idx,val) <- getInts p ]
+      getInts :: LispStruct PValue tps -> [(LispIndex tps IntType,Integer)]
+      getInts (LSingleton (PValue (IntValueC v))) = [(ValGet,v)]
+      getInts (LSingleton _) = []
+      getInts (LStruct args) = getInts' args
+
+      getInts' :: StructArgs PValue tps
+               -> [(LispIndex ('Struct tps) IntType,Integer)]
+      getInts' NoSArg = []
+      getInts' (SArg x xs) = [ (ValIdx (Proxy::Proxy 'Z) idx,val) | (idx,val) <- getInts x ] ++
+                             [ (ValIdx (Proxy::Proxy ('S n)) idx,val)
+                             | (ValIdx (_::Proxy n) idx,val) <- getInts' xs ]
+
+      mkLine :: OrdOp -> (Integer,[(LispRev IntType,Integer)]) -> CompositeExpr LispState BoolType
+      mkLine op (c,coeff)
+        = mkCompExpr
+          (\st -> do
+              c' <- embedConst (IntValueC c)
+              sum <- mapM (\(rev,val) -> do
+                              let var = accessComposite rev st
+                              case val of
+                                1 -> return var
+                                -1 -> [expr| (- var) |]
+                                _ -> do
+                                  rval <- embedConst (IntValueC val)
+                                  [expr| (* rval var) |]
+                          ) coeff
+              case sum of
+                [x] -> embed (App (OrdInt op) (Arg c' (Arg x NoArg)))
+                _ -> do
+                  rsum <- [expr| (+ # sum) |]
+                  embed (App (OrdInt op) (Arg c' (Arg rsum NoArg))))
+          (programState prog)
 
 declareGate :: (Embed m e)
             => (forall t. GetType t => Maybe String -> e t -> m (e t))
@@ -802,8 +898,8 @@ declareGate mkGate prog st inp name@(LispName name') = do
   case DMap.lookup name mp of
     Just (LispValue' r) -> return r
     Nothing -> case DMap.lookup name (programGates prog) of
-      Just var -> do
-        val <- relativizeVar st inp (declareGate mkGate prog st inp) var
+      Just gate -> do
+        val <- relativizeVar st inp (declareGate mkGate prog st inp) (gateDefinition gate)
         gt <- lift $ defineGate mkGate (T.unpack name') val
         LispState mp' <- get
         put $ LispState $ DMap.insert name (LispValue' gt) mp'
@@ -837,7 +933,7 @@ relativize :: (Embed m e,GetType t)
            -> LispExpr t
            -> m (e t)
 relativize st inp gts (LispExpr e) = do
-  e' <- mapExpr err err err err err err
+  e' <- mapExpr err err err err err err err
         (relativize st inp gts) e
   embed e'
   where
@@ -928,9 +1024,10 @@ atMostOneOf xs = do
       return [conj]
     oneOf' xs (y:ys) = do
       negs <- mapM (\e -> [expr| (not e) |]) (xs++ys)
-      conj <- [expr| (and # negs) |]
+      let conj = y:negs
+      trm <- [expr| (and # conj) |]
       rest <- oneOf' (y:xs) ys
-      return (conj:rest)
+      return (trm:rest)
 
 relativizeVar :: (Embed m e)
               => LispState e
@@ -992,11 +1089,14 @@ instance Composite LispState where
     return $ LispState (DMap.fromAscList lst')
     where
       lst = DMap.toAscList ann
+  accessComposite (LispRev name rev) (LispState mp) = case DMap.lookup name mp of
+    Just (LispValue' val) -> accessComposite rev val
   eqComposite (LispState mp1) (LispState mp2) = do
     eqs <- sequence [ eqComposite v1 v2
                     | (name@(LispName _) :=> (LispValue' v1)) <- DMap.toList mp1
                     , let LispValue' v2 = mp2 DMap.! name ]
     [expr| (and # eqs) |]
+  revName _ (LispRev (LispName name) _) = T.unpack name
 
 newtype LispConcr = LispConcr (DMap LispName LispUVal)
 
@@ -1053,19 +1153,6 @@ instance PartialComp LispState where
               r1 <- assignPartial f var val
               r2 <- mkPartial xs
               return (r1++r2)
-
-instance GEq LispRev where
-  geq (LispRev name1 val1) (LispRev name2 val2) = do
-    Refl <- geq name1 name2
-    Refl <- geq val1 val2
-    return Refl
-
-instance GCompare LispRev where
-  gcompare (LispRev name1 val1) (LispRev name2 val2)
-    = case gcompare name1 name2 of
-    GEQ -> gcompare val1 val2
-    GLT -> GLT
-    GGT -> GGT
 
 {-import Data.Map (Map)
 import qualified Data.Map as Map

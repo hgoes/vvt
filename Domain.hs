@@ -46,25 +46,23 @@ import qualified Data.Dependent.Map as DMap
 --import Language.SMTLib2.Pipe
 import "mtl" Control.Monad.Trans (liftIO)
 
-data DomainVar a = forall t. GetType t => DomainVar (RevComp a t)
-
 -- | Stores a lattice of abstractions.
 --   An edge from A to B signifies that A includes B
-data Domain a = forall b. (Backend b,SMTMonad b ~ IO)
-                => Domain { domainGArg :: a (RevComp a)
-                          , domainGraph :: Gr (CompositeExpr a BoolType,
-                                               DMap (RevComp a) NoVar) ()
-                          , domainNodesRev :: Map (CompositeExpr a BoolType) Node
-                          , domainNextNode :: Node
-                          , domainPool :: SMTPool (DomainInstance (Expr b)) b a
-                          , domainVerbosity :: Int
-                          , domainTimeout :: Maybe Integer
-                          }
+data Domain a = Domain { domainGArg :: a (RevComp a)
+                       , domainGraph :: Gr (CompositeExpr a BoolType,
+                                            DMap (RevComp a) NoVar) ()
+                       , domainNodesRev :: Map (CompositeExpr a BoolType) Node
+                       , domainNextNode :: Node
+                       , domainPool :: SMTPool (DomainInstance a)
+                       , domainVerbosity :: Int
+                       , domainTimeout :: Maybe Integer
+                       }
 
-data DomainInstance e = DomainInstance { domainNodes :: Map Node (e BoolType)
-                                       , domainInstNext :: Node
-                                       , domainIsFresh :: Bool
-                                       }
+data DomainInstance a b = DomainInstance { domainVars :: a (Expr b)
+                                         , domainNodes :: Map Node (Expr b BoolType)
+                                         , domainInstNext :: Node
+                                         , domainIsFresh :: Bool
+                                         }
 
 -- | An abstract state is a partial mapping of predicates to true or false, indicating whether or not a predicate is true or false in the abstracted state.
 type AbstractState a = Vector (Node,Bool)
@@ -77,20 +75,21 @@ initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
               -> IO (Domain a)
 initialDomain verb backend ann = do
   let initInst = do
+        setOption (ProduceModels True)
+        vars <- createComposite (\_ -> declareVar) ann
         top <- [expr| true |]
         bot <- [expr| false |]
-        return DomainInstance { domainNodes = Map.fromList
-                                                [(domainTop,top)
-                                                ,(domainBot,bot)]
-                                , domainInstNext = 2
-                                , domainIsFresh = True }
+        return DomainInstance { domainVars = vars
+                              , domainNodes = Map.fromList
+                                              [(domainTop,top)
+                                              ,(domainBot,bot)]
+                              , domainInstNext = 2
+                              , domainIsFresh = True }
       gArg = runIdentity $ createComposite (\rev -> return rev) ann
   supportsTimeouts <- withBackendExitCleanly backend $ do
     name <- getInfo SMTSolverName
     return $ name=="Z3"
-  pool <- createSMTPool' backend initInst $ do
-    setOption (ProduceModels True)
-    createComposite (\_ -> declareVar) ann
+  pool <- createSMTPool backend initInst
   return $ Domain { domainGraph = mkGraph
                                   [(domainTop,(CompositeExpr (Const (BoolValue True)),DMap.empty))
                                   ,(domainBot,(CompositeExpr (Const (BoolValue False)),DMap.empty))]
@@ -107,12 +106,12 @@ initialDomain verb backend ann = do
                                     else Nothing
                   }
 
-updateInstance :: (Backend b,Composite a) => Domain a -> DomainInstance (Expr b) -> a (Expr b)
-               -> SMT b (DomainInstance (Expr b))
-updateInstance dom inst vars
+updateInstance :: (Backend b,Composite a) => Domain a -> DomainInstance a b
+               -> SMT b (DomainInstance a b)
+updateInstance dom inst
   = foldlM (\cinst nd -> do
                let Just (prop,_) = lab (domainGraph dom) nd
-               cprop <- concretizeExpr vars prop
+               cprop <- concretizeExpr (domainVars cinst) prop
                cprop' <- defineVar cprop
                return (cinst { domainNodes = Map.insert nd cprop (domainNodes cinst)
                              })
@@ -249,16 +248,18 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
     vars = collectRevVars DMap.empty pred
     apred = analyze' () pred
     poseQuery :: Composite a => Domain a
-              -> (forall b. Backend b => DomainInstance (Expr b) -> a (Expr b) -> SMT b [Expr b BoolType])
+              -> (forall b. Backend b
+                  => DomainInstance a b
+                  -> SMT b [Expr b BoolType])
               -> IO Bool
     poseQuery dom query = do
       res <- case dom of
         Domain { domainPool = pool }
           -> withSMTPool' pool $
-             \inst vars -> do
-               ninst <- updateInstance dom inst vars
+             \inst -> do
+               ninst <- updateInstance dom inst
                let ninst' = ninst { domainIsFresh = False }
-               query' <- query ninst' vars
+               query' <- query ninst'
                res <- stack $ do
                  mapM_ assert query'
                  checkSatWith Nothing (noLimits { limitTime = domainTimeout dom })
@@ -283,9 +284,9 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
       impl <- case quickImplication apred (analyze' () curTerm) of
                Just r -> return r
                Nothing -> fmap not $ poseQuery dom
-                          (\inst vars -> do
-                              pred' <- concretizeExpr vars pred
-                              term' <- concretizeExpr vars curTerm
+                          (\inst -> do
+                              pred' <- concretizeExpr (domainVars inst) pred
+                              term' <- concretizeExpr (domainVars inst) curTerm
                               nterm <- [expr| (not term') |]
                               return [pred',nterm])
       if not impl
@@ -301,9 +302,9 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
       impl <- case quickImplication (analyze' () curTerm) apred of
                Just r -> return r
                Nothing -> fmap not $ poseQuery dom
-                          (\inst vars -> do
-                              term' <- concretizeExpr vars curTerm
-                              pred' <- concretizeExpr vars pred
+                          (\inst -> do
+                              term' <- concretizeExpr (domainVars inst) curTerm
+                              pred' <- concretizeExpr (domainVars inst) pred
                               npred <- [expr| (not pred') |]
                               return [term',npred])
       if not impl
@@ -323,10 +324,10 @@ domainAbstract :: Composite a
 domainAbstract expr mustUse dom = do
   Right res <- case dom of
     Domain { domainPool = pool }
-      -> withSMTPool' pool $ \inst vars -> do
-      ninst <- updateInstance dom inst vars
+      -> withSMTPool' pool $ \inst -> do
+      ninst <- updateInstance dom inst
       lst <- stack $ do
-        concretizeExpr vars expr >>= assert
+        concretizeExpr (domainVars inst) expr >>= assert
         let reprs = filter (\(nd,_) -> nd/=domainTop && nd/=domainBot) $
                     Map.toList $ domainNodes ninst
         sol <- checkSat
@@ -365,13 +366,15 @@ toDomainTerm state dom vars = do
     [] -> [expr| true |]
     [x] -> return x
     xs -> [expr| (and # xs) |]
-{-
-toDomainTerms :: AbstractState a -> Domain a -> a -> Vector (Node,SMTExpr Bool,Bool)
+
+toDomainTerms :: (Embed m e,Composite a) => AbstractState a -> Domain a -> a e -> m (Vector (Node,e BoolType,Bool))
 toDomainTerms state dom vars
-  = fmap (\(nd,act) -> let Just (term,_,_) = lab (domainGraph dom) nd
-                       in (nd,term vars,act)
+  = mapM (\(nd,act) -> do
+             let Just (term,_) = lab (domainGraph dom) nd
+             term' <- concretizeExpr vars term
+             return (nd,term',act)
          ) state
--}
+
 -- | Since a domain can only grow, we can hash its "version" using its size.
 domainHash :: Domain a -> Int
 domainHash dom = domainNextNode dom

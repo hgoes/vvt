@@ -8,10 +8,14 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Monad (embedSMT)
+import qualified Language.SMTLib2.Internals.Backend as B
 
 import Control.Monad.State (MonadIO)
 import Data.Proxy
 import Data.Typeable
+import Data.Dependent.Map (DMap)
+import qualified Data.Dependent.Map as DMap
 
 class (PartialComp (State t),PartialComp (Input t))
       => TransitionRelation t where
@@ -52,25 +56,74 @@ class (PartialComp (State t),PartialComp (Input t))
   isEndState :: (Embed m e)
              => t -> State t e -> m (e BoolType)
   {-createRevState :: Backend b => String -> t -> SMT b (State t (Expr b),RevState t)
-  relativizeExpr :: (GetType a,Backend b) => t -> RevState t -> Expr b a -> (State t (Expr b) -> SMT b (Expr b a))
-  renderPartialState :: Backend b => t -> Partial (State t) (Constr b) -> SMT b String
-  renderPartialInput :: Backend b => t -> Partial (Input t) (Constr b) -> SMT b String
+  relativizeExpr :: (GetType a,Backend b) => t -> RevState t -> Expr b a -> (State t (Expr b) -> SMT b (Expr b a))-}
+  renderPartialState :: t -> Partial (State t) -> String
+  renderPartialInput :: t -> Partial (Input t) -> String
   -- | Returns a list of suggested predicates and a boolean indicating whether they are guaranteed to be unique
-  suggestedPredicates :: Embed e => t -> [(Bool,State t e -> e BoolType)]
+  suggestedPredicates :: t -> [(Bool,CompositeExpr (State t) BoolType)]
   suggestedPredicates _ = []
   defaultPredicateExtractor :: MonadIO m => t -> m (PredicateExtractor t)
-  extractPredicates :: (MonadIO m,Embed e) => t -> PredicateExtractor t
-                       -> Unpacked (State t e)
-                       -> PartialValue (State t e)
-                       -> m (PredicateExtractor t,
-                             [State t e -> e BoolType])-}
+  extractPredicates :: (MonadIO m) => t -> PredicateExtractor t
+                    -> Unpacked (State t)
+                    -> Partial (State t)
+                    -> m (PredicateExtractor t,
+                          [CompositeExpr (State t) BoolType])
   startingProgress :: t -> RealizationProgress t e
 
-{-renderState :: (TransitionRelation t,MonadIO m) => t -> Unpacked (State t) -> m String
+renderState :: (TransitionRelation t) => t -> Unpacked (State t) -> String
 renderState (mdl::t) st = renderPartialState mdl
                           (unmaskValue (Proxy::Proxy (State t)) st)
 
-renderInput :: (TransitionRelation t,MonadIO m) => t -> Unpacked (Input t) -> m String
+renderInput :: (TransitionRelation t) => t -> Unpacked (Input t) -> String
 renderInput (mdl::t) st = renderPartialInput mdl
                           (unmaskValue (Proxy::Proxy (Input t)) st)
--}
+
+createStateVars :: (TransitionRelation tr,Embed m e)
+                => (forall t. GetType t => RevComp (State tr) t -> m (e t))
+                -> tr
+                -> m (State tr e)
+createStateVars f tr
+  = createComposite f (stateAnnotation tr)
+
+createInputVars :: (TransitionRelation tr,Embed m e)
+                => (forall t. GetType t => RevComp (Input tr) t -> m (e t))
+                -> tr
+                -> m (Input tr e)
+createInputVars f tr
+  = createComposite f (inputAnnotation tr)
+
+createRevState :: (TransitionRelation tr,Backend b)
+               => tr
+               -> SMT b (State tr (Expr b),
+                         DMap (B.Var b) (RevComp (State tr)))
+createRevState (tr::tr)
+  = createRevComp (\rev -> embedSMT (B.declareVar
+                                     (Just $ revName (Proxy::Proxy (State tr)) rev))
+                  ) (stateAnnotation tr)
+
+createState :: (Backend b,TransitionRelation tr)
+            => tr
+            -> SMT b (State tr (Expr b))
+createState (tr::tr)
+  = createComposite
+    (\rev -> declareVarNamed (revName (Proxy::Proxy (State tr)) rev))
+    (stateAnnotation tr)
+
+createInput :: (Backend b,TransitionRelation tr)
+            => tr
+            -> SMT b (Input tr (Expr b))
+createInput (tr::tr)
+  = createComposite
+    (\rev -> declareVarNamed (revName (Proxy::Proxy (Input tr)) rev))
+    (inputAnnotation tr)
+
+createNextState :: (Backend b,TransitionRelation tr)
+                => tr
+                -> State tr (Expr b) -> Input tr (Expr b)
+                -> RealizationProgress tr (Expr b)
+                -> SMT b (State tr (Expr b),RealizationProgress tr (Expr b))
+createNextState
+  = declareNextState (\name -> case name of
+                       Nothing -> defineVar
+                       Just name' -> defineVarNamed name'
+                     )
