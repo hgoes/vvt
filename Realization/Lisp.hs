@@ -148,10 +148,25 @@ instance ShowTag LispName (LispVar LispExpr) where
 instance ShowTag LispName Annotation where
   showTaggedPrec _ = showsPrec
 
+instance EqTag LispName LispUVal where
+  eqTagged (LispName _) (LispName _) = (==)
+
+instance OrdTag LispName LispUVal where
+  compareTagged (LispName _) (LispName _) = compare
+
 instance ShowTag LispName LispUVal where
   showTaggedPrec _ = showsPrec
 
 instance ShowTag LispName LispGate where
+  showTaggedPrec _ = showsPrec
+
+instance EqTag LispName LispPVal' where
+  eqTagged _ _ = (==)
+
+instance OrdTag LispName LispPVal' where
+  compareTagged _ _ = compare
+
+instance ShowTag LispName LispPVal' where
   showTaggedPrec _ = showsPrec
 
 data LispException = LispException LispAction SomeException deriving Typeable
@@ -1098,7 +1113,7 @@ instance Composite LispState where
     [expr| (and # eqs) |]
   revName _ (LispRev (LispName name) _) = T.unpack name
 
-newtype LispConcr = LispConcr (DMap LispName LispUVal)
+newtype LispConcr = LispConcr (DMap LispName LispUVal) deriving (Eq,Ord)
 
 instance Show LispConcr where
   showsPrec p (LispConcr mp) = showsPrec p (DMap.toList mp)
@@ -1120,9 +1135,9 @@ instance LiftComp LispState where
                  ) lst
     return $ LispConcr $ DMap.fromAscList nlst
 
-newtype LispPVal' sig = LispPVal' (LispPVal sig) deriving Typeable
+newtype LispPVal' sig = LispPVal' (LispPVal sig) deriving (Typeable,Eq,Ord,Show)
 
-newtype LispPart = LispPart (DMap LispName LispPVal')
+newtype LispPart = LispPart (DMap LispName LispPVal') deriving (Eq,Ord,Show)
 
 instance PartialComp LispState where
   type Partial LispState = LispPart

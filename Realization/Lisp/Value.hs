@@ -107,6 +107,9 @@ data LispUVal (sig :: (Nat,Struct Type)) where
   LispU :: GetStructType tps => !(LispStruct ConcreteValue tps) -> LispUVal '(Z,tps)
   LispUArray :: KnownNat n => !([LispUVal '(n,tps)]) -> LispUVal '(S n,tps)
 
+deriving instance Eq (LispUVal sig)
+deriving instance Ord (LispUVal sig)
+
 instance Show (LispUVal sig) where
   showsPrec p (LispU x) = showsPrec p x
   showsPrec p (LispUArray arr) = showListWith (showsPrec 0) arr
@@ -114,6 +117,12 @@ instance Show (LispUVal sig) where
 data LispPVal (sig :: (Nat,Struct Type)) where
   LispP :: GetStructType tps => !(LispStruct PValue tps) -> LispPVal '(Z,tps)
   LispPArray :: KnownNat n => !([LispPVal '(n,tps)]) -> LispPVal '(S n,tps)
+
+deriving instance Eq (LispPVal sig)
+deriving instance Ord (LispPVal sig)
+instance Show (LispPVal sig) where
+  showsPrec p (LispP struct) = showsPrec p struct
+  showsPrec p (LispPArray arr) = showsPrec p arr
 
 data LispVal e lvl tp where
   Val :: GetType (LispType n tp) => !(e (LispType n tp)) -> LispVal e n tp
@@ -204,6 +213,11 @@ instance GCompare e => GCompare (LispStruct e) where
     GEQ -> GEQ
     GLT -> GLT
     GGT -> GGT
+
+instance GCompare e => Eq (LispStruct e sig) where
+  (==) = defaultEq
+instance GCompare e => Ord (LispStruct e sig) where
+  compare = defaultCompare
 
 instance GCompare e => GCompare (StructArgs e) where
   gcompare NoSArg NoSArg = GEQ

@@ -252,7 +252,8 @@ mkIC3Config mdl opts verb stats dumpDomain
                               (if Set.member Initiation (optDebugBackend opts)
                                then Just "init"
                                else Nothing)
-           , ic3InterpolationBackend = mkPipe (optBackend opts Map.! Interpolation)
+           , ic3InterpolationBackend = addModulusEmulation $
+                                       mkPipe (optBackend opts Map.! Interpolation)
                                        (if Set.member Interpolation (optDebugBackend opts)
                                         then Just "interp"
                                         else Nothing)
@@ -266,12 +267,12 @@ mkIC3Config mdl opts verb stats dumpDomain
            , ic3DumpDomainFile = dumpDomain
            }
   where
-    mkPipe cmd debug = let prog:args = words cmd
-                       in case debug of
-                           Nothing -> AnyBackend $ createPipe prog args
-                           Just name -> AnyBackend $ do
-                             pipe <- createPipe prog args
-                             return (namedDebugBackend name pipe)
+    mkPipe :: BackendUse -> Maybe String -> AnyBackend IO
+    mkPipe cmd debug = createBackend cmd (\b -> case debug of
+                                           Nothing -> AnyBackend b
+                                           Just name -> AnyBackend $ do
+                                             b' <- b
+                                             return (namedDebugBackend name b'))
 
 runIC3 :: TR.TransitionRelation mdl => IC3Config mdl -> IC3 mdl a -> IO a
 runIC3 cfg act = do
@@ -952,8 +953,8 @@ check :: TR.TransitionRelation mdl
                          Unpacked (TR.Input mdl))]
                        [Dom.AbstractState (TR.State mdl)])
 check st opts verb stats dumpDomain = do
-  let prog:args = words (optBackend opts Map.! Base)
-  tr <- withBackendExitCleanly (createPipe prog args) (baseCases st)
+  tr <- createBackend (optBackend opts Map.! Base) $
+        \b -> withBackendExitCleanly b (baseCases st)
   runIC3 (mkIC3Config st opts verb stats dumpDomain) $ do
     case tr of
       Just tr' -> do

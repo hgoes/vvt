@@ -38,7 +38,7 @@ allOpts
     ,Option [] ["backend"]
      (ReqArg (\b opt -> case readsPrec 0 b of
                [(backend,':':solver)]
-                 -> opt { optBackends = setBackend backend solver
+                 -> opt { optBackends = setBackend backend (read solver)
                                         (optBackends opt)
                         }) "<backend>:solver")
      "The SMT solver used for the specified backend."

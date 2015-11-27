@@ -57,8 +57,8 @@ class (PartialComp (State t),PartialComp (Input t))
              => t -> State t e -> m (e BoolType)
   {-createRevState :: Backend b => String -> t -> SMT b (State t (Expr b),RevState t)
   relativizeExpr :: (GetType a,Backend b) => t -> RevState t -> Expr b a -> (State t (Expr b) -> SMT b (Expr b a))-}
-  renderPartialState :: t -> Partial (State t) -> String
-  renderPartialInput :: t -> Partial (Input t) -> String
+  --renderPartialState :: t -> Partial (State t) -> String
+  --renderPartialInput :: t -> Partial (Input t) -> String
   -- | Returns a list of suggested predicates and a boolean indicating whether they are guaranteed to be unique
   suggestedPredicates :: t -> [(Bool,CompositeExpr (State t) BoolType)]
   suggestedPredicates _ = []
@@ -71,12 +71,16 @@ class (PartialComp (State t),PartialComp (Input t))
   startingProgress :: t -> RealizationProgress t e
 
 renderState :: (TransitionRelation t) => t -> Unpacked (State t) -> String
-renderState (mdl::t) st = renderPartialState mdl
-                          (unmaskValue (Proxy::Proxy (State t)) st)
+renderState (mdl::t) st = show (unmaskValue (Proxy::Proxy (State t)) st)
+
+renderPartialState :: (TransitionRelation t) => t -> Partial (State t) -> String
+renderPartialState (mdl::t) st = show st
 
 renderInput :: (TransitionRelation t) => t -> Unpacked (Input t) -> String
-renderInput (mdl::t) st = renderPartialInput mdl
-                          (unmaskValue (Proxy::Proxy (Input t)) st)
+renderInput (mdl::t) st = show (unmaskValue (Proxy::Proxy (Input t)) st)
+
+renderPartialInput :: (TransitionRelation t) => t -> Partial (Input t) -> String
+renderPartialInput (mdl::t) st = show st
 
 createStateVars :: (TransitionRelation tr,Embed m e)
                 => (forall t. GetType t => RevComp (State tr) t -> m (e t))

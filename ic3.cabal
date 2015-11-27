@@ -7,6 +7,13 @@ Data-Files:     include/assert.h
                 include/stdlib.h
                 include/vvt.h
 
+Flag Native-Z3
+  Description: Bind to the Z3 C-API
+  Default: False
+Flag Native-MathSAT
+  Description: Bind to the MathSAT C-API
+  Default: False
+                  
 --Executable hctigar
 --  Main-Is:              Main.hs
 --  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
@@ -37,7 +44,13 @@ Executable vvt-verify
   GHC-Options:          -threaded
   Build-Depends:        base, smtlib2, smtlib2-debug, smtlib2-pipe, smtlib2-timing, smtlib2-emulated-modulus, containers, vector, pqueue, fgl, time, mtl,
                         dependent-sum, text, atto-lisp, constraints, bytestring, attoparsec, transformers, resource-pool, dependent-map
-  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes
+  if flag(Native-Z3)
+    Build-Depends:      smtlib2-z3
+    CPP-Options:        -DNATIVE_Z3
+  if flag(Native-MathSAT)
+    Build-Depends:      smtlib2-mathsat
+    CPP-Options:        -DNATIVE_MATHSAT
+  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,CPP
 
 --Executable vvt-predicates
 --  Main-Is:              bin/Predicates.hs
