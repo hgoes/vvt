@@ -1449,7 +1449,8 @@ addAbstractCube lvl st
   = modify (\env -> let (st_id,cons') = getCubeId st (ic3Consecution env)
                         cons'' = addCubeAtLevel st_id lvl cons'
                     in env { ic3Consecution = cons''
-                           , ic3Earliest = min (ic3Earliest env) lvl })
+                           , ic3Earliest = min (ic3Earliest env) lvl
+                           , ic3LitOrder = updateOrder st (ic3LitOrder env) })
 
 addSuggestedPredicates :: TR.TransitionRelation mdl => IC3 mdl ()
 addSuggestedPredicates = do
