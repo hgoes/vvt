@@ -77,7 +77,8 @@ data LispVar e (sig :: (Nat,Struct Type)) where
 data LispExpr (t::Type) where
   LispExpr :: Expression NoRef NoRef NoRef NoRef NoRef NoRef NoRef LispExpr t
            -> LispExpr t
-  LispRef :: LispVar LispExpr '(lvl,tps)
+  LispRef :: (KnownNat lvl,GetStructType tps)
+          => LispVar LispExpr '(lvl,tps)
           -> LispIndex tps tp -> LispArrayIndex LispExpr lvl rlvl tp
           -> LispExpr (LispType rlvl tp)
   LispEq :: (KnownNat lvl,GetStructType tp)
@@ -764,7 +765,7 @@ instance Exception LispException
 
 newtype LispValue' e sig = LispValue' (LispValue sig e)
 
-newtype LispState e = LispState (DMap LispName (LispValue' e))
+newtype LispState e = LispState { lispState :: DMap LispName (LispValue' e) }
 
 data LispRev tp where
   LispRev :: (KnownNat lvl,GetStructType tps)
@@ -1057,7 +1058,16 @@ relativizeVar (LispState st) (LispState inp) gts (NamedVar name@(LispName _) cat
       State -> case DMap.lookup name st of
         Just (LispValue' r) -> return r
       Gate -> gts name
-relativizeVar st inp gts (LispConstr val) = do
+relativizeVar st inp gts (LispConstr val)
+  = relativizeValue st inp gts val
+
+relativizeValue :: (Embed m e)
+                => LispState e
+                -> LispState e
+                -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
+                -> LispValue sig LispExpr
+                -> m (LispValue sig e)
+relativizeValue st inp gts val = do
   sz <- relativizeSize st inp gts (size val)
   val <- mapLispStructM (\_ (Val e) -> fmap Val (relativize st inp gts e)
                         ) (value val)
@@ -1168,6 +1178,28 @@ instance PartialComp LispState where
               r1 <- assignPartial f var val
               r2 <- mkPartial xs
               return (r1++r2)
+
+instance GEq NoRef where
+  geq _ _ = error "geq for NoRef called."
+
+instance GCompare NoRef where
+  gcompare _ _ = error "gcompare for NoRef called."
+
+instance Embed Identity LispExpr where
+  type EmVar Identity LispExpr = NoRef
+  type EmQVar Identity LispExpr = NoRef
+  type EmFun Identity LispExpr = NoRef
+  type EmConstr Identity LispExpr = NoRef
+  type EmField Identity LispExpr = NoRef
+  type EmFunArg Identity LispExpr = NoRef
+  type EmLVar Identity LispExpr = NoRef
+  embed = return.LispExpr
+  embedQuantifier = error "LispExpr doesn't embed quantifier."
+  embedConstrTest = error "LispExpr doesn't embed datatypes."
+  embedGetField = error "LispExpr doesn't embed datatypes."
+  embedConst c = do
+    v <- valueFromConcrete (error "LispExpr doesn't embed datatypes.") c
+    return (LispExpr (Const v))
 
 {-import Data.Map (Map)
 import qualified Data.Map as Map

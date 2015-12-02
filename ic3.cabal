@@ -42,7 +42,7 @@ Flag Native-MathSAT
 Executable vvt-verify
   Main-Is:              bin/Verify.hs
   GHC-Options:          -threaded
-  Build-Depends:        base, smtlib2, smtlib2-debug, smtlib2-pipe, smtlib2-timing, smtlib2-emulated-modulus, containers, vector, pqueue, fgl, time, mtl,
+  Build-Depends:        base, smtlib2 >= 0.3, smtlib2-debug, smtlib2-pipe, smtlib2-timing, smtlib2-emulated-modulus, containers, vector, pqueue, fgl, time, mtl,
                         dependent-sum, text, atto-lisp, constraints, bytestring, attoparsec, transformers, resource-pool, dependent-map
   if flag(Native-Z3)
     Build-Depends:      smtlib2-z3
@@ -52,8 +52,10 @@ Executable vvt-verify
     CPP-Options:        -DNATIVE_MATHSAT
   Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,CPP
 
---Executable vvt-predicates
---  Main-Is:              bin/Predicates.hs
+Executable vvt-predicates
+  Build-Depends:        base,containers,linear,fgl,smtlib2 >= 0.3, smtlib2-pipe, smtlib2-debug, dependent-map, atto-lisp, attoparsec, bytestring, transformers, mtl, text, dependent-sum, vector, constraints
+  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,QuasiQuotes,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
+  Main-Is:              bin/Predicates.hs
 
 --Executable vvt-opt
 --  Main-Is:              bin/Optimize.hs

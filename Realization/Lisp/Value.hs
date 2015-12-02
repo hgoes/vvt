@@ -80,11 +80,14 @@ data Size (e::Type -> *) (lvl :: Nat) where
 
 data StructArgs e (sig :: [Struct Type]) where
   NoSArg :: StructArgs e '[]
-  SArg :: !(LispStruct e tp) -> !(StructArgs e tps) -> StructArgs e (tp ': tps)
+  SArg :: (GetStructType tp,GetStructTypes tps)
+       => !(LispStruct e tp)
+       -> !(StructArgs e tps)
+       -> StructArgs e (tp ': tps)
 
 data LispStruct e (tp :: Struct Type) where
   LSingleton :: GetType t => !(e t) -> LispStruct e (Singleton t)
-  LStruct :: !(StructArgs e sig) -> LispStruct e ('Struct sig)
+  LStruct :: GetStructTypes sig => !(StructArgs e sig) -> LispStruct e ('Struct sig)
 
 instance GShow e => Show (LispStruct e tp) where
   showsPrec p (LSingleton x) = gshowsPrec p x
@@ -128,7 +131,7 @@ data LispVal e lvl tp where
   Val :: GetType (LispType n tp) => !(e (LispType n tp)) -> LispVal e n tp
 
 data LispArrayIndex e (lvl::Nat) (rlvl::Nat) (tp::Type) where
-  ArrGet :: GetType (LispType lvl tp) => LispArrayIndex e lvl lvl tp
+  ArrGet :: (KnownNat lvl,GetType (LispType lvl tp)) => LispArrayIndex e lvl lvl tp
   ArrIdx :: GetType (LispType lvl tp)
          => !(e IntType)
          -> !(LispArrayIndex e lvl n tp)

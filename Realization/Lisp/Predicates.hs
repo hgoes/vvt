@@ -1,59 +1,59 @@
-{-# LANGUAGE GADTs #-}
 module Realization.Lisp.Predicates where
 
 import Realization.Lisp
 import Realization.Lisp.Value
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Type.Nat
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Dependent.Map (DMap)
+import qualified Data.Dependent.Map as DMap
 import Data.Typeable (cast)
 import Data.Foldable
 import Prelude hiding (foldl)
-import Data.Fix
+import Data.Proxy
+import Data.GADT.Compare
 
-ineqPredicates :: [SMTExpr Integer] -> [SMTExpr Bool]
-ineqPredicates [] = []
-ineqPredicates (i:is) = fmap (\j -> i .<. j) is ++
-                        fmap (\j -> i .<=. j) is ++
-                        ineqPredicates is
+ineqPredicates :: Embed m e => [e IntType] -> m [e BoolType]
+ineqPredicates [] = return []
+ineqPredicates (i:is) = do
+  lts <- mapM (\j -> [expr| (< i j) |]) is
+  les <- mapM (\j -> [expr| (<= i j) |]) is
+  rest <- ineqPredicates is
+  return (lts++les++rest)
 
-boolStates :: LispProgram -> [SMTExpr Bool]
-boolStates prog = Map.foldlWithKey (\lin name (tp,_)
-                                    -> getBool name tp lin
-                                   ) [] (programState prog)
+statesOfType :: GetType t => Repr t -> LispProgram -> [LispExpr t]
+statesOfType repr prog = DMap.foldlWithKey (\lin name _
+                                            -> getStates repr name ++ lin
+                                           ) [] (programState prog)
   where
-    getBool name tp lin
-      | typeLevel tp == 0 = getBool' name tp (typeBase tp) [] lin
-      | otherwise = lin
+    getStates :: GetType t => Repr t -> LispName sig -> [LispExpr t]
+    getStates repr name@(LispName _) = case name of
+      (_ :: LispName '(lvl,tp)) -> case natPred (Proxy::Proxy lvl) of
+        NoPred -> [ LispRef (NamedVar name State) idx ArrGet
+                  | idx <- getStates' repr (getStructType :: LispStruct Repr tp) ]
+        _ -> []
 
-    getBool' name otp (Struct tps) idx lin
-      = foldl (\lin (i,tp) -> getBool' name otp tp (idx++[i]) lin
-              ) lin (zip [0..] tps)
-    getBool' name otp (Singleton (Fix BoolSort)) idx lin
-      = (InternalObj (LispVarAccess (NamedVar name State otp) idx []) ()):lin
-    getBool' _ _ _ _ lin = lin
+    getStates' :: (GetType t,GetStructType tp) => Repr t -> LispStruct Repr tp -> [LispIndex tp t]
+    getStates' repr (LSingleton repr') = case geq repr repr' of
+      Just Refl -> [ValGet]
+      Nothing -> []
+    getStates' repr (LStruct args) = getStates'' repr args
 
-linearStates :: LispProgram -> Set (SMTExpr Integer)
-linearStates prog
-  = Map.foldlWithKey (\lin name (tp,_)
-                      -> getLinear name tp lin
-                     ) Set.empty (programState prog)
-  where
-    getLinear name tp lin
-      | typeLevel tp == 0 = getLinear' name tp (typeBase tp) [] lin
-      | otherwise = lin
+    getStates'' :: (GetType t,GetStructTypes tps) => Repr t -> StructArgs Repr tps
+                -> [LispIndex ('Struct tps) t]
+    getStates'' _ NoSArg = []
+    getStates'' repr (SArg x xs) = [ ValIdx (Proxy::Proxy Z) idx
+                                   | idx <- getStates' repr x ] ++
+                                   [ ValIdx (Proxy::Proxy (S n)) idx
+                                   | ValIdx (Proxy::Proxy n) idx <- getStates'' repr xs ]
 
-    getLinear' name otp (Struct tps) idx lin
-      = foldl (\lin (i,tp) -> getLinear' name otp tp (idx++[i]) lin
-              ) lin (zip [0..] tps)
-    getLinear' name otp (Singleton (Fix IntSort)) idx lin
-      = Set.insert (InternalObj (LispVarAccess (NamedVar name State otp) idx []) ()) lin
-    getLinear' _ _ _ _ lin = lin
-
+{-
 linearExpressions :: LispProgram -> Set (SMTExpr Integer)
 linearExpressions prog = lin5
   where
@@ -116,3 +116,4 @@ linearExpressions prog = lin5
       = fst $ foldExprsId (\lins expr' _ -> (linearExpr expr' lins,expr')
                           ) cur args (extractArgAnnotation args)
     decomposeLin' _ cur = cur
+-}
