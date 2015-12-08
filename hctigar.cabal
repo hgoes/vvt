@@ -10,6 +10,7 @@ Data-Files:     include/assert.h
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs
   Build-Depends:        base,bytestring,atto-lisp,attoparsec<0.13,text,pretty
+  GHC-Options:          -threaded
 
 Executable vvt-bmc
   Extensions:           OverloadedStrings
@@ -20,6 +21,7 @@ Executable vvt-bmc
 Executable vvt-enc
   Main-Is:              bin/Encode.hs
   Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
+  GHC-Options:          -threaded
 
 Executable vvt-verify
   Main-Is:              bin/Verify.hs
@@ -40,3 +42,4 @@ Executable vvt
 Executable vvt-svcomp
   Extensions:           ScopedTypeVariables,ViewPatterns
   Main-Is:              bin/SVComp.hs
+  GHC-Options:          -threaded
