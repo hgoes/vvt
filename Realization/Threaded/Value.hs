@@ -238,7 +238,8 @@ symITE cond (ValInt x) (ValInt y) = ValInt (ite cond x y)
 symITE cond (ValPtr x tp) (ValPtr y _)
   = ValPtr (Map.mergeWithKey (\_ (pc,pi) (qc,qi) -> Just (ite cond pc qc,
                                                           zipWith (ite cond) pi qi))
-            (fmap (\(pc,pi) -> (pc .&&. cond,pi))) (fmap (\(qc,qi) -> (qc .&&. (not' cond),qi))) x y)
+            (fmap (\(pc,pi) -> (pc .&&. cond,pi)))
+            (fmap (\(qc,qi) -> (qc .&&. (not' cond),qi))) x y)
     tp
 symITE cond (ValThreadId x) (ValThreadId y)
   = ValThreadId (Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
@@ -403,10 +404,12 @@ accessAllocTyped :: SymType
                  -> c
                  -> (MemoryAccessResult a,AllocVal,c)
 accessAllocTyped tp f idx val st
-  = accessAlloc (\val st -> if sameType tp (extractArgAnnotation val)
-                            then (let (obj,nval,nst) = f val st
-                                  in (Success obj,nval,nst))
-                            else (TypeError,val,st)
+  = accessAlloc (\val st
+                 -> let tp' = extractArgAnnotation val
+                    in if sameType tp tp'
+                       then (let (obj,nval,nst) = f val st
+                             in (Success obj,nval,nst))
+                       else (TypeError,val,st)
                 ) idx val st
 
 accessAllocTypedIgnoreErrors :: SymType

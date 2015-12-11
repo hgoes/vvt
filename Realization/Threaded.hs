@@ -1883,7 +1883,10 @@ outputMem real inp
       = --trace ("Access write "++show idx) $
         accessAllocTypedIgnoreErrors (symbolicType cont)
         (\old gates -> let (new,ngates) = addSymGate gates
-                                          (symbolicType cont)
+                                          (case typeUnion
+                                                (symbolicType cont)
+                                                (extractArgAnnotation old) of
+                                           Just rtp -> rtp)
                                           (\inp -> symITE cond'
                                                    (symbolicValue cont inp)
                                                    old)
