@@ -11,6 +11,7 @@ import Language.SMTLib2
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Pipe (createPipe)
 import Language.SMTLib2.Z3
+import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Expression
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Embed
@@ -111,15 +112,15 @@ main = do
              let act :: forall b. (Backend b,MonadIO (B.SMTMonad b))
                      => SMT b (Either Bool [Unpacked (State LispProgram)])
                  act = do
-                   st0 <- createComposite (\_ -> declareVar) (programState prog)
-                   inp0 <- createComposite (\_ -> declareVar) (programInput prog)
+                   st0 <- createState prog
+                   inp0 <- createInput prog
                    init <- initialState prog st0
                    assert init
                    bmc prog (completeness opts) (incremental opts) (bmcDepth opts)
                      0 startTime st0 inp0 []
                  act' = if debug opts
-                        then (withBackend (fmap (namedDebugBackend "bmc") pipe) act)
-                        else (withBackend pipe act)
+                        then withBackend (fmap (namedDebugBackend "bmc") pipe) act
+                        else withBackend pipe act
              res <- case timeout opts of
                Nothing -> act'
                Just to -> do
@@ -145,10 +146,8 @@ main = do
             then push
             else return ()
           if inc
-            then let (_,cond):_ = sts
-                 in [expr| (not cond) |] >>= assert
-            else let conds = fmap snd sts
-                 in [expr| (not (or # conds)) |] >>= assert
+            then [expr| (not ${snd $ head sts}) |] >>= assert
+            else [expr| (not (or # ${fmap snd sts})) |] >>= assert
           res <- checkSat
           case res of
             Sat -> do
@@ -186,7 +185,7 @@ main = do
                liftIO $ putStrLn $ "Level "++show n++(case diff of
                                                        Nothing -> ""
                                                        Just diff' -> "("++show diff'++")")
-               negProp <- [expr| (not (or # asserts)) |]
+               negProp <- [expr| (not (and # ${asserts})) |]
                assert negProp
                r <- checkSat
                case r of
@@ -207,8 +206,7 @@ main = do
          (nxt,gts3) <- declareNextState
                        (\name e -> [define| e |])
                        prog st inp gts2
-         ninp <- createComposite (\_ --(LispRev (LispName name) _)
-                                  -> declareVar
+         ninp <- createComposite (\rev -> declareVar' (getType rev)
                                  ) (inputAnnotation prog)
          if compl
            then do
@@ -216,7 +214,7 @@ main = do
            progress <- [expr| (not noProgress) |]
            assert progress
            else return ()
-         conjAss <- [expr| (and # asserts) |]
+         conjAss <- [expr| (and # ${asserts}) |]
          bmc prog compl inc l (n+1) startTime nxt ninp ((st,conjAss):sts)
 
     checkCompleteness prog st = stack $ do

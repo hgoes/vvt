@@ -19,7 +19,7 @@ import Prelude hiding (foldl)
 import Data.Proxy
 import Data.GADT.Compare
 
-ineqPredicates :: Embed m e => [e IntType] -> m [e BoolType]
+ineqPredicates :: (Embed m e,GetType e) => [e IntType] -> m [e BoolType]
 ineqPredicates [] = return []
 ineqPredicates (i:is) = do
   lts <- mapM (\j -> [expr| (< i j) |]) is
@@ -27,31 +27,30 @@ ineqPredicates (i:is) = do
   rest <- ineqPredicates is
   return (lts++les++rest)
 
-statesOfType :: GetType t => Repr t -> LispProgram -> [LispExpr t]
+statesOfType :: Repr t -> LispProgram -> [LispExpr t]
 statesOfType repr prog = DMap.foldlWithKey (\lin name _
                                             -> getStates repr name ++ lin
                                            ) [] (programState prog)
   where
-    getStates :: GetType t => Repr t -> LispName sig -> [LispExpr t]
-    getStates repr name@(LispName _) = case name of
-      (_ :: LispName '(lvl,tp)) -> case natPred (Proxy::Proxy lvl) of
-        NoPred -> [ LispRef (NamedVar name State) idx ArrGet
-                  | idx <- getStates' repr (getStructType :: LispStruct Repr tp) ]
-        _ -> []
+    getStates :: Repr t -> LispName sig -> [LispExpr t]
+    getStates repr name@(LispName lvl tps _) = case lvl of
+      Zero -> [ LispRef (NamedVar name State) idx (ArrGet lvl (lispIndexType idx))
+              | idx <- getStates' repr tps ]
+      _ -> []
 
-    getStates' :: (GetType t,GetStructType tp) => Repr t -> LispStruct Repr tp -> [LispIndex tp t]
+    getStates' :: Repr t -> LispStruct Repr tp -> [LispIndex tp t]
     getStates' repr (LSingleton repr') = case geq repr repr' of
-      Just Refl -> [ValGet]
+      Just Refl -> [ValGet repr]
       Nothing -> []
     getStates' repr (LStruct args) = getStates'' repr args
 
-    getStates'' :: (GetType t,GetStructTypes tps) => Repr t -> StructArgs Repr tps
+    getStates'' :: Repr t -> StructArgs Repr tps
                 -> [LispIndex ('Struct tps) t]
     getStates'' _ NoSArg = []
-    getStates'' repr (SArg x xs) = [ ValIdx (Proxy::Proxy Z) idx
+    getStates'' repr (SArg x xs) = [ ValIdx Zero idx
                                    | idx <- getStates' repr x ] ++
-                                   [ ValIdx (Proxy::Proxy (S n)) idx
-                                   | ValIdx (Proxy::Proxy n) idx <- getStates'' repr xs ]
+                                   [ ValIdx (Succ n) idx
+                                   | ValIdx n idx <- getStates'' repr xs ]
 
 {-
 linearExpressions :: LispProgram -> Set (SMTExpr Integer)

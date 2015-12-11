@@ -100,5 +100,5 @@ createBackend NativeZ3 _ = error "Native Z3 support not enabled (build with -fNa
 #ifdef NATIVE_MATHSAT
 createBackend NativeMathSAT f = f (return mathsatBackend)
 #else
-createBackend NativeMathSAT _ = "Native MathSAT support not enabled (build with -fNative-MathSAT to enable)."
+createBackend NativeMathSAT _ = error "Native MathSAT support not enabled (build with -fNative-MathSAT to enable)."
 #endif

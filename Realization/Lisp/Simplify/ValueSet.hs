@@ -4,11 +4,13 @@ module Realization.Lisp.Simplify.ValueSet where
 import Realization
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Transforms
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
+import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Type.Nat
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -20,15 +22,22 @@ import Data.Constraint
 import Control.Monad.Trans
 import System.IO
 import Control.Monad
+import Data.GADT.Compare
+import Data.Proxy
 
 import Debug.Trace
 
+data AnyUValue = forall lvl tp. AnyUValue (LispUVal '(lvl,tp))
+
 data ValueSet = ValueSet { valueMask :: [(T.Text,[[Int]])]
-                         , values :: [[LispUValue]]
+                         , values :: [[AnyUValue]]
                          , vsize :: !Int
                          }
 
-valueSetAnalysis :: Int -> Int -> String -> LispProgram -> IO LispProgram
+instance Eq AnyUValue where
+  (==) (AnyUValue x) (AnyUValue y) = defaultEq x y
+
+{-valueSetAnalysis :: Int -> Int -> String -> LispProgram -> IO LispProgram
 valueSetAnalysis verbosity threshold solver prog = do
   vs <- deduceValueSet verbosity threshold solver prog
   when (verbosity >= 1)
@@ -36,7 +45,7 @@ valueSetAnalysis verbosity threshold solver prog = do
   let consts = getConstants vs
   return $ foldl' (\prog' (name,idx,c) -> replaceConstantProg name (fmap fromIntegral idx) c prog') prog consts
 
-replaceConstantProg :: T.Text -> [Integer] -> LispUValue -> LispProgram -> LispProgram
+replaceConstantProg :: T.Text -> [Integer] -> AnyValue -> LispProgram -> LispProgram
 replaceConstantProg name idx c prog
   = prog { programNext = fmap (replaceConstant name idx c) (delNext $ programNext prog)
          , programProperty = fmap (replaceConstantExpr name idx c) (programProperty prog)
@@ -58,15 +67,48 @@ replaceConstantProg name idx c prog
     delNext mp = if idx==[] then Map.delete name mp
                  else Map.adjust (\var -> delVarEntry idx var
                                  ) name mp
+-}
 
-delEntry :: [Integer] -> LispStruct a -> LispStruct a
-delEntry [] _ = Struct []
-delEntry (i:is) (Struct elems) = Struct (del' 0 elems)
+delEntry :: [Integer] -> LispStruct e tp
+         -> (forall tp'. LispStruct e tp' -> a)
+         -> a
+delEntry [] _ f = f (LStruct NoSArg)
+delEntry (i:is) (LStruct xs) f = delEntry' i is xs (\xs' -> f (LStruct xs'))
   where
-    del' n (x:xs) = if i==n
-                    then delEntry is x:xs
-                    else x:del' (n+1) xs
+    delEntry' :: Integer -> [Integer] -> StructArgs e tps
+              -> (forall tps'. StructArgs e tps' -> a)
+              -> a
+    delEntry' 0 is (SArg x xs) f = delEntry is x (\x' -> f (SArg x' xs))
+    delEntry' i is (SArg x xs) f = delEntry' (i-1) is xs
+                                   (\xs' -> f (SArg x xs'))
 
+delVarEntry :: [Integer] -> LispVar e '(lvl,tp)
+            -> (forall tp'. LispVar e '(lvl,tp') -> a)
+            -> a
+delVarEntry [] _ f = f (LispConstr $ LispValue (error "Size of deleted entry accessed.")
+                        (LStruct NoSArg))
+delVarEntry is (NamedVar (LispName lvl tps name) cat) f
+  = delEntry is tps $
+    \str -> f (NamedVar (LispName name :: LispName '(lvl,tp')) cat)
+delVarEntry is (LispStore v idx didx val) f
+  = if is==realIndex idx
+    then delVarEntry is v f
+    else undefined --delVarEntry LispStore 
+
+delIdxEntry :: [Integer] -> LispIndex tps tp
+            -> (forall tps'. LispIndex tps' tp -> a)
+            -> a
+delIdxEntry (i:is) (ValIdx p idx) f
+  | i == p' = delIdxEntry is idx (\idx' -> f (ValIdx p (case cast idx' of
+                                                         Just idx'' -> idx'')))
+  where
+    p' = natVal p
+
+realIndex :: LispIndex tp res -> [Integer]
+realIndex ValGet = []
+realIndex (ValIdx p idx) = (natVal p):realIndex idx
+
+{-
 delVarEntry :: [Integer] -> LispVar -> LispVar
 delVarEntry [] v = LispConstr $ LispValue (error "Size of deleted entry accessed.") (Struct [])
 delVarEntry _ v@(NamedVar _ _ _) = v
@@ -77,7 +119,7 @@ delVarEntry idx (LispStore v idx' didx val)
 delVarEntry idx (LispITE c ifT ifF) = LispITE c (delVarEntry idx ifT) (delVarEntry idx ifF)
 delVarEntry idx (LispConstr val) = LispConstr $ val { value = delEntry idx (value val) }
 
-replaceConstant :: T.Text -> [Integer] -> LispUValue -> LispVar -> LispVar
+replaceConstant :: T.Text -> [Integer] -> AnyValue -> LispVar -> LispVar
 replaceConstant name idx c var@(NamedVar name' cat tp)
   = if cat==State && name==name'
     then (if idx==[]
@@ -85,7 +127,7 @@ replaceConstant name idx c var@(NamedVar name' cat tp)
           else mkStore var idx [] c)
     else var
   where
-    mkStore :: LispVar -> [Integer] -> [SMTExpr Integer] -> LispUValue -> LispVar
+    mkStore :: LispVar -> [Integer] -> [SMTExpr Integer] -> AnyValue -> LispVar
     mkStore var idx dyn (LispUValue x)
       = LispStore var (fmap fromIntegral idx) dyn (UntypedExpr (constant x))
     mkStore var idx dyn (LispUArray arr)
@@ -107,14 +149,14 @@ replaceConstant name idx c (LispITE cond ifT ifF)
             (replaceConstant name idx c ifT)
             (replaceConstant name idx c ifF)
 
-replaceConstantExpr :: T.Text -> [Integer] -> LispUValue -> SMTExpr t -> SMTExpr t
+replaceConstantExpr :: T.Text -> [Integer] -> AnyValue -> SMTExpr t -> SMTExpr t
 replaceConstantExpr name idx c e@(InternalObj (cast -> Just acc) ann)
   = case acc of
      LispVarAccess (NamedVar name' State tp) idx' dyn
        | name==name' && idx==idx' -> access c dyn
        | name==name' -> e
        where
-         access :: SMTType t => LispUValue -> [SMTExpr Integer] -> SMTExpr t
+         access :: SMTType t => AnyValue -> [SMTExpr Integer] -> SMTExpr t
          access (LispUValue x) [] = case gcast (constant $ derefConst (undefined::SMTExpr Integer) x) of
            Just x' -> x'
          access (LispUArray xs) (i:is)
@@ -152,7 +194,7 @@ deduceValueSet verbosity threshold solver prog = do
   withSMTBackend pipe $ initialValueSet threshold prog
     >>= refineValueSet verbosity threshold prog
 
-getConstants :: ValueSet -> [(T.Text,[Int],LispUValue)]
+getConstants :: ValueSet -> [(T.Text,[Int],AnyValue)]
 getConstants vs = getConstants' 0 (valueMask vs)
   where
     getConstants' n [] = []
@@ -192,7 +234,7 @@ addState :: [LispUValue] -> ValueSet -> ValueSet
 addState vs vals = vals { values = vs:values vals
                         , vsize = (vsize vals)+1 }
 
-refineValueSet :: (Functor m,MonadIO m) => Int -> Int -> LispProgram -> ValueSet -> SMT' m ValueSet
+refineValueSet :: (Functor m,MonadIO m) => Int -> Int -> LispProgram -> AnyValue -> SMT' m ValueSet
 refineValueSet verbosity threshold prog vs = stack $ do
   cur <- createStateVars "" prog
   inp <- createInputVars "" prog
@@ -253,7 +295,7 @@ initialValueSet threshold prog = stack $ do
                      getValues vars vs')
         else pop >> return vs
 
-extractValueState :: Monad m => ValueSet -> Map T.Text LispValue -> SMT' m [LispUValue]
+extractValueState :: Monad m => ValueSet -> Map T.Text LispValue -> SMT' m [AnyValue]
 extractValueState vs vars = do
   vals <- mapM (\(name,idxs) -> case Map.lookup name vars of
                    Just (LispValue (Size sz) val) -> mapM (\idx -> extractValue sz val idx) idxs
@@ -280,7 +322,7 @@ extractValueState vs vars = do
                   ) [0..sz-1]
       return $ LispUArray els
 
-eqValueState :: ValueSet -> Map T.Text LispValue -> [LispUValue] -> [SMTExpr Bool]
+eqValueState :: ValueSet -> Map T.Text LispValue -> [AnyValue] -> [SMTExpr Bool]
 eqValueState vs vars st
   = blockValues (valueMask vs) st
   where
@@ -306,7 +348,7 @@ eqValueState vs vars st
     blockValue' x (LispUArray arr)
       = concat [ fst $ index (\el' -> (blockValue' el' el,el')) x (constant (i::Integer))
                | (el,i) <- zip arr [0..] ]
-
+-}
 enforceThreshold :: Int -> ValueSet -> ValueSet
 enforceThreshold threshold vs
   = if vsize vs > threshold
@@ -341,7 +383,7 @@ reduceValueSet vs = nvs
                              Left xs' -> Left (x:xs')
                              Right n' -> Right n'
 
-    removeColumn :: Int -> [LispUValue] -> [LispUValue]
+    removeColumn :: Int -> [AnyUValue] -> [AnyUValue]
     removeColumn 0 (x:xs) = xs
     removeColumn i (x:xs) = x:removeColumn (i-1) xs
 

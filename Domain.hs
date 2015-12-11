@@ -76,7 +76,7 @@ initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
 initialDomain verb backend ann = do
   let initInst = do
         setOption (ProduceModels True)
-        vars <- createComposite (\_ -> declareVar) ann
+        vars <- createComposite (\rev -> declareVar' (getType rev)) ann
         top <- [expr| true |]
         bot <- [expr| false |]
         return DomainInstance { domainVars = vars
@@ -128,13 +128,13 @@ quickImplication :: (Extract i e)
                  -> Maybe Bool
 quickImplication [expr| false |] _ = Just True
 quickImplication _ [expr| true |] = Just True
-quickImplication [expr| true |] [expr| (<=.int (var $a) (var $b)) |]
+quickImplication [expr| true |] [expr| (<= (var $a) (var $b)) |]
   = Just (defaultEq a b)
-quickImplication [expr| true |] [expr| (>=.int (var $a) (var $b)) |]
+quickImplication [expr| true |] [expr| (>= (var $a) (var $b)) |]
   = Just (defaultEq a b)
 quickImplication
-  [expr| (<.int (var $a1) (var $a2)) |]
-  [expr| (<.int (var $b1) (var $b2)) |]
+  [expr| (< (var $a1) (var $a2)) |]
+  [expr| (< (var $b1) (var $b2)) |]
   = Just $ (defaultEq a1 b1) && (defaultEq a2 b2)
 quickImplication
   [expr| (= (var $a1) (var $a2)) |]
@@ -142,36 +142,36 @@ quickImplication
   = Just $ ((defaultEq a1 b1) && (defaultEq a2 b2)) ||
     ((defaultEq a1 b2) && (defaultEq a2 b1))
 quickImplication
-  [expr| (<=.int (var $a1) (var $a2)) |]
-  [expr| (<=.int (var $b1) (var $b2)) |]
+  [expr| (<= (var $a1) (var $a2)) |]
+  [expr| (<= (var $b1) (var $b2)) |]
   = Just (defaultEq a1 b1 && defaultEq a2 b2)
 quickImplication
-  [expr| (<.int (var $a1) (var $a2)) |]
-  [expr| (<=.int (var $b1) (var $b2)) |]
+  [expr| (< (var $a1) (var $a2)) |]
+  [expr| (<= (var $b1) (var $b2)) |]
   = Just (defaultEq a1 b1 && defaultEq a2 b2)
 quickImplication
-  [expr| (<=.int (var $_) (var $_)) |]
-  [expr| (<.int (var $_) (var $_)) |]
+  [expr| (<= (var $_) (var $_)) |]
+  [expr| (< (var $_) (var $_)) |]
   = Just False
 quickImplication
-  [expr| (>.int (var $a1) (var $a2)) |]
-  [expr| (>.int (var $b1) (var $b2)) |]
+  [expr| (> (var $a1) (var $a2)) |]
+  [expr| (> (var $b1) (var $b2)) |]
   = Just (defaultEq a1 b1 && defaultEq a2 b2)
 quickImplication
-  [expr| (>.int (var $a1) (var $a2)) |]
-  [expr| (<=.int (var $b1) (var $b2)) |]
+  [expr| (> (var $a1) (var $a2)) |]
+  [expr| (<= (var $b1) (var $b2)) |]
   = Just (defaultEq a2 b1 && defaultEq a1 b2)
 quickImplication
-  [expr| (<=.int (var $_) (var $_)) |]
-  [expr| (>.int (var $_) (var $_)) |]
+  [expr| (<= (var $_) (var $_)) |]
+  [expr| (> (var $_) (var $_)) |]
   = Just False
 quickImplication
-  [expr| (>.int (var $a1) (var $a2)) |]
-  [expr| (<.int (var $b1) (var $b2)) |]
+  [expr| (> (var $a1) (var $a2)) |]
+  [expr| (< (var $b1) (var $b2)) |]
   = Just (defaultEq a1 b2 && defaultEq a2 b1)
 quickImplication
-  [expr| (<.int (var $a1) (var $a2)) |]
-  [expr| (>.int (var $b1) (var $b2)) |]
+  [expr| (< (var $a1) (var $a2)) |]
+  [expr| (> (var $b1) (var $b2)) |]
   = Just (defaultEq a1 b2 && defaultEq a2 b1)
 quickImplication
   [expr| (var $a) |]
@@ -347,7 +347,7 @@ domainAbstract expr mustUse dom = do
     exprVars = collectRevVars DMap.empty expr
 
 -- | Create an SMT expression that represents an abstract state.
-toDomainTerm :: (Embed m e,Composite a)
+toDomainTerm :: (Embed m e,Composite a,GetType e)
              => AbstractState a -- ^ The abstract state to represent
              -> Domain a -- ^ The domain to use (The abstract state must have been created using this domain)
              -> a e -- ^ An instance of the abstracted data type
@@ -365,9 +365,10 @@ toDomainTerm state dom vars = do
   case conj of
     [] -> [expr| true |]
     [x] -> return x
-    xs -> [expr| (and # xs) |]
+    xs -> [expr| (and # ${xs}) |]
 
-toDomainTerms :: (Embed m e,Composite a) => AbstractState a -> Domain a -> a e -> m (Vector (Node,e BoolType,Bool))
+toDomainTerms :: (Embed m e,Composite a,GetType e)
+              => AbstractState a -> Domain a -> a e -> m (Vector (Node,e BoolType,Bool))
 toDomainTerms state dom vars
   = mapM (\(nd,act) -> do
              let Just (term,_) = lab (domainGraph dom) nd

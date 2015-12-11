@@ -25,35 +25,32 @@ class (PartialComp (State t),PartialComp (Input t))
   type RealizationProgress t :: (Type -> *) -> *
   stateAnnotation :: t -> CompDescr (State t)
   inputAnnotation :: t -> CompDescr (Input t)
-  initialState :: (Embed m e,Typeable (EmConstr m e))
+  initialState :: (Embed m e,GetType e,Typeable (EmConstr m e))
                => t
                -> State t e
                -> m (e BoolType)
-  stateInvariant :: (Embed m e,Typeable (EmConstr m e))
+  stateInvariant :: (Embed m e,GetType e,Typeable (EmConstr m e))
                  => t -> State t e -> Input t e
                  -> m (e BoolType)
-  declareNextState :: (Embed m e,Typeable (EmConstr m e))
-                   => (forall t. GetType t
-                       => Maybe String -> e t -> m (e t))
+  declareNextState :: (Embed m e,GetType e,Typeable (EmConstr m e))
+                   => (forall t. Maybe String -> e t -> m (e t))
                    -> t
                    -> State t e -> Input t e
                    -> RealizationProgress t e
                    -> m (State t e,RealizationProgress t e)
-  declareAssumptions :: (Embed m e,Typeable (EmConstr m e))
-                     => (forall t. GetType t
-                         => Maybe String -> e t -> m (e t))
+  declareAssumptions :: (Embed m e,GetType e,Typeable (EmConstr m e))
+                     => (forall t. Maybe String -> e t -> m (e t))
                      -> t
                      -> State t e -> Input t e
                      -> RealizationProgress t e
                      -> m ([e BoolType],RealizationProgress t e)
-  declareAssertions :: (Embed m e,Typeable (EmConstr m e))
-                    => (forall t. GetType t
-                        => Maybe String -> e t -> m (e t))
+  declareAssertions :: (Embed m e,GetType e,Typeable (EmConstr m e))
+                    => (forall t. Maybe String -> e t -> m (e t))
                     -> t
                     -> State t e -> Input t e
                     -> RealizationProgress t e
                     -> m ([e BoolType],RealizationProgress t e)
-  isEndState :: (Embed m e)
+  isEndState :: (Embed m e,GetType e)
              => t -> State t e -> m (e BoolType)
   {-createRevState :: Backend b => String -> t -> SMT b (State t (Expr b),RevState t)
   relativizeExpr :: (GetType a,Backend b) => t -> RevState t -> Expr b a -> (State t (Expr b) -> SMT b (Expr b a))-}
@@ -82,15 +79,15 @@ renderInput (mdl::t) st = show (unmaskValue (Proxy::Proxy (Input t)) st)
 renderPartialInput :: (TransitionRelation t) => t -> Partial (Input t) -> String
 renderPartialInput (mdl::t) st = show st
 
-createStateVars :: (TransitionRelation tr,Embed m e)
-                => (forall t. GetType t => RevComp (State tr) t -> m (e t))
+createStateVars :: (TransitionRelation tr,Embed m e,GetType e)
+                => (forall t. RevComp (State tr) t -> m (e t))
                 -> tr
                 -> m (State tr e)
 createStateVars f tr
   = createComposite f (stateAnnotation tr)
 
-createInputVars :: (TransitionRelation tr,Embed m e)
-                => (forall t. GetType t => RevComp (Input tr) t -> m (e t))
+createInputVars :: (TransitionRelation tr,Embed m e,GetType e)
+                => (forall t. RevComp (Input tr) t -> m (e t))
                 -> tr
                 -> m (Input tr e)
 createInputVars f tr
@@ -101,7 +98,7 @@ createRevState :: (TransitionRelation tr,Backend b)
                -> SMT b (State tr (Expr b),
                          DMap (B.Var b) (RevComp (State tr)))
 createRevState (tr::tr)
-  = createRevComp (\rev -> embedSMT (B.declareVar
+  = createRevComp (\rev -> embedSMT (B.declareVar (getType rev)
                                      (Just $ revName (Proxy::Proxy (State tr)) rev))
                   ) (stateAnnotation tr)
 
@@ -110,7 +107,7 @@ createState :: (Backend b,TransitionRelation tr)
             -> SMT b (State tr (Expr b))
 createState (tr::tr)
   = createComposite
-    (\rev -> declareVarNamed (revName (Proxy::Proxy (State tr)) rev))
+    (\rev -> declareVarNamed' (getType rev) (revName (Proxy::Proxy (State tr)) rev))
     (stateAnnotation tr)
 
 createInput :: (Backend b,TransitionRelation tr)
@@ -118,7 +115,7 @@ createInput :: (Backend b,TransitionRelation tr)
             -> SMT b (Input tr (Expr b))
 createInput (tr::tr)
   = createComposite
-    (\rev -> declareVarNamed (revName (Proxy::Proxy (Input tr)) rev))
+    (\rev -> declareVarNamed' (getType rev) (revName (Proxy::Proxy (Input tr)) rev))
     (inputAnnotation tr)
 
 createNextState :: (Backend b,TransitionRelation tr)
