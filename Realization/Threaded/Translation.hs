@@ -237,20 +237,17 @@ toLispProgram opts real' = do
                                    old = InternalObj (L.LispVarAccess
                                                       (L.NamedVar name1 L.State L.boolType)
                                                       [] []) ()
+                                   run = InternalObj (L.LispVarAccess
+                                                      (L.NamedVar (T.pack $ "run-"++tName)
+                                                       L.State L.boolType) [] []) ()
                                return $ Map.insert name1
                                  (L.LispConstr $
                                   L.LispValue (L.Size []) $
                                   L.Singleton $
                                   L.Val $ case cond0++cond1 of
-                                   [] -> if dontStep
-                                         then constant False
-                                         else (not' step') .&&. old
-                                   [x] -> if dontStep
-                                          then x
-                                          else ite step' x old
-                                   xs -> if dontStep
-                                         then app or' xs
-                                         else ite step' (app or' xs) old) mp
+                                   [] -> (not' (step' .&&. run)) .&&. old
+                                   [x] -> ite (step' .&&. run) x old
+                                   xs -> ite (step' .&&. run) (app or' xs) old) mp
                            ) mp (Map.keys $ latchBlockDesc thSt)
                  ) nxt1 (Map.toList $ threadStateDesc $ stateAnnotation real)
   let outValues = outputValues real
