@@ -32,7 +32,7 @@ Executable vvt-pp
 
 Executable vvt-bmc
   Main-Is:              bin/BMC.hs
-  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes
+  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,AllowAmbiguousTypes
   Build-Depends:        base,mtl,containers,constraints,data-fix,smtlib2,smtlib2-pipe,smtlib2-z3,smtlib2-debug,atto-lisp,bytestring,attoparsec,text,dependent-sum,dependent-map,transformers,time
 
 -- --Executable vvt-enc

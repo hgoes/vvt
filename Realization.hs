@@ -80,14 +80,14 @@ renderPartialInput :: (TransitionRelation t) => t -> Partial (Input t) -> String
 renderPartialInput (mdl::t) st = show st
 
 createStateVars :: (TransitionRelation tr,Embed m e,GetType e)
-                => (forall t. RevComp (State tr) t -> m (e t))
+                => (forall t. Repr t -> RevComp (State tr) t -> m (e t))
                 -> tr
                 -> m (State tr e)
 createStateVars f tr
   = createComposite f (stateAnnotation tr)
 
 createInputVars :: (TransitionRelation tr,Embed m e,GetType e)
-                => (forall t. RevComp (Input tr) t -> m (e t))
+                => (forall t. Repr t -> RevComp (Input tr) t -> m (e t))
                 -> tr
                 -> m (Input tr e)
 createInputVars f tr
@@ -98,8 +98,8 @@ createRevState :: (TransitionRelation tr,Backend b)
                -> SMT b (State tr (Expr b),
                          DMap (B.Var b) (RevComp (State tr)))
 createRevState (tr::tr)
-  = createRevComp (\rev -> embedSMT (B.declareVar (getType rev)
-                                     (Just $ revName (Proxy::Proxy (State tr)) rev))
+  = createRevComp (\tp rev -> embedSMT (B.declareVar tp
+                                        (Just $ revName (Proxy::Proxy (State tr)) rev))
                   ) (stateAnnotation tr)
 
 createState :: (Backend b,TransitionRelation tr)
@@ -107,7 +107,7 @@ createState :: (Backend b,TransitionRelation tr)
             -> SMT b (State tr (Expr b))
 createState (tr::tr)
   = createComposite
-    (\rev -> declareVarNamed' (getType rev) (revName (Proxy::Proxy (State tr)) rev))
+    (\tp rev -> declareVarNamed' tp (revName (Proxy::Proxy (State tr)) rev))
     (stateAnnotation tr)
 
 createInput :: (Backend b,TransitionRelation tr)
@@ -115,7 +115,7 @@ createInput :: (Backend b,TransitionRelation tr)
             -> SMT b (Input tr (Expr b))
 createInput (tr::tr)
   = createComposite
-    (\rev -> declareVarNamed' (getType rev) (revName (Proxy::Proxy (Input tr)) rev))
+    (\tp rev -> declareVarNamed' tp (revName (Proxy::Proxy (Input tr)) rev))
     (inputAnnotation tr)
 
 createNextState :: (Backend b,TransitionRelation tr)

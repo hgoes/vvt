@@ -109,7 +109,7 @@ instance (Show var,Ord var) => Composite (RSMVars var) where
     mp' <- mapM f mp
     return (RSMVars mp')
   createComposite f mp = do
-    mp' <- sequence $ Map.mapWithKey (\instr _ -> f (RSMVar instr)) mp
+    mp' <- sequence $ Map.mapWithKey (\instr _ -> f IntRepr (RSMVar instr)) mp
     return (RSMVars mp')
   accessComposite (RSMVar instr) (RSMVars mp) = mp Map.! instr
   eqComposite (RSMVars mp1) (RSMVars mp2) = do
