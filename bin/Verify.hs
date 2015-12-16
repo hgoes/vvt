@@ -139,7 +139,7 @@ main = do
                Just tr -> return tr
                Nothing -> do
                  hPutStrLn stderr "Timeout"
-                 exitWith (ExitFailure (-2))
+                 exitWith ExitSuccess
      case tr of
       Right fp -> putStrLn "No bug found."
       Left tr' -> do
