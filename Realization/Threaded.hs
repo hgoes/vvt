@@ -1800,13 +1800,16 @@ translateType0 (castDown -> Just ptr) = do
   subType <- sequentialTypeGetElementType (ptr::Ptr PointerType) >>= translateType0
   return $ Singleton $ TpPtr Map.empty subType
 translateType0 (castDown -> Just struct) = do
-  name <- structTypeGetName struct >>= stringRefData
+  hasName <- structTypeHasName struct
+  name <- if hasName
+          then fmap Just $ structTypeGetName struct >>= stringRefData
+          else return Nothing
   case name of
-   "struct.__thread_id" -> return $ Singleton $ TpThreadId Map.empty
-   "struct.pthread_mutex_t" -> return $ Singleton TpBool
-   "struct.pthread_rwlock_t" -> return $ Singleton $
-                                TpVector [TpBool,TpInt]
-   "struct.pthread_cond_t" -> return $ Singleton $ TpCondition Map.empty
+   Just "struct.__thread_id" -> return $ Singleton $ TpThreadId Map.empty
+   Just "struct.pthread_mutex_t" -> return $ Singleton TpBool
+   Just "struct.pthread_rwlock_t" -> return $ Singleton $
+                                     TpVector [TpBool,TpInt]
+   Just "struct.pthread_cond_t" -> return $ Singleton $ TpCondition Map.empty
    _ -> do
      num <- structTypeGetNumElements struct
      tps <- mapM (\i -> structTypeGetElementType struct i >>= translateType0) [0..num-1]
