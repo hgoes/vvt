@@ -76,7 +76,7 @@ initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
 initialDomain verb backend ann = do
   let initInst = do
         setOption (ProduceModels True)
-        vars <- createComposite (\rev -> declareVar' (getType rev)) ann
+        vars <- createComposite (\tp rev -> declareVar' tp) ann
         top <- [expr| true |]
         bot <- [expr| false |]
         return DomainInstance { domainVars = vars
@@ -85,19 +85,19 @@ initialDomain verb backend ann = do
                                               ,(domainBot,bot)]
                               , domainInstNext = 2
                               , domainIsFresh = True }
-      gArg = runIdentity $ createComposite (\rev -> return rev) ann
+      gArg = runIdentity $ createComposite (\_ rev -> return rev) ann
   supportsTimeouts <- withBackendExitCleanly backend $ do
     name <- getInfo SMTSolverName
     return $ name=="Z3"
   pool <- createSMTPool backend initInst
   return $ Domain { domainGraph = mkGraph
-                                  [(domainTop,(CompositeExpr (Const (BoolValue True)),DMap.empty))
-                                  ,(domainBot,(CompositeExpr (Const (BoolValue False)),DMap.empty))]
+                                  [(domainTop,(CompositeExpr ann (Const (BoolValue True)),DMap.empty))
+                                  ,(domainBot,(CompositeExpr ann (Const (BoolValue False)),DMap.empty))]
                                   [(domainTop,domainBot,())]
                   , domainGArg = gArg
                   , domainNodesRev = Map.fromList
-                                     [(CompositeExpr (Const (BoolValue True)),domainTop)
-                                     ,(CompositeExpr (Const (BoolValue False)),domainBot)]
+                                     [(CompositeExpr ann (Const (BoolValue True)),domainTop)
+                                     ,(CompositeExpr ann (Const (BoolValue False)),domainBot)]
                   , domainNextNode = 2
                   , domainPool = pool
                   , domainVerbosity = verb
