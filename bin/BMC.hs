@@ -206,7 +206,7 @@ main = do
          (nxt,gts3) <- declareNextState
                        (\name e -> [define| e |])
                        prog st inp gts2
-         ninp <- createComposite (\rev -> declareVar' (getType rev)
+         ninp <- createComposite (\tp rev -> declareVar' tp
                                  ) (inputAnnotation prog)
          if compl
            then do
