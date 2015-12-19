@@ -7,6 +7,8 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Type.Nat
+import Language.SMTLib2.Internals.Type.Struct (Struct(..))
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Map (Map)
@@ -18,6 +20,7 @@ import Data.Foldable
 import Prelude hiding (foldl)
 import Data.Proxy
 import Data.GADT.Compare
+import Data.Functor.Identity
 
 ineqPredicates :: (Embed m e,GetType e) => [e IntType] -> m [e BoolType]
 ineqPredicates [] = return []
@@ -34,23 +37,12 @@ statesOfType repr prog = DMap.foldlWithKey (\lin name _
   where
     getStates :: Repr t -> LispName sig -> [LispExpr t]
     getStates repr name@(LispName lvl tps _) = case lvl of
-      Zero -> [ LispRef (NamedVar name State) idx (ArrGet lvl (lispIndexType idx))
-              | idx <- getStates' repr tps ]
+      Zero -> runIdentity $ Struct.flattenIndex
+              (\idx repr' -> case geq repr repr' of
+                Just Refl -> return [LispRef (NamedVar name State) idx ArrGet lvl]
+                Nothing -> return [])
+              (return . concat) tps
       _ -> []
-
-    getStates' :: Repr t -> LispStruct Repr tp -> [LispIndex tp t]
-    getStates' repr (LSingleton repr') = case geq repr repr' of
-      Just Refl -> [ValGet repr]
-      Nothing -> []
-    getStates' repr (LStruct args) = getStates'' repr args
-
-    getStates'' :: Repr t -> StructArgs Repr tps
-                -> [LispIndex ('Struct tps) t]
-    getStates'' _ NoSArg = []
-    getStates'' repr (SArg x xs) = [ ValIdx Zero idx
-                                   | idx <- getStates' repr x ] ++
-                                   [ ValIdx (Succ n) idx
-                                   | ValIdx n idx <- getStates'' repr xs ]
 
 {-
 linearExpressions :: LispProgram -> Set (SMTExpr Integer)

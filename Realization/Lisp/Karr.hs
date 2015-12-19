@@ -11,6 +11,8 @@ import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Type.Nat
+import Language.SMTLib2.Internals.Type.List (List(..))
+import qualified Language.SMTLib2.Internals.Type.List as List
 import qualified Language.SMTLib2.Internals.Backend as B
 
 import Data.Dependent.Map (DMap,DSum(..))
@@ -64,22 +66,22 @@ karrPredicates prog = do
               , (vec,c) <- extractPredicateVec diag ] ) $
     --trace (show karr1) $
     return [ LispExpr (App (Ord NumInt op)
-                       (Arg (case [ case f of
-                                    1 -> x
-                                    -1 -> LispExpr (App (Arith NumInt Minus (Succ Zero)) (Arg x NoArg))
-                                    _ -> LispExpr (App (Arith NumInt Mult (Succ (Succ Zero)))
-                                                   (Arg
-                                                    (LispExpr (Const (IntValue f)))
-                                                    (Arg x NoArg)))
-                                  | (LispRev name (RevVar Zero rev),idx) <- Map.toList lins
+                       (Cons (case [ case f of
+                                     1 -> x
+                                     -1 -> LispExpr (App (Arith NumInt Minus (Succ Zero)) (Cons x Nil))
+                                     _ -> LispExpr (App (Arith NumInt Mult (Succ (Succ Zero)))
+                                                    (Cons
+                                                     (LispExpr (Const (IntValue f)))
+                                                     (Cons x Nil)))
+                                  | (LispRev name@(LispName lvl _ _) (RevVar rev),idx) <- Map.toList lins
                                   , let f = vec Vec.! idx
                                   , f/=0
                                   , let x :: LispExpr IntType
-                                        x = LispRef (NamedVar name State) rev (ArrGet Zero IntRepr) ] of
+                                        x = LispRef (NamedVar name State) rev ArrGet lvl] of
                              [x] -> x
                              xs -> allEqFromList xs $
                                    \n args -> LispExpr (App (Arith NumInt Plus n) args))
-                        (Arg (LispExpr (Const (IntValue c))) NoArg)))
+                        (Cons (LispExpr (Const (IntValue c))) Nil)))
            | (nd,diag) <- IMap.toList $ karrNodes karr1
            , (vec,c) <- extractPredicateVec diag
            , op <- [Gt,Ge] ]
@@ -189,11 +191,11 @@ getLinears prog
   = execState
     (do
         (_::LispState Repr) <- createComposite
-                               (\rev -> case getType rev of
+                               (\tp rev -> case tp of
                                  IntRepr -> do
                                    modify (Map.insert rev ())
                                    return IntRepr
-                                 tp -> return tp
+                                 _ -> return tp
                                ) (programState prog)
         return ()
     ) Map.empty
@@ -245,8 +247,8 @@ makeInitLins prog extr
         lst <- execStateT
                (do
                 (_::LispState Repr) <- createComposite
-                                       (\rev@(LispRev name idx)
-                                        -> case getType rev of
+                                       (\tp rev@(LispRev name idx)
+                                        -> case tp of
                                         IntRepr -> do
                                           lst <- get
                                           case DMap.lookup name (programInit prog) of
@@ -261,7 +263,7 @@ makeInitLins prog extr
                                              Nothing -> do
                                                put ((rev,Nothing):lst)
                                                return IntRepr
-                                        tp -> return tp) (programState prog)
+                                        _ -> return tp) (programState prog)
                 return ()) []
         return $ fmap Map.fromList $ complete lst) extr
   where
@@ -370,8 +372,8 @@ instance GetType e => GetType (LinearExpr e) where
   getType (NonLinear e) = getType e
   getType (Linear _ _) = IntRepr
 
-declareLinear :: (Backend b) => LispRev tp -> SMT b (LinearExpr (Expr b) tp)
-declareLinear rev = declare' rev (getType rev)
+declareLinear :: (Backend b) => Repr tp -> LispRev tp -> SMT b (LinearExpr (Expr b) tp)
+declareLinear tp rev = declare' rev tp
   where
     declare' :: (Backend b) => LispRev tp -> Repr tp -> SMT b (LinearExpr (Expr b) tp)
     declare' rev IntRepr = do
@@ -432,15 +434,15 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
               ) allVars
       fmap NonLinear $ lin [expr| (and # ${conj}) |]
     _ -> do
-      nargs <- mapArgs (\(NonLinear x) -> return x) args
+      nargs <- List.mapM (\(NonLinear x) -> return x) args
       res <- lin (embed (App (Eq tp n) nargs))
       return (NonLinear res)
-  embed (App (Ord NumInt op) (Arg (Linear coeff1 c1) (Arg (Linear coeff2 c2) NoArg))) = do
+  embed (App (Ord NumInt op) (Cons (Linear coeff1 c1) (Cons (Linear coeff2 c2) Nil))) = do
     allZero1 <- mapM (\x -> lin [expr| (= x 0) |]) coeff1
     allZero2 <- mapM (\x -> lin [expr| (= x 0) |]) coeff2
     let allZero = Map.elems allZero1 ++ Map.elems allZero2
     nondet <- lin declareVar
-    cond <- lin (embed (App (Ord NumInt op) (Arg c1 (Arg c2 NoArg))))
+    cond <- lin (embed (App (Ord NumInt op) (Cons c1 (Cons c2 Nil))))
     fmap NonLinear $ lin [expr| (ite (and # ${allZero}) cond nondet) |]
   embed (App (Arith NumInt Plus n) args) = do
     let xs :: [LinearExpr e IntType]
@@ -454,7 +456,7 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
     let cs = fmap (\(Linear _ c) -> c) xs
     nc <- lin [expr| (+ # ${cs}) |]
     return $ Linear ncoeffs nc
-  embed (App (Arith NumInt Minus (Succ Zero)) (Arg (Linear coeff c) NoArg)) = do
+  embed (App (Arith NumInt Minus (Succ Zero)) (Cons (Linear coeff c) Nil)) = do
     ncoeff <- mapM (\e -> lin [expr| (- e) |]) coeff
     nc <- lin [expr| (- c) |]
     return $ Linear ncoeff nc
@@ -471,7 +473,7 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
     let cs = c:neg_cs
     nc <- lin [expr| (+ # ${cs}) |]
     return $ Linear ncoeffs nc
-  embed (App (Arith NumInt Mult (Succ (Succ Zero))) (Arg (Linear coeff1 c1) (Arg (Linear coeff2 c2) NoArg)))
+  embed (App (Arith NumInt Mult (Succ (Succ Zero))) (Cons (Linear coeff1 c1) (Cons (Linear coeff2 c2) Nil)))
     | Map.null coeff1 = do
         ncoeff <- mapM (\e -> lin [expr| (* e c1) |]) coeff2
         nc <- lin [expr| (* c1 c2) |]
@@ -484,7 +486,7 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
         nondet <- lin declareVar
         c <- lin [expr| (ite nondet 1 0) |]
         return $ Linear Map.empty c
-  embed (App (Abs NumInt) (Arg (Linear coeff c) NoArg))
+  embed (App (Abs NumInt) (Cons (Linear coeff c) Nil))
     | Map.null coeff = do
         nc <- lin [expr| (abs c) |]
         return $ Linear Map.empty nc
@@ -492,18 +494,18 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
         nondet <- lin declareVar
         nc <- lin [expr| (ite nondet 1 0) |]
         return $ Linear Map.empty nc
-  embed (App ToInt (Arg (NonLinear x) NoArg)) = do
+  embed (App ToInt (Cons (NonLinear x) Nil)) = do
     c <- lin [expr| (to_int x) |]
     return $ Linear Map.empty c
-  embed (App (ITE _) (Arg (NonLinear c) (Arg (Linear coeff1 c1) (Arg (Linear coeff2 c2) NoArg)))) = do
+  embed (App (ITE _) (Cons (NonLinear c) (Cons (Linear coeff1 c1) (Cons (Linear coeff2 c2) Nil)))) = do
     ncoeff <- lin $ sequence $ Map.mergeWithKey (\_ x y -> Just [expr| (ite c x y) |])
               (fmap (\v -> [expr| (ite c v 0) |]))
               (fmap (\v -> [expr| (ite c 0 v) |])) coeff1 coeff2
     nc <- lin [expr| (ite c c1 c2) |]
     return $ Linear ncoeff nc
   embed (App f args) = do
-    nargs <- mapArgs (\i -> case i of
-                       NonLinear i' -> return i'
-                       Linear _ _ -> lin declareVar
-                     ) args
+    nargs <- List.mapM (\i -> case i of
+                         NonLinear i' -> return i'
+                         Linear _ _ -> lin declareVar
+                       ) args
     fmap mkLinear $ lin $ embed (App f nargs)

@@ -291,6 +291,29 @@ instance Composite (LispValue '(lvl,tps)) where
   revType _ (lvl,tps) (RevVar idx) = lispTypeGetType lvl (Struct.elementIndex tps idx)
   revType _ (lvl,tps) (RevSize rlvl _) = lispTypeGetType rlvl IntRepr
 
+instance LiftComp (LispValue '(lvl,tps)) where
+  type Unpacked (LispValue '(lvl,tps)) = LispUVal '(lvl,tps)
+  liftComp (LispU vals) = do
+    vals' <- Struct.mapM (\v -> do
+                             c <- embedConst v
+                             return (Val c)
+                         ) vals
+    return $ LispValue NoSize vals'
+  liftComp (LispUArray lvl tps lst) = do
+    lst' <- mapM liftComp lst
+    liftValues lst'
+  unliftComp f val = case size val of
+    NoSize -> do
+      rval <- Struct.mapM (\(Val e) -> f e) (value val)
+      return (LispU rval)
+    Size sz szs -> do
+      let (lvl,tps) = lispValueType val
+          rlvl = case lvl of
+            Succ n -> n
+      vals <- unliftValue f val
+      vals' <- mapM (unliftComp f) vals
+      return $ LispUArray rlvl tps vals'
+
 indexValue :: (Embed m e,GetType e) => (forall t. e t -> ConcreteValue t -> m p)
            -> Integer
            -> LispValue '(S lvl,tps) e
