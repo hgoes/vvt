@@ -9,6 +9,9 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Type.Nat
+import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
+import qualified Language.SMTLib2.Internals.Type.List as List
 
 import qualified Data.Text as T
 import Data.Map (Map)
@@ -22,7 +25,7 @@ import Data.Typeable (cast)
 import Control.Monad.State
 import Data.GADT.Compare
 
-class Fact (a :: (Nat,Struct Type) -> *) where
+class Fact (a :: ([Type],Tree Type) -> *) where
   empty :: a sig
   propagateUp :: (forall lvl tps. LispName '(lvl,tps) -> a '(lvl,tps)) -> LispVar e sig -> a sig
   union :: a sig -> a sig -> a sig
@@ -63,9 +66,9 @@ generateDependencyMapUp prog = mp2
     depExpr :: AnyName -> LispExpr t -> DependencyMap -> DependencyMap
     depExpr trg (LispExpr (Const _)) mp = mp
     depExpr trg (LispExpr (App _ args)) mp
-      = runIdentity $ foldArgs (\mp e -> return $ depExpr trg e mp
-                               ) mp args
-    depExpr trg (LispRef var _ _) mp = depLVar trg var mp
+      = runIdentity $ List.foldM (\mp e -> return $ depExpr trg e mp
+                                 ) mp args
+    depExpr trg (LispRef var _) mp = depLVar trg var mp
     depExpr trg (LispEq v1 v2) mp = depLVar trg v1 $
                                     depLVar trg v2 mp
     depExpr trg (ExactlyOne xs) mp = foldl (\mp e -> depExpr trg e mp) mp xs

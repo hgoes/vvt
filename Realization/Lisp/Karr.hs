@@ -4,6 +4,7 @@ import Args
 import PartialArgs
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Array
 import Karr
 
 import Language.SMTLib2
@@ -73,11 +74,11 @@ karrPredicates prog = do
                                                     (Cons
                                                      (LispExpr (Const (IntValue f)))
                                                      (Cons x Nil)))
-                                  | (LispRev name@(LispName lvl _ _) (RevVar rev),idx) <- Map.toList lins
+                                  | (LispRev name@(LispName Nil _ _) (RevVar rev),idx) <- Map.toList lins
                                   , let f = vec Vec.! idx
                                   , f/=0
                                   , let x :: LispExpr IntType
-                                        x = LispRef (NamedVar name State) rev ArrGet lvl] of
+                                        x = LispRef (NamedVar name State) rev] of
                              [x] -> x
                              xs -> allEqFromList xs $
                                    \n args -> LispExpr (App (Arith NumInt Plus n) args))
@@ -205,11 +206,12 @@ makeInitPCs :: Backend b => LispProgram -> KarrExtractor (Expr b)
 makeInitPCs prog extr
   = runLin
     (do
-        pcVars <- mapM (\(name :=> _) -> case DMap.lookup name (programInit prog) of
-                         Just (LispInit pcVal) -> do
-                           pcVal' <- relativizeLinValue prog
-                                     (nonlinState extr) (nonlinInput extr) pcVal
-                           return (name :=> (LispValue' pcVal'))
+        pcVars <- mapM (\(name@(LispName _ _ _) :=> _)
+                        -> case DMap.lookup name (programInit prog) of
+                        Just (LispInit pcVal) -> do
+                          pcVal' <- relativizeLinValue prog
+                                    (nonlinState extr) (nonlinInput extr) pcVal
+                          return (name :=> (LispValue' pcVal'))
                        ) (DMap.toAscList pcs)
         LispConcr res <- unliftComp (\(NonLinear x) -> lin (getValue x)
                                     ) (LispState (DMap.fromAscList pcVars))
@@ -226,11 +228,12 @@ makeNextPCs :: Backend b => LispProgram -> KarrExtractor (Expr b)
 makeNextPCs prog extr
   = runLin
     (do
-        pcVars <- mapM (\(name :=> _) -> case DMap.lookup name (programNext prog) of
-                         Just pcVar -> do
-                           pcVar' <- relativizeLinVar prog
-                                     (nonlinState extr) (nonlinInput extr) pcVar
-                           return (name :=> (LispValue' pcVar'))
+        pcVars <- mapM (\(name@(LispName _ _ _) :=> _)
+                        -> case DMap.lookup name (programNext prog) of
+                        Just pcVar -> do
+                          pcVar' <- relativizeLinVar prog
+                                    (nonlinState extr) (nonlinInput extr) pcVar
+                          return (name :=> (LispValue' pcVar'))
                        ) (DMap.toAscList pcs)
         return (LispState $ DMap.fromAscList pcVars)) extr
   where
@@ -279,7 +282,7 @@ makeNextLins :: Backend b => LispProgram -> KarrExtractor (Expr b)
 makeNextLins prog extr
   = runLin
     (do
-        nxt <- mapM (\(name :=> var) -> do
+        nxt <- mapM (\(name@(LispName _ _ _) :=> var) -> do
                         val <- relativizeLinVar prog
                                (nonlinState extr)
                                (nonlinInput extr) var
@@ -310,8 +313,8 @@ relativizeLinValue :: Backend b
                    => LispProgram
                    -> LispState (LinearExpr (Expr b))
                    -> LispState (LinearExpr (Expr b))
-                   -> LispValue tp LispExpr
-                   -> LinearM b (LispValue tp (LinearExpr (Expr b)))
+                   -> LispValue '(sz,tps) LispExpr
+                   -> LinearM b (LispValue '(sz,tps) (LinearExpr (Expr b)))
 relativizeLinValue prog st inp
   = relativizeValue st inp
     (\name -> do
@@ -329,8 +332,8 @@ relativizeLinVar :: Backend b
                  => LispProgram
                  -> LispState (LinearExpr (Expr b))
                  -> LispState (LinearExpr (Expr b))
-                 -> LispVar LispExpr tp
-                 -> LinearM b (LispValue tp (LinearExpr (Expr b)))
+                 -> LispVar LispExpr '(sz,tps)
+                 -> LinearM b (LispValue '(sz,tps) (LinearExpr (Expr b)))
 relativizeLinVar prog st inp
   = relativizeVar st inp
     (\name -> do
@@ -380,7 +383,7 @@ declareLinear tp rev = declare' rev tp
       c0 <- [expr| 0 |]
       c1 <- [expr| 1 |]
       return (Linear (Map.singleton rev c1) c0)
-    declare' _ tp = fmap NonLinear (declareVar' tp)
+    declare' _ tp = fmap NonLinear (declareVar tp)
 
 mkLinear :: GetType e => e tp -> LinearExpr e tp
 mkLinear e = case getType e of
@@ -441,7 +444,7 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
     allZero1 <- mapM (\x -> lin [expr| (= x 0) |]) coeff1
     allZero2 <- mapM (\x -> lin [expr| (= x 0) |]) coeff2
     let allZero = Map.elems allZero1 ++ Map.elems allZero2
-    nondet <- lin declareVar
+    nondet <- lin (declareVar bool)
     cond <- lin (embed (App (Ord NumInt op) (Cons c1 (Cons c2 Nil))))
     fmap NonLinear $ lin [expr| (ite (and # ${allZero}) cond nondet) |]
   embed (App (Arith NumInt Plus n) args) = do
@@ -483,7 +486,7 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
         nc <- lin [expr| (* c1 c2) |]
         return $ Linear ncoeff nc
     | otherwise = do
-        nondet <- lin declareVar
+        nondet <- lin (declareVar bool)
         c <- lin [expr| (ite nondet 1 0) |]
         return $ Linear Map.empty c
   embed (App (Abs NumInt) (Cons (Linear coeff c) Nil))
@@ -491,7 +494,7 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
         nc <- lin [expr| (abs c) |]
         return $ Linear Map.empty nc
     | otherwise = do
-        nondet <- lin declareVar
+        nondet <- lin (declareVar bool)
         nc <- lin [expr| (ite nondet 1 0) |]
         return $ Linear Map.empty nc
   embed (App ToInt (Cons (NonLinear x) Nil)) = do
@@ -506,6 +509,6 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
   embed (App f args) = do
     nargs <- List.mapM (\i -> case i of
                          NonLinear i' -> return i'
-                         Linear _ _ -> lin declareVar
+                         Linear _ _ -> lin (declareVar int)
                        ) args
     fmap mkLinear $ lin $ embed (App f nargs)

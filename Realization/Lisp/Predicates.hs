@@ -2,6 +2,7 @@ module Realization.Lisp.Predicates where
 
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Array
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
@@ -37,11 +38,11 @@ statesOfType repr prog = DMap.foldlWithKey (\lin name _
   where
     getStates :: Repr t -> LispName sig -> [LispExpr t]
     getStates repr name@(LispName lvl tps _) = case lvl of
-      Zero -> runIdentity $ Struct.flattenIndex
-              (\idx repr' -> case geq repr repr' of
-                Just Refl -> return [LispRef (NamedVar name State) idx ArrGet lvl]
-                Nothing -> return [])
-              (return . concat) tps
+      Nil -> runIdentity $ Struct.flattenIndex
+             (\idx repr' -> case geq repr repr' of
+               Just Refl -> return [LispRef (NamedVar name State) idx]
+               Nothing -> return [])
+             (return . concat) tps
       _ -> []
 
 {-

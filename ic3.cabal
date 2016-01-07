@@ -57,10 +57,10 @@ Executable vvt-predicates
   Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,QuasiQuotes,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
   Main-Is:              bin/Predicates.hs
 
--- Executable vvt-opt
---   Build-Depends:        base,mtl,dependent-sum,dependent-map,bytestring,attoparsec,atto-lisp,transformers,containers,text,constraints,smtlib2 >= 0.3,smtlib2-pipe,smtlib2-debug
---   Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,QuasiQuotes,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
---   Main-Is:              bin/Optimize.hs
+Executable vvt-opt
+  Build-Depends:        base,mtl,dependent-sum,dependent-map,bytestring,attoparsec,atto-lisp,transformers,containers,text,constraints,smtlib2 >= 0.3,smtlib2-pipe,smtlib2-debug
+  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,QuasiQuotes,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
+  Main-Is:              bin/Optimize.hs
   
 --executable vvt
 --  Main-Is:              bin/Main.hs

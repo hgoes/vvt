@@ -107,7 +107,7 @@ createState :: (Backend b,TransitionRelation tr)
             -> SMT b (State tr (Expr b))
 createState (tr::tr)
   = createComposite
-    (\tp rev -> declareVarNamed' tp (revName (Proxy::Proxy (State tr)) rev))
+    (\tp rev -> declareVarNamed tp (revName (Proxy::Proxy (State tr)) rev))
     (stateAnnotation tr)
 
 createInput :: (Backend b,TransitionRelation tr)
@@ -115,7 +115,7 @@ createInput :: (Backend b,TransitionRelation tr)
             -> SMT b (Input tr (Expr b))
 createInput (tr::tr)
   = createComposite
-    (\tp rev -> declareVarNamed' tp (revName (Proxy::Proxy (Input tr)) rev))
+    (\tp rev -> declareVarNamed tp (revName (Proxy::Proxy (Input tr)) rev))
     (inputAnnotation tr)
 
 createNextState :: (Backend b,TransitionRelation tr)

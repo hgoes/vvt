@@ -76,7 +76,7 @@ initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
 initialDomain verb backend ann = do
   let initInst = do
         setOption (ProduceModels True)
-        vars <- createComposite (\tp rev -> declareVar' tp) ann
+        vars <- createComposite (\tp rev -> declareVar tp) ann
         top <- [expr| true |]
         bot <- [expr| false |]
         return DomainInstance { domainVars = vars

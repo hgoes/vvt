@@ -88,7 +88,7 @@ consecutionPerform dom cons lvl act = do
                 then (do
                          nloaded <- Vec.generateM (numFrames-numLoaded) $
                                     \i -> do
-                                      actVar <- declareVarNamed ("frameAct"++show (numLoaded+i))
+                                      actVar <- declareVarNamed bool ("frameAct"++show (numLoaded+i))
                                       if numLoaded+i==0
                                         then do
                                         init <- concretizeExpr

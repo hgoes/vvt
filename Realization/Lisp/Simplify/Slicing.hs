@@ -3,10 +3,15 @@ module Realization.Lisp.Simplify.Slicing where
 import Args
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Array
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Type.Nat
 import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Type.List (List(..))
+import qualified Language.SMTLib2.Internals.Type.List as List
+import Language.SMTLib2.Internals.Type.Struct (Struct(..))
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import Language.SMTLib2.Internals.Expression
 
 import Data.Set (Set)
@@ -64,11 +69,11 @@ slice prog = prog { programState = filterMap (programState prog) State
     filterExpr :: LispExpr t -> LispExpr t
     filterExpr (LispExpr (App fun args)) = LispExpr (App fun nargs)
       where
-        nargs = runIdentity $ mapArgs (return.filterExpr) args
+        nargs = runIdentity $ List.mapM (return.filterExpr) args
     filterExpr (LispExpr e) = LispExpr e
-    filterExpr e@(LispRef var idx dyn) = case filterVar var of
+    filterExpr e@(LispRef var idx) = case filterVar var of
       Nothing -> defaultExpr (getType e)
-      Just nvar -> LispRef nvar idx (filterArrayIndex dyn)
+      Just nvar -> LispRef nvar idx
     filterExpr (LispEq v1 v2) = case filterVar v1 of
       Nothing -> LispExpr (Const $ BoolValue True)
       Just v1' -> case filterVar v2 of
@@ -91,19 +96,16 @@ slice prog = prog { programState = filterMap (programState prog) State
                                                                , value = nvalue }
       where
         nsize = filterSize (size val)
-        nvalue = mapLispStruct (\(Val v) -> Val (filterExpr v)) (value val)
+        nvalue = runIdentity $ Struct.mapM (\(Sized v) -> return $ Sized (filterExpr v)) (value val)
     filterVar (LispITE c ifT ifF) = do
       ifT' <- filterVar ifT
       ifF' <- filterVar ifF
       return (LispITE (filterExpr c) ifT' ifF')
-    filterArrayIndex :: LispArrayIndex LispExpr lvl rlvl tp
-                     -> LispArrayIndex LispExpr lvl rlvl tp
-    filterArrayIndex (ArrGet lvl tp) = ArrGet lvl tp
-    filterArrayIndex (ArrIdx e es)
-      = ArrIdx (filterExpr e) (filterArrayIndex es)
+    filterArrayIndex :: List LispExpr lvl
+                     -> List LispExpr lvl
+    filterArrayIndex = runIdentity . List.mapM (return.filterExpr)
     filterSize :: Size LispExpr lvl -> Size LispExpr lvl
-    filterSize NoSize = NoSize
-    filterSize (Size x xs) = Size (filterExpr x) (filterSize xs)
+    filterSize (Size tps szs) = Size tps (runIdentity $ List.mapM (return.filterExpr) szs)
 
 defaultExpr :: Repr tp -> LispExpr tp
 defaultExpr tp = case tp of
@@ -111,7 +113,7 @@ defaultExpr tp = case tp of
   IntRepr -> LispExpr (Const $ IntValue 0)
   RealRepr -> LispExpr (Const $ RealValue 0)
   BitVecRepr bw -> LispExpr (Const $ BitVecValue 0 bw)
-  ArrayRepr idx el -> LispExpr (App (ConstArray idx el) (Arg (defaultExpr el) NoArg))
+  ArrayRepr idx el -> LispExpr (App (ConstArray idx el) (Cons (defaultExpr el) Nil))
 
 recDependencies :: LispProgram -> DepState -> Set AnyName
 recDependencies prog dep = case todo dep of
@@ -149,11 +151,10 @@ getDependencies (LispITE c v1 v2) st0 = st3
 
 getDependenciesExpr :: LispExpr a -> DepState -> DepState
 getDependenciesExpr (LispExpr (App fun args)) st
-  = runIdentity $ foldArgs (\st e -> return $ getDependenciesExpr e st
-                           ) st args
-getDependenciesExpr (LispRef var _ idx) st
-  = getDependencies var $
-    getDependenciesIndex idx st
+  = runIdentity $ List.foldM (\st e -> return $ getDependenciesExpr e st
+                             ) st args
+getDependenciesExpr (LispRef var _) st
+  = getDependencies var st
 getDependenciesExpr (LispEq lhs rhs) st
   = getDependencies lhs $
     getDependencies rhs st
@@ -162,7 +163,8 @@ getDependenciesExpr (ExactlyOne xs) st
 getDependenciesExpr (AtMostOne xs) st
   = foldl (\st x -> getDependenciesExpr x st) st xs
 
-getDependenciesIndex :: LispArrayIndex LispExpr lvl rlvl tp -> DepState -> DepState
-getDependenciesIndex (ArrGet _ _) st = st
-getDependenciesIndex (ArrIdx e es) st = getDependenciesExpr e $
-                                        getDependenciesIndex es st
+getDependenciesIndex :: List LispExpr lvl -> DepState -> DepState
+getDependenciesIndex Nil st = st
+getDependenciesIndex (Cons e es) st
+  = getDependenciesExpr e $
+    getDependenciesIndex es st

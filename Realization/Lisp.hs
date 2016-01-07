@@ -1,6 +1,7 @@
 module Realization.Lisp where
 
 import Realization
+import Realization.Lisp.Array
 import Realization.Lisp.Value
 import Args
 import PartialArgs
@@ -29,6 +30,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Typeable
 import qualified Data.AttoLisp as L
+import qualified Data.Attoparsec.Number as L
 import Data.Constraint
 import System.IO (Handle)
 import qualified Data.ByteString as BS
@@ -42,8 +44,8 @@ import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans
 import Data.List (genericLength)
 
-data LispName (sig :: (Nat,Tree Type)) where
-  LispName :: Natural lvl -> Struct Repr tp -> T.Text -> LispName '(lvl,tp)
+data LispName (sig :: ([Type],Tree Type)) where
+  LispName :: List Repr sz -> Struct Repr tp -> T.Text -> LispName '(sz,tp)
 
 newtype Annotation (sig :: k) = Annotation { getAnnotation :: Map T.Text L.Lisp } deriving (Eq,Ord)
 
@@ -62,24 +64,25 @@ data LispProgram
                 , programPredicates :: [LispExpr BoolType]
                 } deriving Show
 
-data LispGate (sig :: (Nat,Tree Type)) = LispGate { gateDefinition :: LispVar LispExpr sig
-                                                  , gateAnnotation :: Annotation sig }
+data LispGate (sig :: ([Type],Tree Type)) = LispGate { gateDefinition :: LispVar LispExpr sig
+                                                     , gateAnnotation :: Annotation sig }
 
 newtype LispInit sig = LispInit (LispValue sig LispExpr)
 
 data LispVarCat = Input | State | Gate deriving (Eq,Ord,Show,Typeable)
 
-data LispVar e (sig :: (Nat,Tree Type)) where
+data LispVar e (sig :: ([Type],Tree Type)) where
   NamedVar :: LispName sig -> LispVarCat -> LispVar e sig
-  LispStore :: LispVar e '(lvl,tp)
-            -> LispIndex idx -> LispArrayIndex e rlvl
-            -> e (LispType rlvl (Struct.ElementIndex tp idx))
-            -> LispVar e '(lvl,tp)
+  LispStore :: LispVar e '(sz,tp)
+            -> List Natural idx
+            -> List e sz
+            -> e (Struct.ElementIndex tp idx)
+            -> LispVar e '(sz,tp)
   LispConstr :: LispValue sig e -> LispVar e sig
   LispITE :: e BoolType -> LispVar e sig -> LispVar e sig -> LispVar e sig
 
-lispVarType :: GetType e => LispVar e '(lvl,tps) -> (Natural lvl,Struct Repr tps)
-lispVarType (NamedVar (LispName lvl tps _) _) = (lvl,tps)
+lispVarType :: GetType e => LispVar e '(sz,tp) -> (List Repr sz,Struct Repr tp)
+lispVarType (NamedVar (LispName sz tps _) _) = (sz,tps)
 lispVarType (LispStore var _ _ _) = lispVarType var
 lispVarType (LispConstr val) = lispValueType val
 lispVarType (LispITE _ v _) = lispVarType v
@@ -87,20 +90,20 @@ lispVarType (LispITE _ v _) = lispVarType v
 data LispExpr (t::Type) where
   LispExpr :: Expression NoRef NoRef NoRef NoRef NoRef NoRef NoRef LispExpr t
            -> LispExpr t
-  LispRef :: (lvl ~ (arrlvl + rlvl))
-          => LispVar LispExpr '(lvl,tps)
-          -> LispIndex idx
-          -> LispArrayIndex LispExpr arrlvl
-          -> Natural rlvl
-          -> LispExpr (LispType rlvl (Struct.ElementIndex tps idx))
-  LispEq :: LispVar LispExpr '(lvl,tp)
-         -> LispVar LispExpr '(lvl,tp)
+  LispRef :: LispVar LispExpr '(sz,tps)
+          -> List Natural idx
+          -> LispExpr (Arrayed sz (Struct.ElementIndex tps idx))
+  LispSize :: LispVar LispExpr '(sz,tps)
+           -> Natural idx
+           -> LispExpr (List.Index (SizeList sz) idx)
+  LispEq :: LispVar LispExpr '(sz,tp)
+         -> LispVar LispExpr '(sz,tp)
          -> LispExpr BoolType
   ExactlyOne :: [LispExpr BoolType] -> LispExpr BoolType
   AtMostOne :: [LispExpr BoolType] -> LispExpr BoolType
 
-data LispSort = forall (lvl::Nat) (tp::Tree Type).
-                LispSort (Natural lvl) (Struct Repr tp)
+data LispSort = forall (sz :: [Type]) (tp::Tree Type).
+                LispSort (List Repr sz) (Struct Repr tp)
 
 instance GEq LispName where
   geq (LispName lvl1 tp1 n1) (LispName lvl2 tp2 n2) = do
@@ -128,7 +131,6 @@ instance Show (LispName sig) where
 deriving instance Show (LispValue t LispExpr)
 deriving instance Show (Size LispExpr lvl)
 deriving instance Show (LispExpr e)
-deriving instance Show (LispArrayIndex LispExpr lvl)
 deriving instance Show (LispVar LispExpr t)
 deriving instance Show (Annotation n)
 deriving instance Show (LispGate sig)
@@ -274,25 +276,24 @@ lispExprToLisp (LispExpr e)
     (error "No fun args")
     (error "No let exprs")
     (return.lispExprToLisp) e
-lispExprToLisp (LispRef var idx dyn _)
-  = case (idx',dyn') of
-      ([],[]) -> var'
-      _ -> L.List (L.List (L.Symbol "_":
-                           L.Symbol "select":idx'):
-                   var':dyn')
+lispExprToLisp (LispRef var idx)
+  = case idx' of
+      [] -> var'
+      _ -> L.List [L.List (L.Symbol "_":
+                           L.Symbol "select":idx')
+                  ,var']
   where
     idx' = statToLisp idx
-    dyn' = dynToLisp dyn
     var' = lispVarToLisp var
 
     statToLisp :: LispIndex sig -> [L.Lisp]
     statToLisp = runIdentity . List.toList
                  (\i -> return $ L.Number $ fromInteger $ naturalToInteger i)
-
-    dynToLisp :: LispArrayIndex LispExpr lvl -> [L.Lisp]
-    dynToLisp ArrGet = []
-    dynToLisp (ArrIdx i is) = (lispExprToLisp i):
-                              dynToLisp is
+lispExprToLisp (LispSize var idx)
+  = L.List [L.List [L.Symbol "_"
+                   ,L.Symbol "size"
+                   ,L.Number $ fromInteger $ naturalToInteger idx]
+           ,lispVarToLisp var]
 lispExprToLisp (LispEq lhs rhs)
   = L.List [L.List [L.Symbol "_"
                    ,L.Symbol "eq"]
@@ -319,10 +320,8 @@ lispVarToLisp (LispStore var idx dyn el)
     statIdx = runIdentity . List.toList
               (return . L.Number . fromInteger . naturalToInteger)
 
-    dynIdx :: LispArrayIndex LispExpr lvl -> [L.Lisp]
-    dynIdx ArrGet = []
-    dynIdx (ArrIdx i is) = lispExprToLisp i:
-                           dynIdx is
+    dynIdx :: List LispExpr sz -> [L.Lisp]
+    dynIdx = runIdentity . List.toList (return.lispExprToLisp)
 lispVarToLisp (LispConstr val)
   = lispValueToLisp val
 lispVarToLisp (LispITE cond ifT ifF)
@@ -333,33 +332,31 @@ lispVarToLisp (LispITE cond ifT ifF)
            ,lispVarToLisp ifF]
 
 lispValueToLisp :: LispValue sig LispExpr -> L.Lisp
-lispValueToLisp (LispValue { size = NoSize
-                           , value = Singleton (Val e) })
+lispValueToLisp (LispValue { size = Size Nil Nil
+                           , value = Singleton (Sized e) })
   = lispExprToLisp e
 lispValueToLisp val
   = L.List [L.Symbol "value"
            ,L.List $ lispSizeToLisp (size val)
            ,lispStructToLisp (value val)]
   where
-    lispStructToLisp :: Struct (LispVal LispExpr lvl) tp -> L.Lisp
-    lispStructToLisp (Singleton (Val e)) = lispExprToLisp e
+    lispStructToLisp :: Struct (Sized LispExpr lvl) tp -> L.Lisp
+    lispStructToLisp (Singleton (Sized e)) = lispExprToLisp e
     lispStructToLisp (Struct tps)
       = L.List (L.Symbol "struct":
                 lispStructsToLisp tps)
-    lispStructsToLisp :: List (Struct (LispVal LispExpr lvl)) sig -> [L.Lisp]
+    lispStructsToLisp :: List (Struct (Sized LispExpr lvl)) sig -> [L.Lisp]
     lispStructsToLisp Nil = []
     lispStructsToLisp (Cons x xs) = lispStructToLisp x:
                                     lispStructsToLisp xs
     lispSizeToLisp :: Size LispExpr lvl -> [L.Lisp]
-    lispSizeToLisp NoSize = []
-    lispSizeToLisp (Size x xs) = (lispExprToLisp x):
-                                 lispSizeToLisp xs
+    lispSizeToLisp (Size _ lst) = runIdentity $ List.toList (return.lispExprToLisp) lst
 
-lispSortToLisp :: Natural lvl -> Struct Repr sig -> L.Lisp
-lispSortToLisp lvl tp = case naturalToInteger lvl of
-  0 -> structTypeToLisp tp
-  n -> L.List [L.Symbol "array"
-              ,L.Number $ fromInteger n
+lispSortToLisp :: List Repr sz -> Struct Repr sig -> L.Lisp
+lispSortToLisp sz tp = case sz of
+  Nil -> structTypeToLisp tp
+  _ -> L.List [L.Symbol "array"
+              ,L.List (runIdentity $ List.toList (return.typeSymbol) sz)
               ,structTypeToLisp tp]
   where
     structTypeToLisp :: Struct Repr sig -> L.Lisp
@@ -433,16 +430,19 @@ parseAnnotation (x:xs) cur = case x of
        in (res,x:unparsed)
 
 parseLispType :: L.Lisp
-              -> (forall (lvl::Nat) (tp::Tree Type).
-                  Natural lvl -> Struct Repr tp -> a)
+              -> (forall (sz::[Type]) (tp::Tree Type).
+                  List Repr sz -> Struct Repr tp -> a)
               -> a
 parseLispType (L.List [L.Symbol "array",
-                       L.Number n,
+                       L.List idx,
                        tp]) f
-  = reifyNatural n $
-    \lvl -> parseLispStructType tp $ f lvl
+  = List.reifyList (\el f -> case runExcept $ lispToSort
+                                  (error $ "Only basic sorts are supported.") el of
+                             Right (Sort tp) -> f tp
+                   ) idx $
+    \sz -> parseLispStructType tp $ f sz
 parseLispType tp f
-  = parseLispStructType tp $ f Zero
+  = parseLispStructType tp $ f Nil
 
 parseLispStructType :: L.Lisp
                     -> (forall (tp::Tree Type).
@@ -451,7 +451,8 @@ parseLispStructType :: L.Lisp
 parseLispStructType (L.List (L.Symbol "struct":tps)) f
   = parseLispStructTypes tps $
     \tps' -> f (Struct tps')
-parseLispStructType tp f = case runExcept $ lispToSort (error $ "Only basic sorts are supported.") tp of
+parseLispStructType tp f = case runExcept $ lispToSort
+                                (error $ "Only basic sorts are supported.") tp of
   Right (Sort tp) -> f (Singleton tp)
 
 parseLispStructTypes :: [L.Lisp]
@@ -582,32 +583,34 @@ parseIdx :: Struct Repr tps -> [Integer]
 parseIdx (Singleton r) [] f
   = f Nil r
 parseIdx (Struct args) (i:is) f
-  = parseIdx' args i $
+  = parseListIdx args i $
     \prI sub -> parseIdx sub is $
                 \idx r -> f (Cons prI idx) r
-  where
-    parseIdx' :: List (Struct Repr) tps -> Integer
-              -> (forall n. Natural n -> Struct Repr (List.Index tps n) -> LispParse a)
-              -> LispParse a
-    parseIdx' (Cons x xs) 0 f
-      = f Zero x
-    parseIdx' (Cons x xs) n f
-      = parseIdx' xs (n-1) $
-        \lvl obj -> f (Succ lvl) obj
 
-parseDynIdx :: Repr tp -> Natural lvl -> [LispExpr IntType]
-            -> (forall arrlvl rlvl. (lvl ~ (arrlvl + rlvl))
-                => LispArrayIndex LispExpr arrlvl
-                -> Natural rlvl
+parseListIdx :: List e tps -> Integer
+             -> (forall idx. Natural idx -> e (List.Index tps idx) -> LispParse a)
+             -> LispParse a
+parseListIdx (Cons x xs) 0 f = f Zero x
+parseListIdx (Cons x xs) n f
+  = parseListIdx xs (n-1) $
+    \idx -> f (Succ idx)
+
+parseSizeIdx :: List Repr tps -> Integer
+             -> (forall idx. Natural idx -> Repr (List.Index (SizeList tps) idx) -> LispParse a)
+             -> LispParse a
+parseSizeIdx sz = parseListIdx (sizeListType sz)
+
+parseDynIdx :: Map T.Text LispSort -- ^ State vars
+            -> Map T.Text LispSort -- ^ Input vars
+            -> Map T.Text LispSort -- ^ Gate vars
+            -> [L.Lisp]
+            -> (forall sz. List LispExpr sz
                 -> LispParse a)
             -> LispParse a
-parseDynIdx tp lvl [] f = case lvl of
-  Zero -> f ArrGet Zero
--- TODO
-{-parseDynIdx tp lvl (i:is) f
-  = case lvl of
-      Succ lvl' -> parseDynIdx tp lvl' is $
-                   \idx n -> f (ArrIdx i idx) (Succ n)-}
+parseDynIdx _ _ _ [] f = f Nil
+parseDynIdx st inp gts (x:xs) f = parseLispExpr st inp gts Nothing x $
+                                  \e -> parseDynIdx st inp gts xs $
+                                        \es -> f (Cons e es)
 
 parseLispExprT :: Map T.Text LispSort -- ^ State vars
                -> Map T.Text LispSort -- ^ Input vars
@@ -634,19 +637,24 @@ parseLispExpr state inps gates srt (L.List ((L.Symbol "exactly-one"):xs)) f = do
 parseLispExpr state inps gates srt (L.List ((L.Symbol "at-most-one"):xs)) f = do
   xs' <- mapM (parseLispExprT state inps gates BoolRepr) xs
   f (AtMostOne xs')
-parseLispExpr state inps gts _ (L.List (L.List (L.Symbol "_":L.Symbol "select":stat):
-                                        expr:dyns)) f = do
+parseLispExpr state inps gts _ (L.List [L.List (L.Symbol "_":L.Symbol "select":stat)
+                                       ,expr]) f = do
   idxs <- case mapM (L.parseMaybe L.parseLisp) stat of
     Nothing -> throwE $ "Can not parse static indices: "++show stat
     Just r -> return r
-  dyns' <- mapM (parseLispExprT state inps gts IntRepr) dyns
   parseLispVar state inps gts expr $
     \var -> let (lvl,tps) = lispVarType var
             in parseIdx tps idxs $
                \idx tp
-               -> parseDynIdx tp lvl dyns' $
-                  \dyn rlvl
-                  -> f (LispRef var idx dyn rlvl)
+               -> f (LispRef var idx)
+parseLispExpr state inps gts srt (L.List [L.List [L.Symbol "_"
+                                                 ,L.Symbol "size"
+                                                 ,L.Number (L.I n)]
+                                         ,var]) f
+  = parseLispVar state inps gts var $
+    \var' -> let (sz,tps) = lispVarType var'
+             in parseSizeIdx sz n $
+                \idx tp -> f (LispSize var' idx)
 parseLispExpr state inps gts _ (L.List [L.List [L.Symbol "_",
                                                 L.Symbol "eq"],
                                         var1,var2]) f
@@ -660,8 +668,9 @@ parseLispExpr state inps gates srt expr f
                (name,cat,LispSort lvl tps)
                   <- parseLispVarCat state inps gates expr
                case tps of
-                 Singleton tp' -> f (LispRef (NamedVar (LispName lvl tps name) cat)
-                                     Nil ArrGet lvl)
+                 Singleton tp' -> case lvl of
+                   Nil -> f (LispRef (NamedVar (LispName lvl tps name) cat) Nil)
+                   _ -> throwE $ "Variable is not a singleton"
                  _ -> throwE $ "Variable is not a singleton")
     (\_ -> lispToExprWith parser srt expr (f . LispExpr))
   where
@@ -676,14 +685,13 @@ parseSize :: Map T.Text LispSort -- ^ State vars
           -> Map T.Text LispSort -- ^ Input vars
           -> Map T.Text LispSort -- ^ Gate vars
           -> [L.Lisp]
-          -> (forall lvl. Natural lvl -> Size LispExpr lvl -> LispParse a)
+          -> (forall sz. Size LispExpr sz -> LispParse a)
           -> LispParse a
-parseSize st inps gts [] f = f Zero NoSize
-parseSize st inps gts (x:xs) f
-  = parseSize st inps gts xs $
-    \n szs -> do
-       sz <- parseLispExprT st inps gts (lispTypeGetType n IntRepr) x
-       f (Succ n) (Size sz szs)
+parseSize st inps gts es f
+  = case parseSize' (\e g -> case runExcept (parseLispExpr st inps gts Nothing e
+                                             (return.g)) of
+                      Right res -> res) es (Just . f) of
+  Just res -> res
 
 parseLispValue :: Map T.Text LispSort -- ^ State vars
                -> Map T.Text LispSort -- ^ Input vars
@@ -695,13 +703,13 @@ parseLispValue state inps gates
   (L.List [L.Symbol "value"
           ,L.List sizes
           ,struct]) f = parseSize state inps gates sizes $
-                        \lvl sz
-                        -> parseStruct lvl struct $
+                        \sz
+                        -> parseStruct (sizeIndices sz) struct $
                            \str -> f $ LispValue sz str
   where
-    parseStruct :: Natural lvl
+    parseStruct :: List Repr sz
                 -> L.Lisp
-                -> (forall tp. Struct (LispVal LispExpr lvl) tp -> LispParse a)
+                -> (forall tp. Struct (Sized LispExpr sz) tp -> LispParse a)
                 -> LispParse a
     parseStruct lvl (L.List (L.Symbol "struct":xs)) f
       = parseStructs lvl xs $
@@ -710,9 +718,9 @@ parseLispValue state inps gates
       = parseVal lvl expr $
         \e -> f (Singleton e)
 
-    parseStructs :: Natural lvl
+    parseStructs :: List Repr sz
                  -> [L.Lisp]
-                 -> (forall tp. List (Struct (LispVal LispExpr lvl)) tp -> LispParse a)
+                 -> (forall tp. List (Struct (Sized LispExpr sz)) tp -> LispParse a)
                  -> LispParse a
     parseStructs lvl [] f = f Nil
     parseStructs lvl (x:xs) f
@@ -720,17 +728,25 @@ parseLispValue state inps gates
         \x' -> parseStructs lvl xs $
         \xs' -> f (Cons x' xs')
 
-    parseVal :: Natural lvl
+    parseVal :: List Repr sz
              -> L.Lisp
-             -> (forall tp. LispVal LispExpr lvl tp -> LispParse a)
+             -> (forall tp. Sized LispExpr sz tp -> LispParse a)
              -> LispParse a
     parseVal lvl lsp f
       = parseLispExpr state inps gates Nothing lsp $
-        \e -> case lvl of
-        Zero -> f (Val e)
+        \e -> castVal lvl e (\_ -> f)
+
+    castVal :: List Repr sz
+            -> LispExpr tp
+            -> (forall tp'. Repr tp' -> Sized LispExpr sz tp' -> LispParse a)
+            -> LispParse a
+    castVal sz e f = case isArrayed (getType e) sz $
+                          \tp -> f tp (Sized e) of
+                     Just res -> res
+               
 parseLispValue state inps gates expr f
   = parseLispExpr state inps gates Nothing expr $
-    \e -> f (LispValue NoSize (Singleton (Val e)))
+    \e -> f (LispValue (Size Nil Nil) (Singleton (Sized e)))
 
 while :: LispAction -> a -> a
 while act = mapException (LispException act)
@@ -852,7 +868,7 @@ instance TransitionRelation LispProgram where
       ints :: Map (LispRev IntType) Integer
       ints = Map.fromList
              [ el --(LispRev name (RevVar idx),val)
-             | name@(LispName Zero _ _) :=> (LispPVal' (LispP p)) <- DMap.toList part
+             | name@(LispName Nil _ _) :=> (LispPVal' (LispP p)) <- DMap.toList part
              , el <- pints (\idx val -> (LispRev name (RevVar idx),val)) p ]
 
       pints :: (forall idx. (Struct.ElementIndex tps idx ~ IntType)
@@ -890,8 +906,8 @@ instance TransitionRelation LispProgram where
     where
       conds = [ r | name :=> val <- DMap.toList pcs
                   , r <- case val of
-                    LispValue' (LispValue { size = NoSize
-                                          , value = Singleton (Val x) })
+                    LispValue' (LispValue { size = Size Nil Nil
+                                          , value = Singleton (Sized x) })
                       -> case getType x of
                       BoolRepr -> [x]
                       _ -> []
@@ -925,20 +941,18 @@ defineGate :: Monad m
            -> m (LispValue '(lvl,tp) e)
 defineGate mkGate name val = do
   sz <- defineSize mkGate name (size val)
-  v <- Struct.mapM (\(Val e) -> do
+  v <- Struct.mapM (\(Sized e) -> do
                        e' <- mkGate (Just name) e
-                       return (Val e')
+                       return (Sized e')
                    ) (value val)
   return (LispValue sz v)
   where
     defineSize :: Monad m
                => (forall t. Maybe String -> e t -> m (e t))
                -> String -> Size e lvl' -> m (Size e lvl')
-    defineSize _ _ NoSize = return NoSize
-    defineSize mkGate name (Size i is) = do
-      i' <- mkGate (Just name) i
-      is' <- defineSize mkGate name is
-      return (Size i' is')
+    defineSize mkGate name (Size tps szs) = do
+      nszs <- List.mapM (mkGate (Just name)) szs
+      return (Size tps nszs)
 
 relativize :: (Embed m e,GetType e)
            => LispState e
@@ -952,21 +966,14 @@ relativize st inp gts (LispExpr e) = do
   embed e'
   where
     err = error "Realization.Lisp.relativize: LispExpr shouldn't have any user defined entities."
-relativize st inp gts (LispRef var stat dyn rlvl) = do
+relativize st inp gts (LispRef var stat) = do
   val <- relativizeVar st inp gts var
-  dyn' <- relativizeIndex st inp gts dyn
-  (Val res,_) <- accessVal stat (value val) $
-                 \val' -> accessArray' rlvl dyn' val' $
-                    \val'' -> return (val'',val'')
+  let Sized res = Struct.elementIndex (value val) stat
   return res
-  where
-    accessArray' :: (Embed m e,GetType e,vlvl ~ (lvl + rlvl))
-                 => Natural rlvl
-                 -> LispArrayIndex e lvl
-                 -> LispVal e vlvl tp
-                 -> (LispVal e rlvl tp -> m (a,LispVal e rlvl tp))
-                 -> m (a,LispVal e vlvl tp)
-    accessArray' _ = accessArray
+relativize st inp gts (LispSize var idx) = do
+  val <- relativizeVar st inp gts var
+  let Size _ szs = size val
+  return $ List.index szs idx
 relativize st inp gts (LispEq v1 v2) = do
   val1 <- relativizeVar st inp gts v1
   val2 <- relativizeVar st inp gts v2
@@ -1021,8 +1028,8 @@ relativizeVar :: (Embed m e,GetType e)
               => LispState e
               -> LispState e
               -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
-              -> LispVar LispExpr sig
-              -> m (LispValue sig e)
+              -> LispVar LispExpr '(sz,tps)
+              -> m (LispValue '(sz,tps) e)
 relativizeVar (LispState st) (LispState inp) gts (NamedVar name@(LispName _ _ _) cat)
   = case cat of
       Input -> case DMap.lookup name inp of
@@ -1032,6 +1039,19 @@ relativizeVar (LispState st) (LispState inp) gts (NamedVar name@(LispName _ _ _)
       Gate -> gts name
 relativizeVar st inp gts (LispConstr val)
   = relativizeValue st inp gts val
+relativizeVar st inp gts (LispStore v idx dyn el) = do
+  val <- relativizeVar st inp gts v
+  nel <- relativize st inp gts el
+  ndyn <- List.mapM (relativize st inp gts) dyn
+  (_,nval) <- Struct.access (value val) idx $
+              \arr -> accessArrayElement ndyn arr $
+                      \_ -> return ((),nel)
+  return (val { value = nval })
+relativizeVar st inp gts (LispITE c ifT ifF) = do
+  nc <- relativize st inp gts c
+  ifT' <- relativizeVar st inp gts ifT
+  ifF' <- relativizeVar st inp gts ifF
+  iteValue nc ifT' ifF'
 
 relativizeValue :: (Embed m e,GetType e)
                 => LispState e
@@ -1041,7 +1061,7 @@ relativizeValue :: (Embed m e,GetType e)
                 -> m (LispValue sig e)
 relativizeValue st inp gts val = do
   sz <- relativizeSize st inp gts (size val)
-  val <- Struct.mapM (\(Val e) -> fmap Val (relativize st inp gts e)
+  val <- Struct.mapM (\(Sized e) -> fmap Sized (relativize st inp gts e)
                      ) (value val)
   return $ LispValue sz val
   where
@@ -1050,23 +1070,17 @@ relativizeValue st inp gts val = do
                    -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
                    -> Size LispExpr lvl
                    -> m (Size e lvl)
-    relativizeSize _ _ _ NoSize = return NoSize
-    relativizeSize st inp gts (Size i is) = do
-      i' <- relativize st inp gts i
-      is' <- relativizeSize st inp gts is
-      return $ Size i' is'
+    relativizeSize st inp gts (Size tps sz) = do
+      nsz <- List.mapM (relativize st inp gts) sz
+      return $ Size tps nsz
 
 relativizeIndex :: (Embed m e,GetType e)
                 => LispState e
                 -> LispState e
                 -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
-                -> LispArrayIndex LispExpr rlvl
-                -> m (LispArrayIndex e rlvl)
-relativizeIndex st inp gts ArrGet = return ArrGet
-relativizeIndex st inp gts (ArrIdx i is) = do
-  i' <- relativize st inp gts i
-  is' <- relativizeIndex st inp gts is
-  return (ArrIdx i' is')
+                -> List LispExpr sz
+                -> m (List e sz)
+relativizeIndex st inp gts idx = List.mapM (relativize st inp gts) idx
 
 instance Composite LispState where
   type CompDescr LispState = DMap LispName Annotation
@@ -1116,11 +1130,11 @@ instance LiftComp LispState where
       lift' :: (Embed m e,GetType e) => LispUVal '(lvl,tps) -> m (LispValue '(lvl,tps) e)
       lift' (LispU str) = do
         str' <- liftStruct str
-        return (LispValue { size = NoSize
+        return (LispValue { size = Size Nil Nil
                           , value = str' })
-      lift' (LispUArray lvl tps xs) = do
+      lift' (LispUArray sz szs tps xs) = do
         xs' <- mapM lift' xs
-        liftValues xs'
+        liftValues sz szs tps xs'
 
   unliftComp f (LispState mp) = do
     let lst = DMap.toAscList mp
@@ -1132,16 +1146,17 @@ instance LiftComp LispState where
     where
       unlift' :: (Embed m e,GetType e) => (forall t. e t -> m (ConcreteValue t))
               -> LispValue '(lvl,tps) e -> m (LispUVal '(lvl,tps))
-      unlift' f val = case sizeLevel $ size val of
-        Zero -> do
+      unlift' f val = case size val of
+        Size Nil Nil -> do
           str <- extractStruct f (value val)
           return $ LispU str
-        Succ lvl -> do
+        Size (Cons tp tps) (Cons sz szs) -> do
           vals <- unliftValue f val
           vals' <- mapM (unlift' f) vals
-          return $ LispUArray lvl (runIdentity $ Struct.mapM
-                                   (\(Val e) -> return $ lispTypeType (Succ lvl) (getType e)
-                                   ) (value val)) vals'
+          return $ LispUArray tp tps
+            (Struct.map
+             (\e -> sizedType e (sizeIndices (size val))) (value val))
+            vals'
 
 newtype LispPVal' sig = LispPVal' (LispPVal sig) deriving (Typeable,Eq,Ord,Show)
 
@@ -1201,19 +1216,39 @@ instance GEq e => GEq (LispVar e) where
 
 instance GEq LispExpr where
   geq (LispExpr e1) (LispExpr e2) = geq e1 e2
-  geq (LispRef v1 i1 d1 lvl1) (LispRef v2 i2 d2 lvl2) = do
+  geq (LispRef v1 i1) (LispRef v2 i2) = do
     Refl <- geq v1 v2
     Refl <- geq i1 i2
-    Refl <- geq d1 d2
-    Refl <- geq lvl1 lvl2
     return Refl
+  geq (LispSize v1 i1) (LispSize v2 i2) = do
+    Refl <- geq v1 v2
+    Refl <- geq i1 i2
+    return Refl
+  geq (LispEq x1 y1) (LispEq x2 y2) = do
+    Refl <- geq x1 x2
+    Refl <- geq y1 y2
+    return Refl
+  geq (ExactlyOne xs) (ExactlyOne ys)
+    = if xs==ys
+      then Just Refl
+      else Nothing
+  geq (AtMostOne xs) (AtMostOne ys)
+    = if xs==ys
+      then Just Refl
+      else Nothing
   geq _ _ = Nothing
+
+instance Eq (LispExpr t) where
+  (==) = defaultEq
 
 instance GetType LispExpr where
   getType (LispExpr e) = getType e
-  getType (LispRef v i d rlvl) = lispTypeGetType rlvl (lispIndexType tps i)
+  getType (LispRef v i) = arrayType lvl (lispIndexType tps i)
     where
       (lvl,tps) = lispVarType v
+  getType (LispSize v i) = List.index (sizeListType sz) i
+    where
+      (sz,tps) = lispVarType v
   getType (LispEq _ _) = BoolRepr
   getType (ExactlyOne _) = BoolRepr
   getType (AtMostOne _) = BoolRepr

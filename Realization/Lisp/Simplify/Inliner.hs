@@ -3,11 +3,16 @@ module Realization.Lisp.Simplify.Inliner where
 
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Array
 import Realization.Lisp.Simplify.Dataflow
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Type.List (List(..))
+import qualified Language.SMTLib2.Internals.Type.List as List
+import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -76,15 +81,15 @@ inlineMap f prog mp inl = (DMap.fromAscList nlst,ninl)
 isSimple :: LispVar LispExpr tp -> Bool
 isSimple (NamedVar _ _) = True
 isSimple (LispConstr val) = case size val of
-  NoSize -> isSimpleStruct (value val)
+  Size Nil Nil -> isSimpleStruct (value val)
   _ -> False
   where
-    isSimpleStruct :: LispStruct (LispVal LispExpr lvl) tp -> Bool
-    isSimpleStruct (LSingleton (Val x)) = isSimpleExpr x
-    isSimpleStruct (LStruct _) = False
+    isSimpleStruct :: Struct (Sized LispExpr lvl) tp -> Bool
+    isSimpleStruct (Singleton (Sized x)) = isSimpleExpr x
+    isSimpleStruct (Struct _) = False
 
     isSimpleExpr (LispExpr (Const _)) = True
-    isSimpleExpr (LispRef _ _ _) = True
+    isSimpleExpr (LispRef _ _) = True
     isSimpleExpr _ = False
 
 inlineVar :: LispProgram -> LispVar LispExpr sig -> Inlining -> (LispVar LispExpr sig,Inlining)
@@ -106,21 +111,21 @@ inlineVar prog (LispConstr val) inl = (LispConstr (LispValue { size = nsize
   where
     (nsize,inl1) = inlineSize prog (size val) inl
     (nvalue,inl2) = inlineStruct prog (value val) inl1
-    inlineStruct :: LispProgram -> LispStruct (LispVal LispExpr lvl) tp
-                 -> Inlining -> (LispStruct (LispVal LispExpr lvl) tp,Inlining)
-    inlineStruct prog (LSingleton (Val x)) inl
+    inlineStruct :: LispProgram -> Struct (Sized LispExpr lvl) tp
+                 -> Inlining -> (Struct (Sized LispExpr lvl) tp,Inlining)
+    inlineStruct prog (Singleton (Sized x)) inl
       = let (nx,inl') = inlineExpr prog x inl
-        in (LSingleton (Val nx),inl')
-    inlineStruct prog (LStruct xs) inl
+        in (Singleton (Sized nx),inl')
+    inlineStruct prog (Struct xs) inl
       = let (nxs,ninl) = inlineStructs prog xs inl
-        in (LStruct nxs,ninl)
-    inlineStructs :: LispProgram -> StructArgs (LispVal LispExpr lvl) sig
-                  -> Inlining -> (StructArgs (LispVal LispExpr lvl) sig,Inlining)
-    inlineStructs prog NoSArg inl = (NoSArg,inl)
-    inlineStructs prog (SArg x xs) inl
+        in (Struct nxs,ninl)
+    inlineStructs :: LispProgram -> List (Struct (Sized LispExpr lvl)) sig
+                  -> Inlining -> (List (Struct (Sized LispExpr lvl)) sig,Inlining)
+    inlineStructs prog Nil inl = (Nil,inl)
+    inlineStructs prog (Cons x xs) inl
       = let (nx,inl1) = inlineStruct prog x inl
             (nxs,inl2) = inlineStructs prog xs inl1
-        in (SArg nx nxs,inl2)
+        in (Cons nx nxs,inl2)
 inlineVar prog (LispITE cond v1 v2) inl = (LispITE ncond nv1 nv2,inl3)
   where
     (ncond,inl1) = inlineExpr prog cond inl
@@ -129,25 +134,27 @@ inlineVar prog (LispITE cond v1 v2) inl = (LispITE ncond nv1 nv2,inl3)
 
 inlineSize :: LispProgram -> Size LispExpr lvl
            -> Inlining -> (Size LispExpr lvl,Inlining)
-inlineSize prog NoSize inl = (NoSize,inl)
-inlineSize prog (Size e es) inl = (Size ne nes,inl2)
+inlineSize prog (Size tps szs) inl
+  = (Size tps nszs,ninl)
   where
-    (ne,inl1) = inlineExpr prog e inl
-    (nes,inl2) = inlineSize prog es inl1
+    (ninl,nszs) = runIdentity $ List.mapAccumM
+                  (\inl e -> do
+                      let (ne,ninl) = inlineExpr prog e inl
+                      return (ninl,ne)
+                  ) inl szs
 
 inlineExpr :: LispProgram -> LispExpr t -> Inlining -> (LispExpr t,Inlining)
 inlineExpr prog (LispExpr (App fun args)) inl = (LispExpr $ App fun nargs,ninl)
   where
     (ninl,nargs) = runIdentity $
-                   mapAccumArgs (\inl expr -> do
-                                    let (nexpr,inl') = inlineExpr prog expr inl
-                                    return (inl',nexpr)
-                                ) inl args
+                   List.mapAccumM (\inl expr -> do
+                                      let (nexpr,inl') = inlineExpr prog expr inl
+                                      return (inl',nexpr)
+                                  ) inl args
 inlineExpr prog (LispExpr e) inl = (LispExpr e,inl)
-inlineExpr prog (LispRef var idx dyn_idx) inl = (LispRef nvar idx ndyn,inl2)
+inlineExpr prog (LispRef var idx) inl = (LispRef nvar idx,inl1)
   where
     (nvar,inl1) = inlineVar prog var inl
-    (ndyn,inl2) = inlineArrayIndex prog dyn_idx inl1
 inlineExpr prog (LispEq v1 v2) inl = (LispEq nv1 nv2,inl2)
   where
     (nv1,inl1) = inlineVar prog v1 inl
@@ -163,14 +170,16 @@ inlineExpr prog (AtMostOne xs) inl = (AtMostOne nxs,ninl)
                                       in (ninl,nx)
                            ) inl xs
 
-inlineArrayIndex :: LispProgram -> LispArrayIndex LispExpr lvl rlvl tp
-                 -> Inlining -> (LispArrayIndex LispExpr lvl rlvl tp,
+inlineArrayIndex :: LispProgram -> List LispExpr arrlvl
+                 -> Inlining -> (List LispExpr arrlvl,
                                  Inlining)
-inlineArrayIndex _ (ArrGet lvl tp) inl = (ArrGet lvl tp,inl)
-inlineArrayIndex prog (ArrIdx i is) inl = (ArrIdx ni nis,inl2)
+inlineArrayIndex prog idx inl = (nidx,ninl)
   where
-    (ni,inl1) = inlineExpr prog i inl
-    (nis,inl2) = inlineArrayIndex prog is inl1
+    (ninl,nidx) = runIdentity $ List.mapAccumM
+                  (\inl e -> do
+                      let (ne,ninl) = inlineExpr prog e inl
+                      return (ninl,ne)
+                  ) inl idx
 
 inlineList :: Traversable t => (LispProgram -> a -> Inlining -> (a,Inlining))
            -> LispProgram -> t a -> Inlining -> (t a,Inlining)

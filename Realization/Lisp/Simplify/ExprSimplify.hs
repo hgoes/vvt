@@ -3,9 +3,14 @@ module Realization.Lisp.Simplify.ExprSimplify where
 
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Array
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Type.List (List(..))
+import qualified Language.SMTLib2.Internals.Type.List as List
+import Language.SMTLib2.Internals.Type.Struct (Struct(..))
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import Language.SMTLib2.Internals.Type.Nat
 import Data.Typeable
 import Data.List
@@ -43,27 +48,27 @@ simplifyVar (LispITE cond ifT ifF) = case asBoolConst ncond of
     nifT = simplifyVar ifT
     nifF = simplifyVar ifF
 
-simplifyArrayIndex :: LispArrayIndex LispExpr lvl rlvl tp
-                   -> LispArrayIndex LispExpr lvl rlvl tp
-simplifyArrayIndex (ArrGet lvl tp) = ArrGet lvl tp
-simplifyArrayIndex (ArrIdx i is) = ArrIdx (simplifyExpr i) (simplifyArrayIndex is)
+simplifyArrayIndex :: List LispExpr lvl
+                   -> List LispExpr lvl
+simplifyArrayIndex = runIdentity . List.mapM (return.simplifyExpr)
 
 simplifyValue :: LispValue '(lvl,tp) LispExpr -> LispValue '(lvl,tp) LispExpr
 simplifyValue (LispValue sz val)
-  = LispValue (simplifySize sz) (mapLispStruct simplifyVal val)
+  = LispValue (simplifySize sz) (runIdentity $ Struct.mapM (return.simplifyVal) val)
 
 simplifySize :: Size LispExpr lvl -> Size LispExpr lvl
-simplifySize NoSize = NoSize
-simplifySize (Size i is) = Size (simplifyExpr i) (simplifySize is)
+simplifySize (Size tps szs)
+  = Size tps (runIdentity $ List.mapM (return.simplifyExpr) szs)
 
-simplifyVal :: LispVal LispExpr lvl tp -> LispVal LispExpr lvl tp
-simplifyVal (Val expr) = Val (simplifyExpr expr)
+simplifyVal :: Sized LispExpr lvl tp -> Sized LispExpr lvl tp
+simplifyVal (Sized expr) = Sized (simplifyExpr expr)
 
 simplifyExpr :: LispExpr t -> LispExpr t
 simplifyExpr (LispExpr (App fun args)) = optimizeFun fun nargs
   where
-    nargs = runIdentity $ mapArgs (return.simplifyExpr) args
-simplifyExpr (LispRef var idx didx) = LispRef (simplifyVar var) idx (simplifyArrayIndex didx)
+    nargs = runIdentity $ List.mapM (return.simplifyExpr) args
+simplifyExpr (LispRef var idx)
+  = LispRef (simplifyVar var) idx
 simplifyExpr (LispEq v1 v2) = LispEq (simplifyVar v1) (simplifyVar v2)
 simplifyExpr (ExactlyOne []) = LispExpr (Const (BoolValue False))
 simplifyExpr (ExactlyOne [x]) = simplifyExpr x
@@ -72,8 +77,8 @@ simplifyExpr (AtMostOne []) = LispExpr (Const (BoolValue True))
 simplifyExpr (AtMostOne [x]) = LispExpr (Const (BoolValue True))
 simplifyExpr (AtMostOne xs) = AtMostOne (fmap simplifyExpr xs)
 
-optimizeFun :: Function NoRef NoRef NoRef '(arg,res) -> Args LispExpr arg -> LispExpr res
-optimizeFun (ITE tp) args@(Arg cond (Arg lhs (Arg rhs NoArg)))
+optimizeFun :: Function NoRef NoRef NoRef '(arg,res) -> List LispExpr arg -> LispExpr res
+optimizeFun (ITE tp) args@(Cons cond (Cons lhs (Cons rhs Nil)))
   | defaultEq lhs rhs = lhs
   | otherwise = case cond of
   LispExpr (Const (BoolValue c)) -> if c then lhs else rhs
@@ -82,23 +87,23 @@ optimizeFun (ITE tp) args@(Arg cond (Arg lhs (Arg rhs NoArg)))
       (LispExpr (Const (BoolValue True)),LispExpr (Const (BoolValue False)))
         -> cond
       (LispExpr (Const (BoolValue False)),LispExpr (Const (BoolValue True)))
-        -> LispExpr (App Not (Arg cond NoArg))
+        -> LispExpr (App Not (Cons cond Nil))
       (LispExpr (Const (BoolValue True)),_)
         -> simplifyExpr $ LispExpr (App (Logic Or (Succ (Succ Zero)))
-                                    (Arg cond (Arg rhs NoArg)))
+                                    (Cons cond (Cons rhs Nil)))
       (_,LispExpr (Const (BoolValue True)))
         -> simplifyExpr $ LispExpr (App (Logic Implies (Succ (Succ Zero)))
-                                    (Arg cond (Arg lhs NoArg)))
+                                    (Cons cond (Cons lhs Nil)))
       (_,LispExpr (Const (BoolValue False)))
         -> simplifyExpr $ LispExpr (App (Logic And (Succ (Succ Zero)))
-                                    (Arg cond (Arg lhs NoArg)))
+                                    (Cons cond (Cons lhs Nil)))
       (LispExpr (Const (BoolValue False)),_)
         -> simplifyExpr $ LispExpr (App (Logic And (Succ (Succ Zero)))
-                                    (Arg (LispExpr (App Not (Arg cond NoArg)))
-                                     (Arg rhs NoArg)))
+                                    (Cons (LispExpr (App Not (Cons cond Nil)))
+                                     (Cons rhs Nil)))
       _ -> LispExpr (App (ITE tp) args)
-optimizeFun (Logic XOr (Succ (Succ Zero))) (Arg c (Arg (asBoolConst -> Just True) NoArg))
-  = LispExpr (App Not (Arg c NoArg))
+optimizeFun (Logic XOr (Succ (Succ Zero))) (Cons c (Cons (asBoolConst -> Just True) Nil))
+  = LispExpr (App Not (Cons c Nil))
 optimizeFun (Logic And n) args = case optAnd (allEqToList n args) of
   Just [] -> LispExpr (Const (BoolValue True))
   Just [c] -> c
@@ -117,9 +122,9 @@ optimizeFun (Logic Or n) args = case [ arg | arg <- allEqToList n args
   [c] -> c
   args' -> allEqFromList args' $
            \nn nargs -> LispExpr (App (Logic Or nn) nargs)
-optimizeFun (Logic Implies (Succ (Succ Zero))) (Arg _ (Arg (asBoolConst -> Just True) NoArg))
+optimizeFun (Logic Implies (Succ (Succ Zero))) (Cons _ (Cons (asBoolConst -> Just True) Nil))
   = LispExpr (Const (BoolValue True))
-optimizeFun Not (Arg (asBoolConst -> Just c) NoArg) = LispExpr (Const (BoolValue (not c)))
+optimizeFun Not (Cons (asBoolConst -> Just c) Nil) = LispExpr (Const (BoolValue (not c)))
 optimizeFun (Arith NumInt Plus n) xs = case dyns of
   [] -> LispExpr (Const (IntValue c))
   [d]
@@ -136,9 +141,9 @@ optimizeFun (Arith NumInt Plus n) xs = case dyns of
                              _ -> Right x
                           ) (allEqToList n xs))
 optimizeFun (Eq tp (Succ (Succ Zero)))
-  (Arg (LispExpr (Const x))
-   (Arg (LispExpr (Const y))
-    NoArg)) = LispExpr (Const (BoolValue (defaultEq x y)))
+  (Cons (LispExpr (Const x))
+   (Cons (LispExpr (Const y))
+    Nil)) = LispExpr (Const (BoolValue (defaultEq x y)))
 optimizeFun f arg = LispExpr (App f arg)
 
 asBoolConst :: LispExpr tp -> Maybe Bool
