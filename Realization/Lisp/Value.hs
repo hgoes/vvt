@@ -412,7 +412,10 @@ getTypesLispVal lvl sort
 
 valueEq :: LispValue -> LispValue -> SMTExpr Bool
 valueEq (LispValue (Size sz1) val1) (LispValue (Size sz2) val2)
-  = app and' (szEq++valEq)
+  = case szEq++valEq of
+  [] -> constant True
+  [x] -> x
+  xs -> app and' xs
   where
     szEq = zipWith (\(SizeElement e1) (SizeElement e2) -> case cast e2 of
                      Just e2' -> e1 .==. e2') sz1 sz2
