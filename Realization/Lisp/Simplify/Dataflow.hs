@@ -58,7 +58,7 @@ generateDependencyMapUp prog = mp2
     depLVal :: AnyName -> LispValue '(lvl,tps) LispExpr
             -> DependencyMap -> DependencyMap
     depLVal trg val mp = execState
-                         (foldExprs (\e -> do
+                         (foldExprs (\_ e -> do
                                         mp <- get
                                         let nmp = depExpr trg e mp
                                         put nmp

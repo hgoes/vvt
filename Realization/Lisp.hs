@@ -798,6 +798,12 @@ instance GCompare LispRev where
 instance Ord (LispRev tp) where
   compare = defaultCompare
 
+instance GetType LispRev where
+  getType (LispRev (LispName sz tps _) (RevVar idx))
+    = arrayType sz (Struct.elementIndex tps idx)
+  getType (LispRev (LispName sz tps _) (RevSize i))
+    = List.index (sizeListType sz) i
+
 instance TransitionRelation LispProgram where
   type State LispProgram = LispState 
   type Input LispProgram = LispState
@@ -1088,7 +1094,7 @@ instance Composite LispState where
   foldExprs f (LispState mp) = do
     let lst = DMap.toAscList mp
     nlst <- mapM (\(name@(LispName _ _ _) :=> (LispValue' val)) -> do
-                    nval <- foldExprs f val
+                    nval <- foldExprs (\rev -> f (LispRev name rev)) val
                     return (name :=> (LispValue' nval))
                  ) lst
     return $ LispState $ DMap.fromAscList nlst

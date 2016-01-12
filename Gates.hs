@@ -1,11 +1,71 @@
-{-# LANGUAGE ExistentialQuantification,GeneralizedNewtypeDeriving,
-             DeriveDataTypeable,ScopedTypeVariables,GADTs #-}
 module Gates where
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Type
 
-import Data.Typeable
+import Data.Dependent.Map (DMap)
+import qualified Data.Dependent.Map as DMap
+import Data.GADT.Compare
+
+data Gate m e outp = Gate { gateTransfer :: m (e outp)
+                          , gateType :: Repr outp
+                          , gateName :: Maybe String
+                          }
+
+data GateExpr (tp::Type) = GateExpr (Repr tp) Int
+
+type GateMap m e = DMap GateExpr (Gate m e)
+
+type RealizedGates e = DMap GateExpr e
+
+addGate :: GateMap m e -> Gate m e outp -> (GateExpr outp,GateMap m e)
+addGate mp gt = (expr,DMap.insert expr gt mp)
+  where
+    expr = GateExpr (gateType gt) sz
+    sz = DMap.size mp
+
+modifyGate :: GateExpr outp -> GateMap m e -> (Gate m e outp -> Gate m e outp) -> GateMap m e
+modifyGate expr mp f = DMap.adjust f expr mp
+
+getGate :: GateExpr outp -> GateMap m e -> Gate m e outp
+getGate expr mp = mp DMap.! expr
+
+emptyGateMap :: GateMap m e
+emptyGateMap = DMap.empty
+
+createGate :: Embed m e => GateExpr outp -> RealizedGates e -> GateMap m e
+           -> m (e outp,RealizedGates e)
+createGate expr real mp = case DMap.lookup expr real of
+  Just e -> return (e,real)
+  Nothing -> do
+    let gt = getGate expr mp
+    e <- gateTransfer gt
+    return (e,DMap.insert expr e real)
+
+instance GEq GateExpr where
+  geq (GateExpr tp1 i1) (GateExpr tp2 i2) = do
+    Refl <- geq tp1 tp2
+    if i1==i2
+      then return Refl
+      else Nothing
+
+instance GCompare GateExpr where
+  gcompare (GateExpr tp1 i1) (GateExpr tp2 i2) = case gcompare tp1 tp2 of
+    GEQ -> case compare i1 i2 of
+      EQ -> GEQ
+      LT -> GLT
+      GT -> GGT
+    GLT -> GLT
+    GGT -> GGT
+
+instance GetType (Gate m e) where
+  getType = gateType
+
+instance GetType GateExpr where
+  getType (GateExpr tp _) = tp
+
+{-import Data.Typeable
 import Data.Array
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -155,7 +215,7 @@ debugGates inp gates
     exprDeps deps e@(InternalObj obj ann :: SMTExpr a) = case cast obj of
       Just i -> ((gateMp Map.! (typeOf (undefined::a),i)):deps,e)
       Nothing -> (deps,e)
-    exprDeps deps e = (deps,e)
+    exprDeps deps e = (deps,e)-}
 
 {-
 debugGates :: inp -> GateMap inp -> Gr.Gr GateId ()

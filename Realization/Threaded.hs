@@ -10,12 +10,16 @@ import Realization.Threaded.Value
 import Realization.Threaded.State
 import Realization.Threaded.Options
 import Realization.Common (getFunctionName)
+import Args
 import Gates
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals hiding (Value)
+import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Type
 
-import LLVM.FFI
+import LLVM.FFI hiding (GetType,getType)
+import qualified LLVM.FFI as LLVM
 import Foreign.Ptr (Ptr,nullPtr)
 import Foreign.Storable (peek)
 import Foreign.Marshal.Array (peekArray)
@@ -32,59 +36,67 @@ import Data.List (genericReplicate,genericIndex)
 import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
 import Control.Exception
 import System.IO.Unsafe
+import Data.Functor.Identity
 
 import Debug.Trace
 
-data DefinitionState inp = AlwaysDefined (inp -> SMTExpr Bool)
-                         | SometimesDefined (inp -> SMTExpr Bool)
-                         | NeverDefined
+data RExpr inp st tp = RExpr (Expression NoVar NoVar NoFun NoCon NoField NoVar NoVar (RExpr inp st) tp)
+                     | RInput (RevComp inp tp)
+                     | RState (RevComp st tp)
+                     | RGate (GateExpr tp)
 
-data AlternativeRepresentation inp = IntConst Integer
-                                   | OrList [inp -> SymVal]
-                                   | ExtBool (inp -> SMTExpr Bool)
-                                   | NullPtr
+data DefinitionState inp st = AlwaysDefined (RExpr inp st BoolType)
+                            | SometimesDefined (RExpr inp st BoolType)
+                            | NeverDefined
 
-data InstructionValue inp = InstructionValue { symbolicType :: SymType
-                                             , symbolicValue :: inp -> SymVal
-                                             , alternative :: Maybe (AlternativeRepresentation inp)
-                                             }
+data AlternativeRepresentation inp st
+  = IntConst Integer
+  | OrList [SymVal (RExpr inp st)]
+  | ExtBool (RExpr inp st BoolType)
+  | NullPtr
 
-data Edge inp = Edge { edgeValues :: Map (Maybe (Ptr CallInst),Ptr Instruction)
-                                     (DefinitionState inp)
-                     , edgeConditions :: [EdgeCondition inp]
-                     , observedEvents :: Map Int ()
+data InstructionValue inp st
+  = InstructionValue { symbolicType :: SymType
+                     , symbolicValue :: SymVal (RExpr inp st)
+                     , alternative :: Maybe (AlternativeRepresentation inp st)
                      }
 
-data EdgeCondition inp = EdgeCondition { edgeActivation :: inp -> SMTExpr Bool
-                                       , edgePhis :: Map (Maybe (Ptr CallInst),Ptr Instruction)
-                                                     (InstructionValue inp)
-                                       }
+data Edge inp st = Edge { edgeValues :: Map (Maybe (Ptr CallInst),Ptr Instruction)
+                                        (DefinitionState inp st)
+                        , edgeConditions :: [EdgeCondition inp st]
+                        , observedEvents :: Map Int ()
+                        }
 
-data Event inp = WriteEvent { target :: Map MemoryPtr (inp -> (SMTExpr Bool,[SMTExpr Integer]))
-                            , writeContent :: InstructionValue inp
-                            , eventThread :: Maybe (Ptr CallInst)
-                            , eventOrigin :: Ptr Instruction -- For debugging
-                            }
+data EdgeCondition inp st = EdgeCondition { edgeActivation :: RExpr inp st BoolType
+                                          , edgePhis :: Map (Maybe (Ptr CallInst),Ptr Instruction)
+                                                        (InstructionValue inp st)
+                                          }
 
-data Realization inp
+data Event inp st = WriteEvent { target :: Map MemoryPtr (RExpr inp st BoolType,[RExpr inp st IntType])
+                               , writeContent :: InstructionValue inp st
+                               , eventThread :: Maybe (Ptr CallInst)
+                               , eventOrigin :: Ptr Instruction -- For debugging
+                               }
+
+data Realization inp st
   = Realization { edges :: Map (Maybe (Ptr CallInst),Ptr BasicBlock,Int)
-                               (Edge inp)
+                               (Edge inp st)
                 , yieldEdges :: Map (Maybe (Ptr CallInst),Ptr BasicBlock,Int)
-                                (Edge inp)
+                                (Edge inp st)
                 , internalYieldEdges :: Map (Maybe (Ptr CallInst),Ptr BasicBlock,Int)
-                                        (Edge inp)
+                                        (Edge inp st)
                 , instructions :: Map (Maybe (Ptr CallInst),Ptr Instruction)
-                                  (InstructionValue inp)
+                                  (InstructionValue inp st)
                 , stateAnnotation :: ProgramStateDesc
-                , inputAnnotation :: ProgramInputDesc
-                , gateMp :: GateMap inp
-                , events :: Map Int (Event inp)
-                , spawnEvents :: Map (Ptr CallInst) [(inp -> SMTExpr Bool,
-                                                      Maybe (InstructionValue inp))]
-                , termEvents :: Map (Ptr CallInst) [(inp -> SMTExpr Bool,
-                                                     Maybe (InstructionValue inp))]
-                , assertions :: [inp -> SMTExpr Bool]
-                , memoryInit :: Map (Ptr GlobalVariable) AllocVal
+                , argAnnotation :: ProgramInputDesc
+                , gateMp :: GateMap Identity (RExpr inp st)
+                , events :: Map Int (Event inp st)
+                , spawnEvents :: Map (Ptr CallInst) [(RExpr inp st BoolType,
+                                                      Maybe (InstructionValue inp st))]
+                , termEvents :: Map (Ptr CallInst) [(RExpr inp st BoolType,
+                                                     Maybe (InstructionValue inp st))]
+                , assertions :: [RExpr inp st BoolType]
+                , memoryInit :: Map (Ptr GlobalVariable) (AllocVal (RExpr inp st))
                 , mainBlock :: Ptr BasicBlock
                 , threadBlocks :: Map (Ptr CallInst) (Ptr BasicBlock)
                 , programInfo :: ProgramInfo
@@ -92,6 +104,30 @@ data Realization inp
 
 data RealizationException = RealizationException String SomeException deriving Typeable
 
+instance (Composite inp,Composite st) => Embed Identity (RExpr inp st) where
+  type EmVar Identity (RExpr inp st) = NoVar
+  type EmQVar Identity (RExpr inp st) = NoVar
+  type EmFun Identity (RExpr inp st) = NoFun
+  type EmConstr Identity (RExpr inp st) = NoCon
+  type EmField Identity (RExpr inp st) = NoField
+  type EmFunArg Identity (RExpr inp st) = NoVar
+  type EmLVar Identity (RExpr inp st) = NoVar
+  embed e = return (RExpr e)
+  embedQuantifier = error "Cannot embed quantifier into RExpr."
+  embedGetField = error "Cannot embed datatypes into RExpr."
+  embedConstrTest = error "Cannot embed datatypes into RExpr."
+  embedConst c = do
+    val <- valueFromConcrete
+           (error "Cannot embed datatypes into RExpr.")
+           c
+    return (RExpr (Const val))
+  embedTypeOf = return.getType
+
+{-instance (Composite arg,GetType (RevComp arg)) => GetType (RExpr inp st) where
+  getType (RExpr e) = getType e
+  getType (RGate e) = getType e-}
+
+{-
 writeBasedAliasAnalysis :: Realization inp
                         -> ProgramStateDesc
                         -> ProgramStateDesc
@@ -2032,3 +2068,4 @@ instance Show RealizationException where
   show (RealizationException pref ex) = pref++show ex
 
 instance Exception RealizationException
+-}

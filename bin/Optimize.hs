@@ -99,6 +99,6 @@ parseTransformation _  = Nothing
 main :: IO ()
 main = do
   opts <- getOptions
-  prog <- fmap parseLispProgram (readLispFile stdin)
+  prog <- fmap parseProgram (readLispFile stdin)
   prog' <- foldlM (applyTransformation opts) prog (transformation opts)
   print $ programToLisp prog'

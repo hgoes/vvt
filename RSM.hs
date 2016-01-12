@@ -105,8 +105,10 @@ instance Ord var => GCompare (RSMVar var) where
 instance (Show var,Ord var) => Composite (RSMVars var) where
   type CompDescr (RSMVars var) = Map var ()
   type RevComp (RSMVars var) = RSMVar var
+  compositeType mp = RSMVars (fmap (const IntRepr) mp)
   foldExprs f (RSMVars mp) = do
-    mp' <- mapM f mp
+    mp' <- sequence $ Map.mapWithKey
+           (\var -> f (RSMVar var)) mp
     return (RSMVars mp')
   createComposite f mp = do
     mp' <- sequence $ Map.mapWithKey (\instr _ -> f IntRepr (RSMVar instr)) mp
@@ -119,6 +121,7 @@ instance (Show var,Ord var) => Composite (RSMVars var) where
       [] -> embedConst (BoolValueC True)
       [e] -> return e
       _ -> [expr| (and # ${res}) |]
+  revType _ _ (RSMVar _) = IntRepr
 
 instance GetType (RSMVar v) where
   getType (RSMVar _) = IntRepr

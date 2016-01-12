@@ -26,6 +26,11 @@ Flag Native-MathSAT
 --  Main-Is:              bin/Karr.hs
 --  Build-Depends:        base,vector,smtlib2
 
+Executable vvt-enc
+  Main-Is:              bin/Encode.hs
+  Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
+  Extensions:           KindSignatures,RankNTypes,DataKinds,TypeFamilies,GADTs,QuasiQuotes,StandaloneDeriving,FlexibleContexts,TypeOperators,TypeSynonymInstances,MultiParamTypeClasses,FlexibleInstances,ScopedTypeVariables,PolyKinds,ViewPatterns,OverloadedStrings
+
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs
   Build-Depends:        base,bytestring,atto-lisp,attoparsec,text,pretty
@@ -34,10 +39,6 @@ Executable vvt-bmc
   Main-Is:              bin/BMC.hs
   Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,AllowAmbiguousTypes
   Build-Depends:        base,mtl,containers,constraints,data-fix,smtlib2,smtlib2-pipe,smtlib2-z3,smtlib2-debug,atto-lisp,bytestring,attoparsec,text,dependent-sum,dependent-map,transformers,time
-
--- --Executable vvt-enc
--- --  Main-Is:              bin/Encode.hs
--- --  Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
 
 Executable vvt-verify
   Main-Is:              bin/Verify.hs

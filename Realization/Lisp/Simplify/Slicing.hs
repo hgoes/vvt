@@ -138,7 +138,7 @@ getDependencies (LispStore var _ idx val) st0 = st3
     st2 = getDependenciesIndex idx st1
     st3 = getDependenciesExpr val st2
 getDependencies (LispConstr val) st
-  = execState (foldExprs (\v -> do
+  = execState (foldExprs (\_ v -> do
                              st <- get
                              put $ getDependenciesExpr v st
                              return v

@@ -10,7 +10,6 @@ import qualified Realization.Lisp.Value as L
 import qualified Realization.Lisp as L
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
 import LLVM.FFI
 
 import Data.Fix

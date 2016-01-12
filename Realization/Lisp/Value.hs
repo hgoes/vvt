@@ -41,7 +41,6 @@ lispValueType val = (sz,Struct.map (\e -> sizedType e sz) (value val))
   where
     sz = sizeIndices (size val)
 
-
 eqValue :: (Embed m e,GetType e)
         => LispValue '(lvl,tps) e
         -> LispValue '(lvl,tps) e
@@ -58,7 +57,6 @@ eqValue v1 v2 = do
                                   res <- [expr| (= x y) |]
                                   return [res])
             (return . concat)
-
 
 iteValue :: (Embed m e,GetType e)
          => e BoolType -> LispValue '(sz,tps) e -> LispValue '(sz,tps) e
@@ -159,9 +157,13 @@ instance GShow (RevValue sig) where
 instance Composite (LispValue '(lvl,tps)) where
   type CompDescr (LispValue '(lvl,tps)) = (List Repr lvl,Struct Repr tps)
   type RevComp (LispValue '(lvl,tps)) = RevValue '(lvl,tps)
+  compositeType (sz,tps)
+    = LispValue (sizeType sz)
+      (runIdentity $ Struct.mapM
+       (\tp -> return (Sized (arrayType sz tp))) tps)
   foldExprs f val = do
-    sz' <- foldSize f (size val)
-    val' <- Struct.mapM (\(Sized e) -> fmap Sized (f e)) (value val)
+    sz' <- foldSize (\i -> f (RevSize i)) (size val)
+    val' <- Struct.mapIndexM (\idx (Sized e) -> fmap Sized (f (RevVar idx) e)) (value val)
     return $ LispValue sz' val'
   createComposite f (lvl,tp) = do
     sz <- createSize (\i tp -> f tp (RevSize i)) lvl
