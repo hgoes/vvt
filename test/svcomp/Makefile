@@ -3,7 +3,7 @@ LIPTON=/home/eq/repos/lipton/LiptonPass
 CLANG=clang-3.4
 CLANG_OPTS=-mem2reg -internalize-public-api-list=main -internalize -inline -loops -loop-simplify -loop-rotate -lcssa -loop-unroll
 LIPTON_OPT=-mem2reg -constprop -instsimplify -correlated-propagation -die -simplifycfg -globaldce -instnamer
-VVT_OPT=value-set=5 inline simplify
+VVT_OPT=value-set=5 inline simplify slice
 TIMEOUT=15m
 
 BENCHMARKS=$(shell grep -v ^\# benchmarks )
