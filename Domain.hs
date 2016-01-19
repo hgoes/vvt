@@ -68,7 +68,8 @@ data DomainInstance a b = DomainInstance { domainVars :: a (Expr b)
 type AbstractState a = Vector (Node,Bool)
 
 -- | Create the initial domain containing only true and false.
-initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
+initialDomain :: forall a b.
+                 (Composite a,Backend b,SMTMonad b ~ IO)
               => Int -- ^ How verbose the domain should be (0 = no output)
               -> IO b -- ^ A function to create SMT backends
               -> CompDescr a -- ^ The annotation for the data type abstracted by the domain
@@ -76,7 +77,9 @@ initialDomain :: (Composite a,Backend b,SMTMonad b ~ IO)
 initialDomain verb backend ann = do
   let initInst = do
         setOption (ProduceModels True)
-        vars <- createComposite (\tp rev -> declareVar tp) ann
+        vars <- createComposite (\tp rev -> declareVarNamed tp
+                                            (revName (Proxy::Proxy a) rev)
+                                ) ann
         top <- [expr| true |]
         bot <- [expr| false |]
         return DomainInstance { domainVars = vars
