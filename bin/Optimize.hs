@@ -7,6 +7,7 @@ import Realization.Lisp.Simplify.Inliner
 import Realization.Lisp.Simplify.ExprSimplify
 import Realization.Lisp.Simplify.ValueSet
 import Realization.Lisp.Simplify.Slicing
+import Realization.Lisp.Transforms
 
 import System.IO
 import qualified Data.Text as T
@@ -101,4 +102,7 @@ main = do
   opts <- getOptions
   prog <- fmap parseProgram (readLispFile stdin)
   prog' <- foldlM (applyTransformation opts) prog (transformation opts)
+  case fsck prog' of
+    [] -> return ()
+    msgs -> error $ "Invalid program generated:\n"++unlines msgs
   print $ programToLisp prog'

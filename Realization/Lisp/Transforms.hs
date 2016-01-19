@@ -16,6 +16,7 @@ import Data.Dependent.Map (DMap,DSum(..))
 import qualified Data.Dependent.Map as DMap
 import Data.GADT.Compare
 import Data.Functor.Identity
+import Control.Monad.State
 
 replaceVarWith :: LispRev tp -> LispExpr tp -> LispProgram -> LispProgram
 replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val of
@@ -41,11 +42,11 @@ replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val 
               -> DMap LispName Annotation
               -> DMap LispName Annotation
     adjustMap from to mp
-      = DMap.fromAscList
+      = DMap.fromList
         [ case geq from name of
           Nothing -> entry
           Just Refl -> to :=> (Annotation ann)
-        | entry@(name :=> (Annotation ann)) <- DMap.toAscList mp ]
+        | entry@(name :=> (Annotation ann)) <- DMap.toList mp ]
 
     adjustGateMap :: LispName '(sz,tps) -> List Natural idx
                   -> LispName '(sz,Struct.Insert tps idx (Node '[]))
@@ -53,11 +54,11 @@ replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val 
                   -> DMap LispName LispGate
                   -> DMap LispName LispGate
     adjustGateMap rname ridx nname nexpr mp
-      = DMap.fromAscList
+      = DMap.fromList
         [ case geq rname name of
           Nothing -> name :=> (LispGate (replaceInOtherVar rname ridx nname nexpr def) ann)
-          Just Refl -> nname :=> (LispGate (removeFromVar ridx def) (Annotation ann'))
-        | (name@(LispName _ _ _) :=> (LispGate def ann@(Annotation ann'))) <- DMap.toAscList mp ]
+          Just Refl -> nname :=> (LispGate (replaceInOtherVar rname ridx nname nexpr $ removeFromVar ridx def) (Annotation ann'))
+        | (name@(LispName _ _ _) :=> (LispGate def ann@(Annotation ann'))) <- DMap.toList mp ]
 
     adjustNextMap :: LispName '(sz,tps) -> List Natural idx
                   -> LispName '(sz,Struct.Insert tps idx (Node '[]))
@@ -65,11 +66,11 @@ replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val 
                   -> DMap LispName (LispVar LispExpr)
                   -> DMap LispName (LispVar LispExpr)
     adjustNextMap rname ridx nname nexpr mp
-      = DMap.fromAscList
+      = DMap.fromList
         [ case geq rname name of
           Nothing -> name :=> (replaceInOtherVar rname ridx nname nexpr nxt)
-          Just Refl -> nname :=> (removeFromVar ridx nxt)
-        | (name@(LispName _ _ _) :=> nxt) <- DMap.toAscList mp ]
+          Just Refl -> nname :=> (replaceInOtherVar rname ridx nname nexpr (removeFromVar ridx nxt))
+        | (name@(LispName _ _ _) :=> nxt) <- DMap.toList mp ]
 
     adjustInitMap :: LispName '(sz,tps) -> List Natural idx
                   -> LispName '(sz,Struct.Insert tps idx (Node '[]))
@@ -77,11 +78,11 @@ replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val 
                   -> DMap LispName LispInit
                   -> DMap LispName LispInit
     adjustInitMap rname ridx nname nexpr mp
-      = DMap.fromAscList
+      = DMap.fromList
         [ case geq rname name of
           Nothing -> name :=> LispInit lv
           Just Refl -> nname :=> LispInit (LispValue sz (removeType ridx val))
-        | (name@(LispName _ _ _) :=> (LispInit lv@(LispValue sz val))) <- DMap.toAscList mp ]
+        | (name@(LispName _ _ _) :=> (LispInit lv@(LispValue sz val))) <- DMap.toList mp ]
     
     removeType :: LispIndex idx -> Struct el tps
                -> Struct el (Struct.Insert tps idx (Node '[]))
@@ -283,3 +284,93 @@ replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val 
                                                \_ -> return ((),el))
     varToValue (LispConstr val) = val
     varToValue (LispITE c v1 v2) = runIdentity $ iteValue c (varToValue v1) (varToValue v2)
+
+fsck :: LispProgram -> [String]
+fsck prog = [ "In gate definition of "++show gtName++"("++show def++"): "++defError
+            | gtName@(LispName _ _ _) :=> LispGate def _ <- DMap.toList (programGates prog)
+            , defError <- fsckVar def ] ++
+            [ "In next definition of "++show nxtName++"("++show var++"): "++nxtError
+            | nxtName@(LispName _ _ _) :=> var <- DMap.toList (programNext prog)
+            , nxtError <- fsckVar var ]
+  where
+    fsckExpr :: LispExpr tp -> [String]
+    fsckExpr (LispExpr e) = execState
+                            (mapExpr return return return return return return return
+                             (\e' -> do
+                                 errs <- get
+                                 let nerrs = fsckExpr e'
+                                 put (errs++nerrs)
+                                 return e') e) []
+    fsckExpr (LispRef var idx) = fsckVar var
+    fsckExpr (LispSize var idx) = fsckVar var
+    fsckExpr (LispEq v1 v2) = fsckVar v1 ++ fsckVar v2
+    fsckExpr (ExactlyOne xs) = concat $ fmap fsckExpr xs
+    fsckExpr (AtMostOne xs) = concat $ fmap fsckExpr xs
+
+    fsckVar :: LispVar LispExpr '(sz,tps) -> [String]
+    fsckVar (NamedVar name@(LispName sz tp _) State)
+      = case findName (\sz tps _ -> show (sz,tps))
+             name (programState prog) of
+        Right _ -> []
+        Left alts -> ["state variable "++show name++" of type "++show (sz,tp)++" not found."++
+                      (case alts of
+                        [] -> ""
+                        _ -> " Variables with the same name but different types: "++
+                             unwords alts)]
+    fsckVar (NamedVar name@(LispName sz tp _) Input)
+      = case findName (\sz tps _ -> show (sz,tps))
+             name (programInput prog) of
+        Right _ -> []
+        Left alts -> ["input variable "++show name++" of type "++show (sz,tp)++" not found."++
+                      (case alts of
+                        [] -> ""
+                        _ -> " Variables with the same name but different types: "++
+                             unwords alts)]
+    fsckVar (NamedVar name@(LispName sz tp _) Gate)
+      = case findName (\sz tps _ -> show (sz,tps))
+             name (programGates prog) of
+        Right _ -> []
+        Left alts -> ["gate variable "++show name++" of type "++show (sz,tp)++" not found."++
+                      (case alts of
+                        [] -> ""
+                        _ -> " Variables with the same name but different types: "++
+                             unwords alts)]
+    fsckVar (LispStore var _ dyn e)
+      = fsckVar var ++
+        execState (List.mapM (\d -> do
+                                 errs <- get
+                                 put $ errs++(fsckExpr d)
+                                 return d
+                             ) dyn) []++
+        fsckExpr e
+    fsckVar (LispConstr (LispValue (Size _ sz) vals))
+      = execState (do
+                      List.mapM (\d -> do
+                                    modify (++(fsckExpr d))
+                                    return d) sz
+                      Struct.mapM (\(Sized e) -> do
+                                      modify (++(fsckExpr e))
+                                      return undefined) vals
+                      return ()) []
+    fsckVar (LispITE c v1 v2)
+      = fsckExpr c ++ fsckVar v1 ++ fsckVar v2
+
+    findName :: (forall sz' tps' . List Repr sz' -> Struct Repr tps' -> a '( sz',tps') -> b)
+             -> LispName '(sz,tps) -> DMap LispName a
+             -> Either [b] (a '(sz,tps))
+    findName sim name@(LispName _ _ rname) mp = case DMap.lookup name mp of
+      Just res -> Right res
+      Nothing -> case [ ()
+                      | oname :=> cont <- DMap.toList mp
+                      , case gcompare name oname of
+                        GEQ -> True
+                        _ -> False ] of
+                 [] -> Left [ sim sz tps cont
+                            | (LispName sz tps oname) :=> cont <- DMap.toList mp
+                            , oname==rname ]
+                 _ -> if DMap.valid mp
+                      then error "unknown BUG in dependent map implementation."
+                      else error $ "REAL BUG in dependent map:\n"++
+                           DMap.showTreeWith
+                           (\name@(LispName sz tp rname) _ -> show rname++show (sz,tp))
+                           True False mp
