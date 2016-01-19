@@ -403,7 +403,7 @@ parseProgram descr = case descr of
              Just xs -> case runExcept $ mapM (parseLispExprT state' inp' gts' BoolRepr) xs of
                Right lst -> lst
                Left err -> error $ "Error while parsing assumptions: "++err
-           preds = case Map.lookup "predicate" mp of
+           preds = case Map.lookup "predicates" mp of
              Nothing -> []
              Just xs -> case runExcept $ mapM (parseLispExprT state' Map.empty Map.empty BoolRepr) xs of
                Right lst -> lst
