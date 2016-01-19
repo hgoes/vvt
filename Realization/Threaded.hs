@@ -2034,6 +2034,11 @@ computeRStep = do
                                     Just th'' -> ThreadInput' th'' Step
                                   | th' <- allThreads
                                   , th'/=th ]
+                     thisIntYields = [ RState $ case th of
+                                        Nothing -> MainState $ LatchBlock blk sblk
+                                        Just th'' -> ThreadState' th'' $ LatchBlock blk sblk
+                                     | (th',blk,sblk) <- Map.keys $ internalYieldEdges st
+                                     , th'==th ]
                      otherIntYields = [ RState $ case th' of
                                         Nothing -> MainState $ LatchBlock blk sblk
                                         Just th'' -> ThreadState' th'' $ LatchBlock blk sblk
@@ -2041,8 +2046,9 @@ computeRStep = do
                                       , th'/=th]
                  notOthers <- mapM (\x -> [expr| (not x) |]) otherSteps
                  notOtherIntYield <- mapM (\x -> [expr| (not x) |]) otherIntYields
-                 rstep <- [expr| (and # ${thisStep:thisRunning++notOthers++notOtherIntYield}) |]
-                 rstep' <- define ("rstep"++(if n==0 then "" else show n)) rstep
+                 canStep <- [expr| (and # ${thisStep:thisRunning++notOthers++notOtherIntYield}) |]
+                 mustStep <- [expr| (or # ${canStep:thisIntYields}) |]
+                 rstep' <- define ("rstep"++(if n==0 then "" else show n)) mustStep
                  return (th,rstep')
              | (th,n) <- zip allThreads [0..] ]
 
