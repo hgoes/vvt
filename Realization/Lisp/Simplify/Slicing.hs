@@ -92,11 +92,11 @@ slice prog = prog { programState = filterMap (programState prog) State
       let sidx' = filterArrayIndex sidx
           val' = filterExpr val
       return (LispStore v' idx sidx' val')
-    filterVar (LispConstr val) = Just $ LispConstr $ LispValue { size = nsize
-                                                               , value = nvalue }
+    filterVar (LispConstr (LispValue sz val))
+      = Just $ LispConstr $ LispValue nsize nvalue
       where
-        nsize = filterSize (size val)
-        nvalue = runIdentity $ Struct.mapM (\(Sized v) -> return $ Sized (filterExpr v)) (value val)
+        nsize = filterSize sz
+        nvalue = runIdentity $ Struct.mapM (\(Sized v) -> return $ Sized (filterExpr v)) val
     filterVar (LispITE c ifT ifF) = do
       ifT' <- filterVar ifT
       ifF' <- filterVar ifF
@@ -123,6 +123,7 @@ recDependencies prog dep = case todo dep of
       Just gt -> recDependencies prog $ getDependencies (gateDefinition gt) (dep { todo = todo' })
     State -> case DMap.lookup name (programNext prog) of
       Just var -> recDependencies prog $ getDependencies var (dep { todo = todo' })
+      Nothing -> error $ "Missing next state for "++show name
     Input -> recDependencies prog $ dep { todo = todo' }
 
 getDependencies :: LispVar LispExpr '(lvl,tp)
@@ -162,6 +163,7 @@ getDependenciesExpr (ExactlyOne xs) st
   = foldl (\st x -> getDependenciesExpr x st) st xs
 getDependenciesExpr (AtMostOne xs) st
   = foldl (\st x -> getDependenciesExpr x st) st xs
+getDependenciesExpr _ st = st
 
 getDependenciesIndex :: List LispExpr lvl -> DepState -> DepState
 getDependenciesIndex Nil st = st

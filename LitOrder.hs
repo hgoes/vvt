@@ -24,4 +24,6 @@ compareOrder order n1 n2
 addOrderElement :: Int -> LitOrder -> LitOrder
 addOrderElement el order = Map.insert el (val+1) order
   where
-    val = maximum order
+    val = if Map.null order
+          then 1
+          else maximum order

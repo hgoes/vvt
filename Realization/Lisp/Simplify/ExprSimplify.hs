@@ -67,8 +67,11 @@ simplifyExpr :: LispExpr t -> LispExpr t
 simplifyExpr (LispExpr (App fun args)) = optimizeFun fun nargs
   where
     nargs = runIdentity $ List.mapM (return.simplifyExpr) args
+simplifyExpr (LispExpr e) = LispExpr e
 simplifyExpr (LispRef var idx)
   = LispRef (simplifyVar var) idx
+simplifyExpr (LispSize var idx)
+  = LispSize (simplifyVar var) idx
 simplifyExpr (LispEq v1 v2) = LispEq (simplifyVar v1) (simplifyVar v2)
 simplifyExpr (ExactlyOne []) = LispExpr (Const (BoolValue False))
 simplifyExpr (ExactlyOne [x]) = simplifyExpr x
@@ -102,6 +105,7 @@ optimizeFun (ITE tp) args@(Cons cond (Cons lhs (Cons rhs Nil)))
                                     (Cons (LispExpr (App Not (Cons cond Nil)))
                                      (Cons rhs Nil)))
       _ -> LispExpr (App (ITE tp) args)
+    _ -> LispExpr (App (ITE tp) args)
 optimizeFun (Logic XOr (Succ (Succ Zero))) (Cons c (Cons (asBoolConst -> Just True) Nil))
   = LispExpr (App Not (Cons c Nil))
 optimizeFun (Logic And n) args = case optAnd (allEqToList n args) of
@@ -117,7 +121,7 @@ optimizeFun (Logic And n) args = case optAnd (allEqToList n args) of
     optAnd (LispExpr (App (Logic And n) x):xs) = fmap (allEqToList n x++) $ optAnd xs
     optAnd (x:xs) = fmap (x:) $ optAnd xs
 optimizeFun (Logic Or n) args = case [ arg | arg <- allEqToList n args
-                                          , asBoolConst arg /= Just False ] of
+                                           , asBoolConst arg /= Just False ] of
   [] -> LispExpr (Const (BoolValue False))
   [c] -> c
   args' -> allEqFromList args' $

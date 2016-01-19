@@ -16,17 +16,17 @@ data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , threadArg :: Maybe (Ptr Argument,Either (Ptr Type) (Ptr IntegerType))
                              , threadSliceMapping :: Map Integer [(Ptr BasicBlock,Int)]
                              , spawnQuantity :: Quantity
-                             }
+                             } deriving Show
 
 data AllocInfo = AllocInfo { allocQuantity :: Quantity
                            , allocType :: AllocKind
-                           , allocSize :: Maybe (Ptr Value) }
+                           , allocSize :: Maybe (Ptr Value) } deriving Show
 
 data ProgramInfo = ProgramInfo { mainThread :: ThreadInfo
                                , threads :: Map (Ptr CallInst) ThreadInfo
                                , allocations :: Map (Ptr Instruction) AllocInfo
                                , functionReturns :: Map (Ptr Function) (Ptr Type)
-                               }
+                               } deriving Show
 
 getProgramInfo :: Ptr Module -> Ptr Function -> IO ProgramInfo
 getProgramInfo mod mainFun = do

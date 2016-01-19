@@ -55,8 +55,8 @@ doInlining prog = prog { programState = nstate
     (npreds,inl6) = inlineList inlineExpr prog (programPredicates prog) inl5
     nstate = filterMap (programState prog) inl6
     ninput = filterMap (programInput prog) inl6
-    ngates' = filterMap (programGates prog) inl6
-    nnext' = filterMap (programNext prog) inl6
+    ngates' = filterMap ngates inl6
+    nnext' = filterMap nnext inl6
     ninit = filterMap (programInit prog) inl6
 
 filterMap :: DMap LispName a -> Inlining -> DMap LispName a
@@ -65,6 +65,7 @@ filterMap mp inl = DMap.fromAscList
                    | name :=> ann <- DMap.toAscList mp
                    , case DMap.lookup name (inliningCache inl) of
                      Just Used -> True
+                     Nothing -> True
                      _ -> False ]
 
 inlineMap :: (forall sig. LispProgram -> a sig -> Inlining -> (a sig,Inlining))
@@ -80,8 +81,8 @@ inlineMap f prog mp inl = (DMap.fromAscList nlst,ninl)
 
 isSimple :: LispVar LispExpr tp -> Bool
 isSimple (NamedVar _ _) = True
-isSimple (LispConstr val) = case size val of
-  Size Nil Nil -> isSimpleStruct (value val)
+isSimple (LispConstr (LispValue sz val)) = case sz of
+  Size Nil Nil -> isSimpleStruct val
   _ -> False
   where
     isSimpleStruct :: Struct (Sized LispExpr lvl) tp -> Bool
@@ -106,11 +107,10 @@ inlineVar prog (LispStore var idx idx_dyn expr) inl
     (var',inl1) = inlineVar prog var inl
     (idx_dyn',inl2) = inlineArrayIndex prog idx_dyn inl1
     (expr',inl3) = inlineExpr prog expr inl2
-inlineVar prog (LispConstr val) inl = (LispConstr (LispValue { size = nsize
-                                                             , value = nvalue }),inl2)
+inlineVar prog (LispConstr (LispValue sz val)) inl = (LispConstr (LispValue nsize nvalue),inl2)
   where
-    (nsize,inl1) = inlineSize prog (size val) inl
-    (nvalue,inl2) = inlineStruct prog (value val) inl1
+    (nsize,inl1) = inlineSize prog sz inl
+    (nvalue,inl2) = inlineStruct prog val inl1
     inlineStruct :: LispProgram -> Struct (Sized LispExpr lvl) tp
                  -> Inlining -> (Struct (Sized LispExpr lvl) tp,Inlining)
     inlineStruct prog (Singleton (Sized x)) inl

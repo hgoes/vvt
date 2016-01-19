@@ -206,7 +206,7 @@ programToLisp :: LispProgram -> L.Lisp
 programToLisp prog = L.List (L.Symbol "program":elems)
   where
     elems = ann ++ states ++ inputs ++ gates ++ next ++ init ++
-            prop ++ init ++ invar ++ assump ++ preds
+            prop ++ invar ++ assump ++ preds
     ann = annToLisp (programAnnotation prog)
     states = if DMap.null (programState prog)
              then []
@@ -332,13 +332,12 @@ lispVarToLisp (LispITE cond ifT ifF)
            ,lispVarToLisp ifF]
 
 lispValueToLisp :: LispValue sig LispExpr -> L.Lisp
-lispValueToLisp (LispValue { size = Size Nil Nil
-                           , value = Singleton (Sized e) })
+lispValueToLisp (LispValue (Size Nil Nil) (Singleton (Sized e)))
   = lispExprToLisp e
-lispValueToLisp val
+lispValueToLisp (LispValue sz val)
   = L.List [L.Symbol "value"
-           ,L.List $ lispSizeToLisp (size val)
-           ,lispStructToLisp (value val)]
+           ,L.List $ lispSizeToLisp sz
+           ,lispStructToLisp val]
   where
     lispStructToLisp :: Struct (Sized LispExpr lvl) tp -> L.Lisp
     lispStructToLisp (Singleton (Sized e)) = lispExprToLisp e
@@ -912,8 +911,8 @@ instance TransitionRelation LispProgram where
     where
       conds = [ r | name :=> val <- DMap.toList pcs
                   , r <- case val of
-                    LispValue' (LispValue { size = Size Nil Nil
-                                          , value = Singleton (Sized x) })
+                    LispValue' (LispValue (Size Nil Nil)
+                                (Singleton (Sized x)))
                       -> case getType x of
                       BoolRepr -> [x]
                       _ -> []
@@ -940,17 +939,18 @@ declareGate mkGate prog st inp name@(LispName _ _ name') = do
         LispState mp' <- get
         put $ LispState $ DMap.insert name (LispValue' gt) mp'
         return gt
+      Nothing -> error $ "Internal error: Gate "++show name++" not defined."
 
 defineGate :: Monad m
            => (forall t. Maybe String -> e t -> m (e t))
            -> String -> LispValue '(lvl,tp) e
            -> m (LispValue '(lvl,tp) e)
-defineGate mkGate name val = do
-  sz <- defineSize mkGate name (size val)
+defineGate mkGate name (LispValue sz val) = do
+  sz <- defineSize mkGate name sz
   v <- Struct.mapM (\(Sized e) -> do
                        e' <- mkGate (Just name) e
                        return (Sized e')
-                   ) (value val)
+                   ) val
   return (LispValue sz v)
   where
     defineSize :: Monad m
@@ -973,12 +973,12 @@ relativize st inp gts (LispExpr e) = do
   where
     err = error "Realization.Lisp.relativize: LispExpr shouldn't have any user defined entities."
 relativize st inp gts (LispRef var stat) = do
-  val <- relativizeVar st inp gts var
-  let Sized res = Struct.elementIndex (value val) stat
+  LispValue _ val <- relativizeVar st inp gts var
+  let Sized res = Struct.elementIndex val stat
   return res
 relativize st inp gts (LispSize var idx) = do
-  val <- relativizeVar st inp gts var
-  let Size _ szs = size val
+  LispValue sz _ <- relativizeVar st inp gts var
+  let Size _ szs = sz
   return $ List.index szs idx
 relativize st inp gts (LispEq v1 v2) = do
   val1 <- relativizeVar st inp gts v1
@@ -1046,13 +1046,13 @@ relativizeVar (LispState st) (LispState inp) gts (NamedVar name@(LispName _ _ _)
 relativizeVar st inp gts (LispConstr val)
   = relativizeValue st inp gts val
 relativizeVar st inp gts (LispStore v idx dyn el) = do
-  val <- relativizeVar st inp gts v
+  LispValue sz val <- relativizeVar st inp gts v
   nel <- relativize st inp gts el
   ndyn <- List.mapM (relativize st inp gts) dyn
-  (_,nval) <- Struct.access (value val) idx $
+  (_,nval) <- Struct.access val idx $
               \arr -> accessArrayElement ndyn arr $
                       \_ -> return ((),nel)
-  return (val { value = nval })
+  return (LispValue sz nval)
 relativizeVar st inp gts (LispITE c ifT ifF) = do
   nc <- relativize st inp gts c
   ifT' <- relativizeVar st inp gts ifT
@@ -1065,11 +1065,11 @@ relativizeValue :: (Embed m e,GetType e)
                 -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
                 -> LispValue sig LispExpr
                 -> m (LispValue sig e)
-relativizeValue st inp gts val = do
-  sz <- relativizeSize st inp gts (size val)
-  val <- Struct.mapM (\(Sized e) -> fmap Sized (relativize st inp gts e)
-                     ) (value val)
-  return $ LispValue sz val
+relativizeValue st inp gts (LispValue sz val) = do
+  nsz <- relativizeSize st inp gts sz
+  nval <- Struct.mapM (\(Sized e) -> fmap Sized (relativize st inp gts e)
+                      ) val
+  return $ LispValue nsz nval
   where
     relativizeSize :: (Embed m e,GetType e)
                    => LispState e -> LispState e
@@ -1136,8 +1136,7 @@ instance LiftComp LispState where
       lift' :: (Embed m e,GetType e) => LispUVal '(lvl,tps) -> m (LispValue '(lvl,tps) e)
       lift' (LispU str) = do
         str' <- liftStruct str
-        return (LispValue { size = Size Nil Nil
-                          , value = str' })
+        return (LispValue (Size Nil Nil) str')
       lift' (LispUArray sz szs tps xs) = do
         xs' <- mapM lift' xs
         liftValues sz szs tps xs'
@@ -1152,19 +1151,22 @@ instance LiftComp LispState where
     where
       unlift' :: (Embed m e,GetType e) => (forall t. e t -> m (ConcreteValue t))
               -> LispValue '(lvl,tps) e -> m (LispUVal '(lvl,tps))
-      unlift' f val = case size val of
+      unlift' f lv@(LispValue sz val) = case sz of
         Size Nil Nil -> do
-          str <- extractStruct f (value val)
+          str <- extractStruct f val
           return $ LispU str
-        Size (Cons tp tps) (Cons sz szs) -> do
-          vals <- unliftValue f val
+        Size (Cons tp tps) (Cons sz' szs) -> do
+          vals <- unliftValue f lv
           vals' <- mapM (unlift' f) vals
           return $ LispUArray tp tps
             (Struct.map
-             (\e -> sizedType e (sizeIndices (size val))) (value val))
+             (\e -> sizedType e (sizeIndices sz)) val)
             vals'
 
-newtype LispPVal' sig = LispPVal' (LispPVal sig) deriving (Typeable,Eq,Ord,Show)
+newtype LispPVal' sig = LispPVal' (LispPVal sig) deriving (Typeable,Eq,Ord)
+
+instance Show (LispPVal' sig) where
+  showsPrec p (LispPVal' pval) = showsPrec p pval
 
 newtype LispPart = LispPart (DMap LispName LispPVal') deriving (Eq,Ord,Show)
 
@@ -1213,12 +1215,26 @@ instance GetConType NoRef where
 instance GetFieldType NoRef where
   getFieldType _ = error "getFieldType called for NoRef."
 
-instance GEq e => GEq (LispVar e) where
+instance (GetType e,GEq e) => GEq (LispVar e) where
   geq (NamedVar n1 cat1) (NamedVar n2 cat2)
     = if cat1/=cat2
       then Nothing
       else geq n1 n2
-  --geq (LispStore v1 i1 d1) 
+  geq (LispStore v1 i1 d1 e1) (LispStore v2 i2 d2 e2) = do
+    Refl <- geq v1 v2
+    Refl <- geq i1 i2
+    Refl <- geq d1 d2
+    Refl <- geq e1 e2
+    return Refl
+  geq (LispConstr v1@(LispValue _ _)) (LispConstr v2@(LispValue _ _)) = do
+    (Refl,Refl) <- geqValue v1 v2
+    return Refl
+  geq (LispITE c1 t1 f1) (LispITE c2 t2 f2) = do
+    Refl <- geq c1 c2
+    Refl <- geq t1 t2
+    Refl <- geq f1 f2
+    return Refl
+  geq _ _ = Nothing
 
 instance GEq LispExpr where
   geq (LispExpr e1) (LispExpr e2) = geq e1 e2
@@ -1274,3 +1290,18 @@ instance Embed Identity LispExpr where
   embedConst c = do
     v <- valueFromConcrete (error "LispExpr doesn't embed datatypes.") c
     return (LispExpr (Const v))
+
+instance Embed m e => Embed (StateT (LispState e) m) e where
+  type EmVar (StateT (LispState e) m) e = EmVar m e
+  type EmQVar (StateT (LispState e) m) e = EmQVar m e
+  type EmFun (StateT (LispState e) m) e = EmFun m e
+  type EmConstr (StateT (LispState e) m) e = EmConstr m e
+  type EmField (StateT (LispState e) m) e = EmField m e
+  type EmFunArg (StateT (LispState e) m) e = EmFunArg m e
+  type EmLVar (StateT (LispState e) m) e = EmLVar m e
+  embed = lift . embed
+  embedQuantifier q tps f = lift (embedQuantifier q tps f)
+  embedConstrTest name dt e = lift (embedConstrTest name dt e)
+  embedGetField name fname dt pr e = lift (embedGetField name fname dt pr e)
+  embedConst = lift . embedConst
+  embedTypeOf = lift . embedTypeOf
