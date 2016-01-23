@@ -71,4 +71,4 @@ instance GShow PValue where
 assignEq :: (Embed m e,GetType e) => e t -> ConcreteValue t -> m (e BoolType)
 assignEq var c = do
   val <- embedConst c
-  [expr| (= var val) |]
+  embed $ App (Eq (getType val) (Succ (Succ Zero))) (var ::: val ::: Nil)

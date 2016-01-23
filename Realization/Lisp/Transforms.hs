@@ -252,8 +252,8 @@ replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val 
                    -> List LispExpr tp
                    -> List LispExpr tp
     replaceInExprs rname ridx nname nexpr Nil = Nil
-    replaceInExprs rname ridx nname nexpr (Cons e es)
-      = Cons (replaceInExpr rname ridx nname nexpr e)
+    replaceInExprs rname ridx nname nexpr (e ::: es)
+      = (replaceInExpr rname ridx nname nexpr e) :::
         (replaceInExprs rname ridx nname nexpr es)
 
     replaceInSize :: LispName '(sz,tps)

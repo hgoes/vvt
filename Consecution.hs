@@ -7,6 +7,7 @@ import Args
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Backend (SMTMonad)
+import Language.SMTLib2.Internals.Interface
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
 import Data.Vector (Vector)
@@ -94,7 +95,7 @@ consecutionPerform dom cons lvl act = do
                                         init <- concretizeExpr
                                                 (consecutionState vars)
                                                 (consecutionInitial cons)
-                                        impl <- [expr| (=> actVar init) |]
+                                        impl <- actVar .=>. init
                                         assert impl
                                         --assert $ act .=>. (consecutionInitial cons (consecutionState vars))
                                         else return ()
@@ -106,7 +107,7 @@ consecutionPerform dom cons lvl act = do
                       (\cubes (loaded,act) -> do
                           mapM_ (\i -> do
                                     trm <- toDomainTerm ((consecutionCubes cons) Vec.! i) dom (consecutionState vars)
-                                    [expr| (=> act (not trm)) |] >>= assert
+                                    act .=>. (not' trm) >>= assert
                                 ) (IntSet.toList $ IntSet.difference cubes loaded)
                           return (cubes,act)
                       ) (consecutionFrames cons) loaded

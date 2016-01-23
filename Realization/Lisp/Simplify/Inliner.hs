@@ -122,10 +122,10 @@ inlineVar prog (LispConstr (LispValue sz val)) inl = (LispConstr (LispValue nsiz
     inlineStructs :: LispProgram -> List (Struct (Sized LispExpr lvl)) sig
                   -> Inlining -> (List (Struct (Sized LispExpr lvl)) sig,Inlining)
     inlineStructs prog Nil inl = (Nil,inl)
-    inlineStructs prog (Cons x xs) inl
+    inlineStructs prog (x ::: xs) inl
       = let (nx,inl1) = inlineStruct prog x inl
             (nxs,inl2) = inlineStructs prog xs inl1
-        in (Cons nx nxs,inl2)
+        in (nx ::: nxs,inl2)
 inlineVar prog (LispITE cond v1 v2) inl = (LispITE ncond nv1 nv2,inl3)
   where
     (ncond,inl1) = inlineExpr prog cond inl

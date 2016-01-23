@@ -13,6 +13,7 @@ import Language.SMTLib2.Debug
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Type.Nat
 import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Interface hiding (constant)
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 
 import Data.Map.Strict (Map)
@@ -99,13 +100,13 @@ refineValueSet threshold prog vs = stack $ do
     getValues cur nxt vs = do
       nvs <- stack $ do
         curEqs <- mapM (\val -> do
-                           eq <- eqValueState vs cur val
-                           [expr| (and # ${eq}) |]
+                           eqs <- eqValueState vs cur val
+                           and' eqs
                        ) (values vs)
-        [expr| (or # ${curEqs}) |] >>= assert
+        or' curEqs >>= assert
         mapM (\val -> do
                  nxtEq <- eqValueState vs nxt val
-                 [expr| (not (and # ${nxtEq})) |] >>= assert
+                 not' (and' nxtEq) >>= assert
              ) (values vs)
         hasMore <- checkSat
         if hasMore==Sat
@@ -148,13 +149,13 @@ initialValueSet threshold prog = stack $ do
                             pop
                             push
                             mapM (\val -> do
-                                     eq <- eqValueState vs'' vars val
-                                     [expr| (not (and # ${eq})) |] >>= assert
+                                     eqs <- eqValueState vs'' vars val
+                                     not' (and' eqs) >>= assert
                                  ) (values vs'')
                             getValues vars vs'')
                    else do
-                     eq <- eqValueState vs' vars nst
-                     [expr| (not (and # ${eq})) |] >>= assert
+                     eqs <- eqValueState vs' vars nst
+                     not' (and' eqs) >>= assert
                      getValues vars vs')
         else pop >> return vs
 
@@ -173,7 +174,7 @@ eqValueState vs vars st
                  in case geq (getType h') (getType e) of
                  Just Refl -> do
                    ce <- constant e
-                   [expr| (= h' ce) |]
+                   h' .==. ce
              ) (valueMask vs) st
 
 enforceThreshold :: Int -> ValueSet -> ValueSet

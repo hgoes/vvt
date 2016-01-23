@@ -6,8 +6,7 @@ import Language.SMTLib2.Internals.Type.Nat
 import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Expression
-import Language.SMTLib2.Internals.TH
+import Language.SMTLib2.Internals.Interface
 
 import Data.GADT.Compare
 import Data.GADT.Show
@@ -27,25 +26,25 @@ type family SizeList (sz :: [Type]) :: [Type] where
 
 arrayType :: List Repr sz -> Repr tp -> Repr (Arrayed sz tp)
 arrayType Nil tp = tp
-arrayType (Cons x xs) tp = ArrayRepr (Cons x Nil) (arrayType xs tp)
+arrayType (x ::: xs) tp = ArrayRepr (x ::: Nil) (arrayType xs tp)
 
 arrayedType :: Repr (Arrayed sz tp) -> List Repr sz -> Repr tp
 arrayedType tp Nil = tp
-arrayedType (ArrayRepr (Cons _ Nil) el) (Cons _ tps)
+arrayedType (ArrayRepr (_ ::: Nil) el) (_ ::: tps)
   = arrayedType el tps
 
 isArrayed :: Repr tp -> List Repr sz
           -> (forall tp'. (tp ~ Arrayed sz tp') => Repr tp' -> a)
           -> Maybe a
 isArrayed tp Nil f = Just (f tp)
-isArrayed (ArrayRepr (Cons idx Nil) tp) (Cons i is) f
+isArrayed (ArrayRepr (idx ::: Nil) tp) (i ::: is) f
   = case geq idx i of
   Just Refl -> isArrayed tp is f
   Nothing -> Nothing
 
 sizeListType :: List Repr sz -> List Repr (SizeList sz)
 sizeListType Nil = Nil
-sizeListType (Cons x xs) = Cons x (List.map (sizeListType xs) (ArrayRepr (Cons x Nil)))
+sizeListType (x ::: xs) = x ::: (List.map (sizeListType xs) (ArrayRepr (x ::: Nil)))
 
 data Size (e :: Type -> *) (sz :: [Type]) where
   Size :: List Repr sz -> List e (SizeList sz) -> Size e sz
@@ -77,7 +76,7 @@ createSize f sz = do
 deSize :: Monad m => Size e (sz ': szs)
        -> (forall tp. Repr sz -> e sz -> e (ArrayType '[sz] tp) -> m (e tp))
        -> m (Size e szs)
-deSize (Size (Cons tp tps) (Cons sz szs)) f = do
+deSize (Size (tp ::: tps) (sz ::: szs)) f = do
   nszs <- List.unmapM (sizeListType tps) szs (f tp sz)
   return (Size tps nszs)
 
@@ -85,7 +84,7 @@ asArray :: Repr idx -> Repr tp
         -> (forall tp'. (tp ~ ArrayType '[idx] tp')
             => Repr tp' -> Maybe a)
         -> Maybe a
-asArray idx (ArrayRepr (Cons idx' Nil) el) f = do
+asArray idx (ArrayRepr (idx' ::: Nil) el) f = do
   Refl <- geq idx idx'
   f el
 asArray _ _ _ = Nothing
@@ -95,10 +94,10 @@ asArrays :: Repr idx -> List Repr tps
              => List Repr tps' -> Maybe a)
          -> Maybe a
 asArrays _ Nil g = g Nil
-asArrays idx (Cons tp tps) g
+asArrays idx (tp ::: tps) g
   = asArray idx tp $
     \tp' -> asArrays idx tps $
-            \tps' -> g (Cons tp' tps')
+            \tps' -> g (tp' ::: tps')
 
 enSize :: GetType e => e sz -> Size e szs
        -> (forall szs'. (szs ~ List.Map szs' (ArrayType '[sz]))
@@ -106,14 +105,14 @@ enSize :: GetType e => e sz -> Size e szs
        -> Maybe a
 enSize sz (Size tps szs) f
   = asArrays tp tps $
-    \ntps -> case geq (sizeListType (Cons tp ntps))
-                  (Cons tp (runIdentity (List.mapM (return.getType) szs))) of
-             Just Refl -> f (Size (Cons tp ntps) (Cons sz szs))
+    \ntps -> case geq (sizeListType (tp ::: ntps))
+                  (tp ::: (runIdentity (List.mapM (return.getType) szs))) of
+             Just Refl -> f (Size (tp ::: ntps) (sz ::: szs))
   where
     tp = getType sz
 
 indexSize :: (Embed m e,GetType e) => Size e (sz ': szs) -> e sz -> m (Size e szs)
-indexSize sz idx = deSize sz (\_ _ arr -> [expr| (select arr idx) |])
+indexSize sz idx = deSize sz (\_ _ arr -> embed $ Select arr (idx ::: Nil))
 
 liftSizes :: (Embed m e,GetType e)
           => Repr sz -> List Repr szs
@@ -123,7 +122,7 @@ liftSizes tp tps vals = do
   sz <- embedConst len
   rangeR <- mapM embedConst range
   szs <- buildSize sz tps (zip rangeR (fmap (\(Size _ sz) -> sz) vals))
-  return (Size (Cons tp tps) szs)
+  return (Size (tp ::: tps) szs)
   where
     len = lengthValue tp (genericLength vals)
     range = sizeRange len
@@ -135,10 +134,10 @@ liftSizes tp tps vals = do
     buildSize sz tps vals = do
       def <- List.mapM (\tp -> defaultValue tp)
              (List.map (sizeListType tps)
-              (ArrayRepr (Cons (getType sz) Nil)))
+              (ArrayRepr ((getType sz) ::: Nil)))
       arr <- foldlM (\carr (idx,val) -> zipArr idx carr val
                     ) def vals
-      return (Cons sz arr)
+      return (sz ::: arr)
 
     zipArr :: (Embed m e,GetType e)
            => e sz
@@ -146,15 +145,15 @@ liftSizes tp tps vals = do
            -> List e lst
            -> m (List e (List.Map lst (ArrayType '[sz])))
     zipArr idx Nil Nil = return Nil
-    zipArr idx (Cons arr arrs) (Cons el els) = do
-      narr <- [expr| (store arr el idx) |]
+    zipArr idx (arr ::: arrs) (el ::: els) = do
+      narr <- embed $ Store arr (idx ::: Nil) el
       narrs <- zipArr idx arrs els
-      return (Cons narr narrs)
+      return (narr ::: narrs)
     
 unliftSize :: (Embed m e,GetType e) => (forall t. e t -> m (ConcreteValue t))
            -> Size e (sz ': szs)
            -> m [Size e szs]
-unliftSize f sz@(Size (Cons _ _) (Cons s _)) = do
+unliftSize f sz@(Size (_ ::: _) (s ::: _)) = do
   x <- f s
   mapM (\i -> do
            i' <- embedConst i
@@ -176,7 +175,7 @@ defaultValue RealRepr = embedConst $ RealValueC 0
 defaultValue (BitVecRepr bw) = embedConst $ BitVecValueC 0 bw
 defaultValue (ArrayRepr idx tp) = do
   def <- defaultValue tp
-  embed (App (ConstArray idx tp) (Cons def Nil))
+  embed $ ConstArray idx def
 defaultValue (DataRepr _) = error "defaultValue: User defined types don't have default values."
 
 lengthValue :: Repr tp -> Integer -> ConcreteValue tp
@@ -191,13 +190,13 @@ lengthValue (BitVecRepr bw) n
                 show (naturalToInteger bw)++" type."
 lengthValue (DataRepr _) n = error "lengthValue: Cannot represent length as user defined data type."
 
-eqSize :: (Embed m e) => Size e sz -> Size e sz -> m [e BoolType]
+eqSize :: (Embed m e,GetType e) => Size e sz -> Size e sz -> m [e BoolType]
 eqSize (Size _ sz1) (Size _ sz2)
-  = List.zipToListM (\x y -> [expr| (= x y) |]) sz1 sz2
+  = List.zipToListM (\x y -> embed $ x :==: y) sz1 sz2
 
-iteSize :: (Embed m e) => e BoolType -> Size e sz -> Size e sz -> m (Size e sz)
+iteSize :: (Embed m e,GetType e) => e BoolType -> Size e sz -> Size e sz -> m (Size e sz)
 iteSize c (Size tps sz1) (Size _ sz2) = do
-  nsz <- List.zipWithM (\x y -> [expr| (ite c x y) |]) sz1 sz2
+  nsz <- List.zipWithM (\x y -> embed $ ITE c x y) sz1 sz2
   return (Size tps nsz)
 
 parseSize' :: GetType e => (forall r. L.Lisp -> (forall tp. e tp -> r) -> r)
@@ -254,10 +253,10 @@ getIndex' :: (Embed m e,GetType e)
           -> e (Arrayed sz tp)
           -> m (e (Arrayed (List.StripPrefix sz idx) tp))
 getIndex' Nil _ _ e = return e
-getIndex' (Cons i is) (Cons j js) tp e
+getIndex' (i ::: is) (j ::: js) tp e
   = case geq (getType i) j of
   Just Refl -> do
-    e' <- [expr| (select e i) |]
+    e' <- embed $ Select e (i ::: Nil)
     getIndex' is js tp e'
 
 indexArray :: (Embed m e,GetType e)
@@ -265,8 +264,8 @@ indexArray :: (Embed m e,GetType e)
            -> Sized e sz tp
            -> m (e tp)
 indexArray Nil (Sized e) = return e
-indexArray (Cons i is) (Sized e) = do
-  ne <- [expr| (select e i) |]
+indexArray (i ::: is) (Sized e) = do
+  ne <- embed $ Select e (i ::: Nil)
   indexArray is (Sized ne)
 
 accessArray :: (Embed m e,GetType e)
@@ -289,12 +288,12 @@ accessArray' :: (Embed m e,GetType e)
                  -> m (a,e (Arrayed (List.StripPrefix sz idx) tp)))
              -> m (a,e (Arrayed sz tp))
 accessArray' Nil _ _ e f = f e
-accessArray' (Cons i is) (Cons j js) tp e f
+accessArray' (i ::: is) (j ::: js) tp e f
   = case geq (getType i) j of
   Just Refl -> do
-    el <- [expr| (select e i) |]
+    el <- embed $ Select e (i ::: Nil)
     (res,nel) <- accessArray' is js tp el f
-    ne <- [expr| (store e nel i) |]
+    ne <- embed $ Store e (i ::: Nil) nel
     return (res,ne)
 
 accessArrayElement :: (Embed m e,GetType e)
@@ -305,10 +304,10 @@ accessArrayElement :: (Embed m e,GetType e)
 accessArrayElement Nil (Sized e) f = do
   (res,ne) <- f e
   return (res,Sized ne)
-accessArrayElement (Cons i is) (Sized e) f = do
-  el <- [expr| (select e i) |]
+accessArrayElement (i ::: is) (Sized e) f = do
+  el <- embed $ Select e (i ::: Nil)
   (res,Sized nel) <- accessArrayElement is (Sized el) f
-  ne <- [expr| (store e nel i) |]
+  ne <- embed $ Store e (i ::: Nil) nel
   return (res,Sized ne)
 
 liftSized :: (Embed m e,GetType e)
@@ -319,10 +318,10 @@ liftSized :: (Embed m e,GetType e)
           -> m (Sized e (sz ': szs) tp)
 liftSized sz szs tp vals = do
   def <- defaultValue arrTp
-  arr <- embed $ App (ConstArray (Cons sz Nil) arrTp) (Cons def Nil)
+  arr <- embed $ ConstArray (sz ::: Nil) def
   ne <- foldlM (\carr (idx,Sized e) -> do
                    idx' <- embedConst idx
-                   [expr| (store carr e idx') |]
+                   embed $ Store carr (idx' ::: Nil) e
                ) arr (zip range vals)
   return (Sized ne)
   where

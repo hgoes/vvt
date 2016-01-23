@@ -1,6 +1,3 @@
-{-# LANGUAGE DeriveDataTypeable,TypeFamilies,ExistentialQuantification,
-             ScopedTypeVariables,ViewPatterns,FlexibleInstances,DeriveFunctor,
-             DeriveTraversable,DeriveFoldable #-}
 module Realization.Threaded.Value where
 
 import Args
@@ -12,11 +9,12 @@ import Language.SMTLib2.Internals.Type
 {-import Language.SMTLib2.Internals.Type.Nat-}
 import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
+import Language.SMTLib2.Internals.Interface as I
 {-import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct-}
 import Data.Map (Map)
 import qualified Data.Map as Map
-import LLVM.FFI hiding (Type,Value,Vector,ArrayType,GetType,getType)
+import LLVM.FFI hiding (Type,Value,Vector,ArrayType,GetType,getType,Select,Store)
 import Foreign.Ptr (Ptr)
 import Data.Typeable
 import Data.List (genericIndex,genericReplicate,genericLength)
@@ -196,21 +194,21 @@ defaultConst (TpVector tps) = ValVector (fmap defaultConst tps)
 defaultValue :: Embed m e => SymType -> m (SymVal e)
 defaultValue tp = foldExprs (\_ -> embedConst) (defaultConst tp)
 
-valEq :: (Embed m e) => SymVal e -> SymVal e -> m (e BoolType)
-valEq (ValBool x) (ValBool y) = [expr| (= x y) |]
-valEq (ValInt x) (ValInt y) = [expr| (= x y) |]
+valEq :: (Embed m e,GetType e) => SymVal e -> SymVal e -> m (e BoolType)
+valEq (ValBool x) (ValBool y) = embed $ x :==: y
+valEq (ValInt x) (ValInt y) = embed $ x :==: y
 valEq (ValPtr x _) (ValPtr y _) = do
   mp <- sequence $ Map.intersectionWith ptrEq x y
   case catMaybes $ Map.elems mp of
     [] -> embedConst (BoolValueC False)
     [x] -> return x
-    xs -> [expr| (or # ${xs}) |]
+    xs -> embed $ OrLst xs
   where
     ptrEq (c1,i1) (c2,i2) = do
       conds <- idxEq i1 i2
       case conds of
         Just conds' -> do
-          res <- [expr| (and # ${c1:c2:conds'}) |]
+          res <- embed $ AndLst (c1:c2:conds')
           return $ Just res
         Nothing -> return Nothing
     idxEq [] [] = return (Just [])
@@ -219,27 +217,27 @@ valEq (ValPtr x _) (ValPtr y _) = do
       case rest of
         Nothing -> return Nothing
         Just rest' -> do
-          c <- [expr| (= x y) |]
+          c <- embed $ x :==: y
           return $ Just (c:rest')
 valEq (ValThreadId x) (ValThreadId y) = do
   mp <- sequence $ Map.intersectionWith condEq x y
   case Map.elems mp of
     [] -> embedConst (BoolValueC False)
     [x] -> return x
-    xs -> [expr| (or # ${xs}) |]
+    xs -> embed $ OrLst xs
   where
-    condEq c1 c2 = [expr| (and c1 c2) |]
+    condEq c1 c2 = embed $ c1 :&: c2
 valEq (ValCondition x) (ValCondition y) = do
   mp <- sequence $ Map.intersectionWith condEq x y
   case Map.elems mp of
     [] -> embedConst (BoolValueC False)
     [x] -> return x
-    xs -> [expr| (or # ${xs}) |]
+    xs -> embed $ OrLst xs
   where
-    condEq c1 c2 = [expr| (and c1 c2) |]
+    condEq c1 c2 = embed $ c1 :&: c2
 valEq (ValVector xs) (ValVector ys) = do
   lst <- sequence $ zipWith valEq xs ys
-  [expr| (and # ${lst}) |]
+  embed $ AndLst lst
 
 idxList :: [AccessPattern] -> [e IntType] -> [Either Integer (e IntType)]
 idxList [] [] = []
@@ -263,8 +261,8 @@ derefPointer idx mp
     (\el1 el2 -> do
         (c1,dyn1) <- el1
         (c2,dyn2) <- el2
-        rc <- [expr| (or c1 c2) |]
-        rdyn <- sequence $ zipWith (\d1 d2 -> [expr| (ite c1 d1 d2) |]) dyn1 dyn2
+        rc <- c1 .|. c2
+        rdyn <- sequence $ zipWith (\d1 d2 -> ite c1 d1 d2) dyn1 dyn2
         return (rc,rdyn))
     [ (loc { offsetPattern = pat },do
           d <- dyn
@@ -284,18 +282,18 @@ derefPointer idx mp
       = let (restPat,restDyn) = toAccess is
         in (DynamicAccess:restPat,do
                nn <- embedConst (IntValueC n)
-               ni <- [expr| (+ i nn) |]
+               ni <- embed $ i :+: nn
                return $ nn:restDyn)
     deref [DynamicAccess] [n] (Left i:is)
       = let (restPat,restDyn) = toAccess is
         in (DynamicAccess:restPat,do
                ri <- embedConst (IntValueC i)
-               ni <- [expr| (+ ri n) |]
+               ni <- embed $ ri :+: n
                return (ni:restDyn))
     deref [DynamicAccess] [n] (Right i:is)
       = let (restPat,restDyn) = toAccess is
         in (DynamicAccess:restPat,do
-               ni <- [expr| (+ n i) |]
+               ni <- embed $ n :+: i
                return (ni:restDyn))
     deref (StaticAccess n:pat) dyn idx
       = let (restPat,restDyn) = deref pat dyn idx
@@ -328,33 +326,33 @@ withOffset f n (Struct xs) st = do
     withStruct _ [] = return (Invalid,[],st)
 withOffset _ n obj st = error $ "withOffset: Cannot index "++show obj++" with "++show n
 
-symITE :: (GShow e,Embed m e) => e BoolType -> SymVal e -> SymVal e -> m (SymVal e)
-symITE cond (ValBool x) (ValBool y) = fmap ValBool [expr| (ite cond x y) |]
-symITE cond (ValInt x) (ValInt y) = fmap ValInt [expr| (ite cond x y) |]
+symITE :: forall m e. (GShow e,Embed m e) => e BoolType -> SymVal e -> SymVal e -> m (SymVal e)
+symITE cond (ValBool x) (ValBool y) = fmap ValBool $ ite cond x y
+symITE cond (ValInt x) (ValInt y) = fmap ValInt $ ite cond x y
 symITE cond (ValPtr x tp) (ValPtr y _) = do
   z <- sequence $ Map.mergeWithKey
        (\_ (pc,pi) (qc,qi)
         -> Just (do
-                    nc <- [expr| (ite cond pc qc) |]
-                    ni <- sequence $ zipWith (\p q -> [expr| (ite cond p q) |]) pi qi
+                    nc <- ite cond pc qc
+                    ni <- sequence $ zipWith (\p q -> ite cond p q) pi qi
                     return (nc,ni)))
        (fmap (\(pc,pi) -> do
-                 nc <- [expr| (and pc cond) |]
+                 nc <- pc .&. cond
                  return (nc,pi)))
        (fmap (\(qc,qi) -> do
-                 nc <- [expr| (and qc (not cond)) |]
+                 nc <- qc .&. (not' cond :: m (e BoolType))
                  return (nc,qi))) x y
   return (ValPtr z tp)
 symITE cond (ValThreadId x) (ValThreadId y)
   = fmap ValThreadId
-    (sequence $ Map.mergeWithKey (\_ p q -> Just $ [expr| (ite cond p q) |])
-     (fmap (\c -> [expr| (and c cond) |]))
-     (fmap (\c -> [expr| (and c (not cond)) |])) x y)
+    (sequence $ Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
+     (fmap (\c -> c .&. cond))
+     (fmap (\c -> c .&. (not' cond))) x y)
 symITE cond (ValCondition x) (ValCondition y)
   = fmap ValCondition
-    (sequence $ Map.mergeWithKey (\_ p q -> Just $ [expr| (ite cond p q) |])
-     (fmap (\c -> [expr| (and c cond) |]))
-     (fmap (\c -> [expr| (and c (not cond)) |])) x y)
+    (sequence $ Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
+     (fmap (\c -> c .&. cond))
+     (fmap (\c -> embed (Not cond) >>= embed.(c :&:))) x y)
 symITE cond (ValVector v1) (ValVector v2)
   = fmap ValVector $ sequence $ zipWith (symITE cond) v1 v2
 symITE cond v1 v2 = error $ "Cannot ITE differently typed values "++show v1++" and "++show v2
@@ -365,33 +363,34 @@ symITEs ((val,c):rest) = do
   rval <- symITEs rest
   symITE c val rval
 
-arrITE :: (GShow e,Embed m e) => e BoolType -> SymArray e -> SymArray e -> m (SymArray e)
-arrITE cond (ArrBool x) (ArrBool y) = fmap ArrBool [expr| (ite cond x y) |]
-arrITE cond (ArrInt x) (ArrInt y) = fmap ArrInt [expr| (ite cond x y) |]
+arrITE :: forall m e. (GShow e,Embed m e) => e BoolType -> SymArray e -> SymArray e
+       -> m (SymArray e)
+arrITE cond (ArrBool x) (ArrBool y) = fmap ArrBool (ite cond x y)
+arrITE cond (ArrInt x) (ArrInt y) = fmap ArrInt (ite cond x y)
 arrITE cond (ArrPtr x tp) (ArrPtr y _) = do
   z <- sequence $ Map.mergeWithKey
        (\_ (pc,pi) (qc,qi)
         -> Just (do
-                    nc <- [expr| (ite cond pc qc) |]
-                    ni <- sequence $ zipWith (\p q -> [expr| (ite cond p q) |]) pi qi
+                    nc <- ite cond pc qc
+                    ni <- sequence $ zipWith (\p q -> ite cond p q) pi qi
                     return (nc,ni)))
        (fmap (\(pc,pi) -> do
-                 nc <- [expr| (ite cond pc ((as const (Array (Int) Bool)) false)) |]
+                 nc <- ite cond pc (constArray (int ::: Nil) false)
                  return (nc,pi)))
        (fmap (\(qc,qi) -> do
-                 nc <- [expr| (ite cond ((as const (Array (Int) Bool)) false) qc) |]
+                 nc <- ite cond (constArray (int ::: Nil) false) qc
                  return (nc,qi))) x y
   return (ArrPtr z tp)
 arrITE cond (ArrThreadId x) (ArrThreadId y)
   = fmap ArrThreadId
-    (sequence $ Map.mergeWithKey (\_ p q -> Just $ [expr| (ite cond p q) |])
-     (fmap (\c -> [expr| (ite cond c ((as const (Array (Int) Bool)) false)) |]))
-     (fmap (\c -> [expr| (ite cond ((as const (Array (Int) Bool)) false) c) |])) x y)
+    (sequence $ Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
+     (fmap (\c -> ite cond c (constArray (int ::: Nil) false)))
+     (fmap (\c -> ite cond (constArray (int ::: Nil) false) c)) x y)
 arrITE cond (ArrCondition x) (ArrCondition y)
   = fmap ArrCondition
-    (sequence $ Map.mergeWithKey (\_ p q -> Just $ [expr| (ite cond p q) |])
-     (fmap (\c -> [expr| (ite cond c ((as const (Array (Int) Bool)) false)) |]))
-     (fmap (\c -> [expr| (ite cond ((as const (Array (Int) Bool)) false) c) |])) x y)
+    (sequence $ Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
+     (fmap (\c -> ite cond c (constArray (int ::: Nil) false)))
+     (fmap (\c -> ite cond (constArray (int ::: Nil) false) c)) x y)
 arrITE cond (ArrVector x) (ArrVector y)
   = fmap ArrVector $ sequence $ zipWith (arrITE cond) x y
 
@@ -421,13 +420,12 @@ withDynOffset :: (Embed m e)
               -> [Struct b]
               -> c
               -> m (MemoryAccessResult e a,[Struct b],c)
-withDynOffset ite f n xs st = with 0 xs st
+withDynOffset ite f n xs st = with (0::Integer) xs st
   where
     with i (x:xs) st = do
       (res,nx,st1) <- f x st
       (ress,nxs,st2) <- with (i+1) xs st1
-      i' <- embedConst (IntValueC i)
-      cond <- [expr| (= n i') |]
+      cond <- n .==. (I.constant i)
       nx' <- structITE ite cond nx x
       return (CondAccess cond res ress,
               nx':nxs,
@@ -464,40 +462,40 @@ accessArray f idx arr st = do
   return (res,narr,nst)
 
 extractValue :: (Embed m e) => e IntType -> SymArray e -> m (SymVal e)
-extractValue idx (ArrBool arr) = fmap ValBool [expr| (select arr idx) |]
-extractValue idx (ArrInt arr) = fmap ValInt [expr| (select arr idx) |]
+extractValue idx (ArrBool arr) = fmap ValBool $ select1 arr idx
+extractValue idx (ArrInt arr) = fmap ValInt $ select1 arr idx
 extractValue idx (ArrPtr arr tp) = do
   mp <- mapM (\(conds,idxs) -> do
-                 cond <- [expr| (select conds idx) |]
-                 idx <- mapM (\i -> [expr| (select i idx) |]) idxs
+                 cond <- select1 conds idx
+                 idx <- mapM (\i -> select1 i idx) idxs
                  return (cond,idx)
              ) arr
   return $ ValPtr mp tp
 extractValue idx (ArrThreadId arr)
-  = fmap ValThreadId (mapM (\conds -> [expr| (select conds idx) |]) arr)
+  = fmap ValThreadId (mapM (\conds -> select1 conds idx) arr)
 extractValue idx (ArrCondition arr)
-  = fmap ValCondition (mapM (\conds -> [expr| (select conds idx) |]) arr)
+  = fmap ValCondition (mapM (\conds -> select1 conds idx) arr)
 extractValue idx (ArrVector arrs)
   = fmap ValVector (mapM (extractValue idx) arrs)
 
 insertValue :: (Embed m e) => e IntType -> SymVal e -> SymArray e -> m (SymArray e)
-insertValue idx (ValBool b) (ArrBool arr) = fmap ArrBool [expr| (store arr b idx) |]
-insertValue idx (ValInt i) (ArrInt arr) = fmap ArrInt [expr| (store arr i idx) |]
+insertValue idx (ValBool b) (ArrBool arr) = fmap ArrBool $ store1 arr idx b
+insertValue idx (ValInt i) (ArrInt arr) = fmap ArrInt $ store1 arr idx i
 insertValue idx (ValPtr p _) (ArrPtr ps tp) = do
   mp <- sequence $ Map.intersectionWith
         (\(ncond,noff) (conds,offs) -> do
-            rcond <- [expr| (store conds ncond idx) |]
-            roffs <- sequence $ zipWith (\noff offs -> [expr| (store offs noff idx) |]) noff offs
+            rcond <- store1 conds idx ncond
+            roffs <- sequence $ zipWith (\noff offs -> store1 offs idx noff) noff offs
             return (rcond,roffs)
         ) p ps
   return (ArrPtr mp tp)
 insertValue idx (ValThreadId t) (ArrThreadId ts)
   = fmap ArrThreadId $ sequence $ Map.intersectionWith
-    (\nval arr -> [expr| (store arr nval idx) |])
+    (\nval arr -> store1 arr idx nval)
     t ts
 insertValue idx (ValCondition t) (ArrCondition ts)
   = fmap ArrCondition $ sequence $ Map.intersectionWith
-    (\nval arr -> [expr| (store arr nval idx) |])
+    (\nval arr -> store1 arr idx nval)
     t ts
 insertValue idx (ValVector vals) (ArrVector arr)
   = fmap ArrVector $ sequence $ zipWith (insertValue idx) vals arr
@@ -534,7 +532,7 @@ accessAlloc f (i:is) (ValDynamic arrs sz) st = do
   where
     nf i val st = do
       (acc,res,nst) <- f val st
-      cond <- [expr| (>= i sz) |]
+      cond <- embed $ i :>=: sz
       return (CondAccess cond Invalid acc,res,nst)
     
 accessAllocTyped :: (Embed m e,GShow e)
@@ -731,7 +729,7 @@ compositeITE :: (Embed m e,GetType e,Composite arg) => e BoolType -> arg e -> ar
 compositeITE c arg1 arg2
   = foldExprs (\rev e1 -> do
                   let e2 = accessComposite rev arg2
-                  [expr| (ite c e1 e2) |]
+                  embed $ ITE c e1 e2
               ) arg1
 
 compositeITEs :: (Embed m e,GetType e,Composite arg) => [(arg e,e BoolType)] -> m (arg e)
@@ -786,23 +784,21 @@ patternMatch (DynamicAccess:xs) (StaticAccess y:ys) (ix:ixs) iy = do
   case rest of
     Nothing -> return Nothing
     Just rest' -> do
-      y' <- embedConst (IntValueC y)
-      c <- [expr| (= ix y') |]
+      c <- ix .==. (I.constant y)
       return $ Just $ c:rest'
 patternMatch (StaticAccess x:xs) (DynamicAccess:ys) ix (iy:iys) = do
   rest <- patternMatch xs ys ix iys
   case rest of
     Nothing -> return Nothing
     Just rest' -> do
-      x' <- embedConst (IntValueC x)
-      c <- [expr| (= iy x') |]
+      c <- iy .==. (I.constant x)
       return $ Just $ c:rest'
 patternMatch (DynamicAccess:xs) (DynamicAccess:ys) (ix:ixs) (iy:iys) = do
   rest <- patternMatch xs ys ixs iys
   case rest of
     Nothing -> return Nothing
     Just rest' -> do
-      c <- [expr| (= ix iy) |]
+      c <- ix .==. iy
       return $ Just $ c:rest'
 patternMatch _ _ _ _ = return Nothing
 
@@ -819,7 +815,7 @@ allocITE cond (ValStatic xs) (ValStatic ys) = do
       return (z:zs)
 allocITE cond (ValDynamic x sx) (ValDynamic y sy) = do
   z <- structITE arrITE cond x y
-  sz <- [expr| (ite cond sx sy) |]
+  sz <- ite cond sx sy
   return $ ValDynamic z sz
 
 instance Composite SymVal where
@@ -890,7 +886,7 @@ instance Composite SymVal where
   eqComposite = valEq
 
 mkArr :: Repr tp -> Repr (ArrayType '[IntType] tp)
-mkArr = ArrayRepr (Cons IntRepr Nil)
+mkArr = ArrayRepr (IntRepr ::: Nil)
 
 instance Composite SymArray where
   type CompDescr SymArray = SymType

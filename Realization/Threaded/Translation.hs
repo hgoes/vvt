@@ -13,12 +13,13 @@ import qualified Realization.Lisp as L
 import qualified Realization.Lisp.Array as L
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Interface
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
+import qualified Language.SMTLib2.Internals.Expression as E
 
 import LLVM.FFI hiding (GetType,getType,And)
 
@@ -53,13 +54,14 @@ toLispProgram rel = trace ("Reverse state: "++show stateSt) $
                                   , L.programGates = gts
                                   , L.programNext = DMap.insert errorName nextError next
                                   , L.programProperty = [L.LispExpr
-                                                         (App Not (Cons (L.LispRef
-                                                                         (L.NamedVar errorName
-                                                                          L.State) Nil
-                                                                        ) Nil))]
+                                                         (E.App E.Not ((L.LispRef
+                                                                        (L.NamedVar errorName
+                                                                         L.State) Nil
+                                                                       ) ::: Nil))]
                                   , L.programInit = DMap.insert errorName
                                                     (L.LispInit $ L.LispValue (L.Size Nil Nil) $
-                                                     Singleton $ L.Sized $ L.LispExpr (Const $ BoolValue False))
+                                                     Singleton $ L.Sized $ L.LispExpr
+                                                     (E.Const $ BoolValue False))
                                                     init
                                   , L.programInvariant = inv
                                   , L.programAssumption = []
@@ -83,9 +85,9 @@ toLispProgram rel = trace ("Reverse state: "++show stateSt) $
     nextError = L.LispConstr $ L.LispValue (L.Size Nil Nil) $
                 Singleton $ L.Sized $ runIdentity $ do
       notAsserts <- mapM (\e -> let ne = translateLLVMExpr inpSt stateSt gtTrans e
-                                in [expr| (not ne) |]
+                                in not' ne
                          ) (llvmAssertions rel)
-      [expr| (or # ${notAsserts}) |]
+      or' notAsserts
     threadNames = Map.fromList [ (th,"thread"++show n)
                                | (th,n) <- zip (Map.keys $ threadStateDesc $ llvmStateDesc rel)
                                            [1..] ]
@@ -100,7 +102,7 @@ toLispProgram rel = trace ("Reverse state: "++show stateSt) $
            [ L.LispRef (L.NamedVar (stepName (Just tname)) L.Input) Nil
            | th <- Map.keys $ threadStateDesc $ llvmStateDesc rel
            , let Just tname = Map.lookup th threadNames ]] ++
-          [ L.LispExpr (App (Logic Implies (Succ (Succ Zero)))
+          [ L.LispExpr (E.App (E.Logic E.Implies (Succ (Succ Zero)))
                         (List.list2 yieldAct step))
           | (th,blk,sblk) <- llvmInternalYields rel
           , let yieldAct = case th of
@@ -478,7 +480,7 @@ reverseInput threadNames desc = (DMap.unions [mp1,mp2,mp3],st)
                         | (th,thd) <- Map.toList $ threadInputDesc desc
                         , let Just tname = Map.lookup th threadNames
                         , (i,tp) <- Map.toList (nondetTypes thd) ]
-    ctrue = L.LispExpr (Const $ BoolValue True)
+    ctrue = L.LispExpr (E.Const $ BoolValue True)
     st = ProgramInput
          { mainInput = ThreadInput
                        { step = L.LispRef (L.NamedVar (stepName Nothing) L.Input) Nil
@@ -542,7 +544,7 @@ translateExpr :: Monad m
               -> RExpr inp st tp
               -> m (L.LispExpr tp)
 translateExpr f g h (RExpr e) = do
-  ne <- mapExpr undefined undefined undefined undefined undefined undefined undefined
+  ne <- E.mapExpr undefined undefined undefined undefined undefined undefined undefined
         (translateExpr f g h) e
   return $ L.LispExpr ne
 translateExpr f g h (RInput rev) = f rev
@@ -589,10 +591,10 @@ toAllocVal (TpStatic len tp) (L.Size Nil Nil) (Struct xs)
   where
     toStatic' :: Int -> List (Struct (L.Sized e sz)) tps' -> [Th.Struct (SymVal e)]
     toStatic' 0 Nil = []
-    toStatic' n (Cons x xs) = (toStructVal tp nx):(toStatic' (n-1) xs)
+    toStatic' n (x ::: xs) = (toStructVal tp nx):(toStatic' (n-1) xs)
       where
         nx = runIdentity (Struct.mapM (\(L.Sized e) -> return e) x)
-toAllocVal (TpDynamic tp) (L.Size (Cons IntRepr Nil) (Cons e Nil)) x
+toAllocVal (TpDynamic tp) (L.Size (IntRepr ::: Nil) (e ::: Nil)) x
   = case getType e of
   IntRepr -> ValDynamic (toStructArray tp x) e
 
@@ -604,7 +606,7 @@ toStructArray (Th.Struct tps) (Struct xs) = Th.Struct (toStructArr' tps xs)
     toStructArr' :: forall tps'. [Th.Struct SymType] -> List (Struct (L.Sized e '[IntType])) tps'
                  -> [Th.Struct (SymArray e)]
     toStructArr' [] Nil = []
-    toStructArr' (x:xs) (Cons tp tps) = (toStructArray x tp):(toStructArr' xs tps)
+    toStructArr' (x:xs) (tp ::: tps) = (toStructArray x tp):(toStructArr' xs tps)
 
 toStructVal :: forall tps e. GetType e => Th.Struct SymType -> Struct e tps
             -> Th.Struct (SymVal e)
@@ -614,7 +616,7 @@ toStructVal (Th.Struct tps) (Struct xs) = Th.Struct (toStructVal' tps xs)
     toStructVal' :: forall tps'. [Th.Struct SymType] -> List (Struct e) tps'
                  -> [Th.Struct (SymVal e)]
     toStructVal' [] Nil = []
-    toStructVal' (x:xs) (Cons tp tps) = (toStructVal x tp):(toStructVal' xs tps)
+    toStructVal' (x:xs) (tp ::: tps) = (toStructVal x tp):(toStructVal' xs tps)
 
 fromSymVal :: GetType e => SymVal e -> (forall tps. Struct Repr tps -> Struct e tps -> a) -> a
 fromSymVal val f = fromSymVal' val
@@ -630,7 +632,7 @@ fromSymVal' (ValPtr trgs tp) f
       _ -> reifyList
            (\el h -> h (Singleton el))
            idx
-           (\idx' -> g (Struct (Cons (Singleton cond) idx')))
+           (\idx' -> g (Struct ((Singleton cond) ::: idx')))
     ) (Map.elems trgs)
     (\xs -> f (Struct xs))
 fromSymVal' (ValThreadId trgs) f
@@ -707,7 +709,7 @@ toSymVal (TpPtr trgs tp) (Struct lst)
              (\e -> case e of
                Singleton c -> case getType c of
                  BoolRepr -> return (c,[])
-               Struct (Cons (Singleton c) idx) -> case getType c of
+               Struct ((Singleton c) ::: idx) -> case getType c of
                  BoolRepr -> do
                    idx' <- List.toList (\i -> case i of
                                          Singleton i' -> case getType i' of
@@ -733,26 +735,26 @@ toSymVal (TpVector tps) (Struct lst)
   where
     toVector :: forall tps. [SymType] -> List (Struct e) tps -> [SymVal e]
     toVector [] Nil = []
-    toVector (tp:tps) (Cons e es) = (toSymVal tp e):toVector tps es
+    toVector (tp:tps) (e ::: es) = (toSymVal tp e):toVector tps es
 
 toSymArray :: forall e tps. GetType e => SymType -> Struct (L.Sized e '[IntType]) tps
            -> SymArray e
 toSymArray TpBool (Singleton (L.Sized e)) = case getType e of
-  ArrayRepr (Cons IntRepr Nil) BoolRepr -> ArrBool e
+  ArrayRepr (IntRepr ::: Nil) BoolRepr -> ArrBool e
 toSymArray TpInt (Singleton (L.Sized e)) = case getType e of
-  ArrayRepr (Cons IntRepr Nil) IntRepr -> ArrInt e
+  ArrayRepr (IntRepr ::: Nil) IntRepr -> ArrInt e
 toSymArray (TpPtr trgs tp) (Struct lst)
   = ArrPtr (Map.fromList $ zip
             (Map.keys trgs)
             (runIdentity $ List.toList
              (\e -> case e of
                Singleton (L.Sized c) -> case getType c of
-                 ArrayRepr (Cons IntRepr Nil) BoolRepr -> return (c,[])
-               Struct (Cons (Singleton (L.Sized c)) idx) -> case getType c of
-                 ArrayRepr (Cons IntRepr Nil) BoolRepr -> do
+                 ArrayRepr (IntRepr ::: Nil) BoolRepr -> return (c,[])
+               Struct ((Singleton (L.Sized c)) ::: idx) -> case getType c of
+                 ArrayRepr (IntRepr ::: Nil) BoolRepr -> do
                    idx' <- List.toList (\i -> case i of
                                          Singleton (L.Sized i') -> case getType i' of
-                                           ArrayRepr (Cons IntRepr Nil) IntRepr
+                                           ArrayRepr (IntRepr ::: Nil) IntRepr
                                              -> return i') idx
                    return (c,idx')) lst)
             ) tp
@@ -762,20 +764,20 @@ toSymArray (TpThreadId trgs) (Struct lst)
     (runIdentity $ List.toList
      (\e -> case e of
        Singleton (L.Sized c) -> case getType c of
-         ArrayRepr (Cons IntRepr Nil) BoolRepr -> return c) lst)
+         ArrayRepr (IntRepr ::: Nil) BoolRepr -> return c) lst)
 toSymArray (TpCondition trgs) (Struct lst)
   = ArrCondition $ Map.fromList $ zip
     (Map.keys trgs)
     (runIdentity $ List.toList
      (\e -> case e of
        Singleton (L.Sized c) -> case getType c of
-         ArrayRepr (Cons IntRepr Nil) BoolRepr -> return c) lst)
+         ArrayRepr (IntRepr ::: Nil) BoolRepr -> return c) lst)
 toSymArray (TpVector tps) (Struct lst)
   = ArrVector $ toVector tps lst
   where
     toVector :: forall tps. [SymType] -> List (Struct (L.Sized e '[IntType])) tps -> [SymArray e]
     toVector [] Nil = []
-    toVector (tp:tps) (Cons e es) = (toSymArray tp e):toVector tps es
+    toVector (tp:tps) (e ::: es) = (toSymArray tp e):toVector tps es
 
 toLispType :: SymType -> (forall tps. Struct Repr tps -> a) -> a
 toLispType TpBool f = f (Singleton bool)
@@ -784,7 +786,7 @@ toLispType (TpPtr trgs tp) f
   = List.reifyList (\ptr g -> case [ () | DynamicAccess <- offsetPattern ptr] of
                      [] -> g (Singleton bool)
                      xs -> List.reifyList (\_ g -> g (Singleton int)) xs $
-                           \idx -> g (Struct (Cons (Singleton bool) idx))
+                           \idx -> g (Struct ((Singleton bool) ::: idx))
                    ) (Map.keys trgs) $
     \lst -> f (Struct lst)
 toLispType (TpThreadId trgs) f

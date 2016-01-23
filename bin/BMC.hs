@@ -12,7 +12,7 @@ import Language.SMTLib2.Debug
 import Language.SMTLib2.Pipe (createPipe)
 import Language.SMTLib2.Z3
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Embed
 import Args
@@ -146,8 +146,8 @@ main = do
             then push
             else return ()
           if inc
-            then [expr| (not ${snd $ head sts}) |] >>= assert
-            else [expr| (not (or # ${fmap snd sts})) |] >>= assert
+            then not' (snd $ head sts) >>= assert
+            else not' (or' $ fmap snd sts) >>= assert
           res <- checkSat
           case res of
             Sat -> do
@@ -168,11 +168,11 @@ main = do
       assert invar
       let gts0 = startingProgress prog
       (assumps,gts1) <- declareAssumptions
-                        (\name e -> [define| e |])
+                        (\name e -> defineVar e)
                         prog st inp gts0
       mapM_ assert assumps
       (asserts,gts2) <- declareAssertions
-                        (\name e -> [define| e |])
+                        (\name e -> defineVar e)
                         prog st inp gts1
       res <- if inc
              then do
@@ -185,7 +185,7 @@ main = do
                liftIO $ putStrLn $ "Level "++show n++(case diff of
                                                        Nothing -> ""
                                                        Just diff' -> "("++show diff'++")")
-               negProp <- [expr| (not (and # ${asserts})) |]
+               negProp <- not' $ and' asserts
                assert negProp
                r <- checkSat
                case r of
@@ -204,21 +204,21 @@ main = do
        Left True -> return $ Left True
        Left False -> do
          (nxt,gts3) <- declareNextState
-                       (\name e -> [define| e |])
+                       (\name e -> defineVar e)
                        prog st inp gts2
          ninp <- createComposite (\tp rev -> declareVar tp
                                  ) (inputAnnotation prog)
          if compl
            then do
            noProgress <- eqComposite st nxt
-           progress <- [expr| (not noProgress) |]
+           progress <- not' noProgress
            assert progress
            else return ()
-         conjAss <- [expr| (and # ${asserts}) |]
+         conjAss <- and' asserts
          bmc prog compl inc l (n+1) startTime nxt ninp ((st,conjAss):sts)
 
     checkCompleteness prog st = stack $ do
       end <- isEndState prog st
-      [expr| (not end) |] >>= assert
+      not' end >>= assert
       res <- checkSat
       return $ res==Unsat

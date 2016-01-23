@@ -6,6 +6,7 @@ import Realization.Lisp.Array
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Interface
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Type.Nat
 import Language.SMTLib2.Internals.Type.Struct (Struct(..))
@@ -26,8 +27,8 @@ import Data.Functor.Identity
 ineqPredicates :: (Embed m e,GetType e) => [e IntType] -> m [e BoolType]
 ineqPredicates [] = return []
 ineqPredicates (i:is) = do
-  lts <- mapM (\j -> [expr| (< i j) |]) is
-  les <- mapM (\j -> [expr| (<= i j) |]) is
+  lts <- mapM (\j -> i .<. j) is
+  les <- mapM (\j -> i .<=. j) is
   rest <- ineqPredicates is
   return (lts++les++rest)
 

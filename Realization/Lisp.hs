@@ -16,7 +16,8 @@ import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree)
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Interface as I
+import qualified Language.SMTLib2.Internals.Expression as E
 import qualified Language.SMTLib2.Internals.Backend as B
 import Data.Dependent.Map (DMap,DSum(..))
 import qualified Data.Dependent.Map as DMap
@@ -88,7 +89,7 @@ lispVarType (LispConstr val) = lispValueType val
 lispVarType (LispITE _ v _) = lispVarType v
 
 data LispExpr (t::Type) where
-  LispExpr :: Expression NoRef NoRef NoRef NoRef NoRef NoRef NoRef LispExpr t
+  LispExpr :: E.Expression NoRef NoRef NoRef NoRef NoRef NoRef NoRef LispExpr t
            -> LispExpr t
   LispRef :: LispVar LispExpr '(sz,tps)
           -> List Natural idx
@@ -346,8 +347,8 @@ lispValueToLisp (LispValue sz val)
                 lispStructsToLisp tps)
     lispStructsToLisp :: List (Struct (Sized LispExpr lvl)) sig -> [L.Lisp]
     lispStructsToLisp Nil = []
-    lispStructsToLisp (Cons x xs) = lispStructToLisp x:
-                                    lispStructsToLisp xs
+    lispStructsToLisp (x ::: xs) = lispStructToLisp x:
+                                   lispStructsToLisp xs
     lispSizeToLisp :: Size LispExpr lvl -> [L.Lisp]
     lispSizeToLisp (Size _ lst) = runIdentity $ List.toList (return.lispExprToLisp) lst
 
@@ -365,8 +366,8 @@ lispSortToLisp sz tp = case sz of
 
     structTypesToLisp :: List (Struct Repr) sig -> [L.Lisp]
     structTypesToLisp Nil = []
-    structTypesToLisp (Cons x xs) = structTypeToLisp x:
-                                    structTypesToLisp xs
+    structTypesToLisp (x ::: xs) = structTypeToLisp x:
+                                   structTypesToLisp xs
 
 parseProgram :: L.Lisp -> LispProgram
 parseProgram descr = case descr of
@@ -462,7 +463,7 @@ parseLispStructTypes [] f = f Nil
 parseLispStructTypes (x:xs) f
   = parseLispStructType x $
     \tp -> parseLispStructTypes xs $
-      \tps -> f (Cons tp tps)
+      \tps -> f (tp ::: tps)
 
 parseVarMap :: [L.Lisp] -> (DMap LispName Annotation,Map T.Text LispSort)
 parseVarMap lst
@@ -584,13 +585,13 @@ parseIdx (Singleton r) [] f
 parseIdx (Struct args) (i:is) f
   = parseListIdx args i $
     \prI sub -> parseIdx sub is $
-                \idx r -> f (Cons prI idx) r
+                \idx r -> f (prI ::: idx) r
 
 parseListIdx :: List e tps -> Integer
              -> (forall idx. Natural idx -> e (List.Index tps idx) -> LispParse a)
              -> LispParse a
-parseListIdx (Cons x xs) 0 f = f Zero x
-parseListIdx (Cons x xs) n f
+parseListIdx (x ::: xs) 0 f = f Zero x
+parseListIdx (x ::: xs) n f
   = parseListIdx xs (n-1) $
     \idx -> f (Succ idx)
 
@@ -609,7 +610,7 @@ parseDynIdx :: Map T.Text LispSort -- ^ State vars
 parseDynIdx _ _ _ [] f = f Nil
 parseDynIdx st inp gts (x:xs) f = parseLispExpr st inp gts Nothing x $
                                   \e -> parseDynIdx st inp gts xs $
-                                        \es -> f (Cons e es)
+                                        \es -> f (e ::: es)
 
 parseLispExprT :: Map T.Text LispSort -- ^ State vars
                -> Map T.Text LispSort -- ^ Input vars
@@ -725,7 +726,7 @@ parseLispValue state inps gates
     parseStructs lvl (x:xs) f
       = parseStruct lvl x $
         \x' -> parseStructs lvl xs $
-        \xs' -> f (Cons x' xs')
+        \xs' -> f (x' ::: xs')
 
     parseVal :: List Repr sz
              -> L.Lisp
@@ -819,17 +820,17 @@ instance TransitionRelation LispProgram where
                      (NamedVar name State)
                      (LispConstr val)
                   | (name@(LispName _ _ _) :=> LispInit val) <- DMap.toList (programInit prog) ] of
-        [] -> LispExpr (Const (BoolValue True))
+        [] -> LispExpr (E.Const (BoolValue True))
         [e] -> e
-        xs -> allEqFromList xs (\n arg -> LispExpr (App (Logic And n) arg))
+        xs -> LispExpr (AndLst xs)
   stateInvariant prog st inp = do
     invars <- mapM (relativize st inp
                     (error "Realization.Lisp: invariant references gates.")
                    ) (programInvariant prog)
     case invars of
-      [] -> [expr| true |]
+      [] -> I.constant True
       [x] -> return x
-      xs -> [expr| (and # ${xs}) |]
+      xs -> embed $ AndLst xs
   startingProgress _ = LispState DMap.empty
   declareAssumptions mkGate prog st inp gts
     = runStateT (mapM (relativize st inp (declareGate mkGate prog st inp)
@@ -857,8 +858,8 @@ instance TransitionRelation LispProgram where
   defaultPredicateExtractor _ = return emptyRSM
   extractPredicates prog rsm (LispConcr full) (LispPart part) = liftIO $ do
     (rsm2,lines) <- mineStates (createPipe "z3" ["-smt2","-in"]) rsm1
-    return (rsm2,concat $ fmap (\ln -> [mkLine Ge ln
-                                       ,mkLine Gt ln]) lines)
+    return (rsm2,concat $ fmap (\ln -> [mkLine E.Ge ln
+                                       ,mkLine E.Gt ln]) lines)
     where
       rsm1 = addRSMState activePc ints rsm
       pcs = DMap.filterWithKey (\name val -> case DMap.lookup name (programState prog) of
@@ -886,7 +887,8 @@ instance TransitionRelation LispProgram where
                   _ -> return [])
                 (return.concat)
       
-      mkLine :: OrdOp -> (Integer,[(LispRev IntType,Integer)]) -> CompositeExpr LispState BoolType
+      mkLine :: E.OrdOp -> (Integer,[(LispRev IntType,Integer)])
+             -> CompositeExpr LispState BoolType
       mkLine op (c,coeff)
         = mkCompExpr
           (\st -> do
@@ -895,19 +897,19 @@ instance TransitionRelation LispProgram where
                               let var = accessComposite rev st
                               case val of
                                 1 -> return var
-                                -1 -> [expr| (- var) |]
+                                -1 -> embed $ Neg var
                                 _ -> do
                                   rval <- embedConst (IntValueC val)
-                                  [expr| (* rval var) |]
+                                  embed $ rval :*: var
                           ) coeff
               case sum of
-                [x] -> embed (App (Ord NumInt op) (Cons c' (Cons x Nil)))
+                [x] -> embed (Ord op c' x)
                 _ -> do
-                  rsum <- [expr| (+ # ${sum}) |]
-                  embed (App (Ord NumInt op) (Cons c' (Cons rsum Nil))))
+                  rsum <- embed $ PlusLst sum
+                  embed (Ord op c' rsum))
           (programState prog)
   isEndState prog (LispState st)
-    = [expr| (not (or # ${conds})) |]
+    = embed (OrLst conds) >>= embed.Not
     where
       conds = [ r | name :=> val <- DMap.toList pcs
                   , r <- case val of
@@ -967,7 +969,7 @@ relativize :: (Embed m e,GetType e)
            -> LispExpr t
            -> m (e t)
 relativize st inp gts (LispExpr e) = do
-  e' <- mapExpr err err err err err err err
+  e' <- E.mapExpr err err err err err err err
         (relativize st inp gts) e
   embed e'
   where
@@ -994,39 +996,37 @@ relativize st inp gts e = error $ "Realization.Lisp.relativize: Cannot relativiz
 
 oneOf :: Embed m e
       => [e BoolType] -> m (e BoolType)
-oneOf [] = [expr| true |]
+oneOf [] = I.constant True
 oneOf [x] = return x
 oneOf xs = do
   disj <- oneOf' [] xs
-  [expr| (or # ${disj}) |]
+  embed $ OrLst disj
   where
     oneOf' :: Embed m e
            => [e BoolType] -> [e BoolType] -> m [e BoolType]
     oneOf' _ [] = return []
     oneOf' xs (y:ys) = do
-      negs <- mapM (\e -> [expr| (not e) |]) (xs++ys)
+      negs <- mapM (embed.Not) (xs++ys)
       conj <- let arg = y:negs
-              in [expr| (and # ${arg}) |]
+              in embed $ AndLst arg
       rest <- oneOf' (y:xs) ys
       return (conj:rest)
 
 atMostOneOf :: Embed m e
             => [e BoolType] -> m (e BoolType)
-atMostOneOf [] = [expr| true |]
-atMostOneOf [x] = [expr| true |]
-atMostOneOf xs = do
-  disj <- oneOf' [] xs
-  [expr| (or # ${disj}) |]
+atMostOneOf [] = I.constant True
+atMostOneOf [x] = I.constant True
+atMostOneOf xs = oneOf' [] xs >>= embed.OrLst
   where
     oneOf' :: Embed m e
            => [e BoolType] -> [e BoolType] -> m [e BoolType]
     oneOf' xs [] = do
-      negs <- mapM (\e -> [expr| (not e) |]) xs
-      conj <- [expr| (and # ${negs}) |]
+      negs <- mapM (embed.Not) xs
+      conj <- embed $ AndLst negs
       return [conj]
     oneOf' xs (y:ys) = do
-      negs <- mapM (\e -> [expr| (not e) |]) (xs++ys)
-      trm <- [expr| (and # ${y:negs}) |]
+      negs <- mapM (embed.Not) (xs++ys)
+      trm <- embed $ AndLst (y:negs)
       rest <- oneOf' (y:xs) ys
       return (trm:rest)
 
@@ -1091,6 +1091,9 @@ relativizeIndex st inp gts idx = List.mapM (relativize st inp gts) idx
 instance Composite LispState where
   type CompDescr LispState = DMap LispName Annotation
   type RevComp LispState = LispRev
+  compositeType mp = LispState $
+                     DMap.fromList [ name :=> (LispValue' (compositeType (sz,tps)))
+                                   | (name@(LispName sz tps _) :=> _) <- DMap.toList mp ]
   foldExprs f (LispState mp) = do
     let lst = DMap.toAscList mp
     nlst <- mapM (\(name@(LispName _ _ _) :=> (LispValue' val)) -> do
@@ -1112,7 +1115,7 @@ instance Composite LispState where
     eqs <- sequence [ eqComposite v1 v2
                     | (name@(LispName _ _ _) :=> (LispValue' v1)) <- DMap.toList mp1
                     , let LispValue' v2 = mp2 DMap.! name ]
-    [expr| (and # ${eqs}) |]
+    embed $ AndLst eqs
   revName _ (LispRev (LispName _ _ name) _) = T.unpack name
 
 --instance GetType LispRev where
@@ -1155,7 +1158,7 @@ instance LiftComp LispState where
         Size Nil Nil -> do
           str <- extractStruct f val
           return $ LispU str
-        Size (Cons tp tps) (Cons sz' szs) -> do
+        Size (tp ::: tps) (sz' ::: szs) -> do
           vals <- unliftValue f lv
           vals' <- mapM (unlift' f) vals
           return $ LispUArray tp tps
@@ -1289,7 +1292,7 @@ instance Embed Identity LispExpr where
   embedGetField = error "LispExpr doesn't embed datatypes."
   embedConst c = do
     v <- valueFromConcrete (error "LispExpr doesn't embed datatypes.") c
-    return (LispExpr (Const v))
+    return (LispExpr (E.Const v))
 
 instance Embed m e => Embed (StateT (LispState e) m) e where
   type EmVar (StateT (LispState e) m) e = EmVar m e

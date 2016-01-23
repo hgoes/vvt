@@ -36,6 +36,7 @@ instance Show BackendType where
   show Domain = "domain"
   show Initiation = "init"
   show Interpolation = "interp"
+  show Base = "base"
 
 instance Read BackendType where
   readsPrec _ ('c':'o':'n':'s':rest) = [(ConsecutionBackend,rest)]
@@ -43,6 +44,7 @@ instance Read BackendType where
   readsPrec _ ('d':'o':'m':'a':'i':'n':rest) = [(Domain,rest)]
   readsPrec _ ('i':'n':'i':'t':rest) = [(Initiation,rest)]
   readsPrec _ ('i':'n':'t':'e':'r':'p':rest) = [(Interpolation,rest)]
+  readsPrec _ ('b':'a':'s':'e':rest) = [(Base,rest)]
   readsPrec _ _ = []
 
 instance Show BackendUse where

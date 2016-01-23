@@ -11,6 +11,9 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals.Backend (SMTMonad)
 import Language.SMTLib2.Internals.Embed (embedConst)
 import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Interface hiding (constant)
+import qualified Language.SMTLib2.Internals.Interface as I
+import Language.SMTLib2.Internals.Embed
 import "mtl" Control.Monad.State (runStateT,modify)
 import "mtl" Control.Monad.Trans (lift,liftIO,MonadIO)
 import Prelude hiding (mapM,sequence)
@@ -46,31 +49,34 @@ addRSMState loc instrs st
 createCoeffs :: (Backend b,Ord var) => Set var -> SMT b (Coeffs b var)
 createCoeffs instrs = do
   coeffs <- mapM (\instr -> do
-                     c <- [declare| Int |]
+                     c <- declareVar int
                      return (instr,c)
                  ) (Set.toAscList instrs)
-  c <- [declare| Int |]
+  c <- declareVar int
   return $ Coeffs { coeffsVar = Map.fromAscList coeffs
                   , coeffsConst = c
                   }
 
 notAllZero :: Backend b => Coeffs b var -> SMT b (Expr b BoolType)
 notAllZero coeffs = do
-  args <- sequence [ [expr| (not (= c 0)) |] | c <- Map.elems (coeffsVar coeffs) ]
-  [expr| (or # ${args}) |]
+  args <- sequence [ I.constant (0::Integer) >>=
+                     embed.(c :==:) >>=
+                     embed.Not
+                   | c <- Map.elems (coeffsVar coeffs) ]
+  embed $ OrLst args
 
 createLine :: (Backend b,Ord var) => Coeffs b var -> Map var Integer -> SMT b (Expr b BoolType)
 createLine coeffs vars = do
   lhs <- case Map.elems $ Map.intersectionWith (\c i -> do
                                                    i' <- constant (IntValueC i)
-                                                   [expr| (* c ${i'}) |]
+                                                   embed $ c :*: i'
                                                ) (coeffsVar coeffs) vars of
          [x] -> x
          xs -> do
            rxs <- sequence xs
-           [expr| (+ # ${rxs}) |]
+           embed $ PlusLst rxs
   let rhs = coeffsConst coeffs
-  [expr| (= lhs rhs) |]
+  embed $ lhs :==: rhs
 
 createLines :: (Backend b,Ord var) => Coeffs b var -> Set (Map var Integer)
                -> SMT b (Map (ClauseId b) (Map var Integer))
@@ -116,11 +122,11 @@ instance (Show var,Ord var) => Composite (RSMVars var) where
   accessComposite (RSMVar instr) (RSMVars mp) = mp Map.! instr
   eqComposite (RSMVars mp1) (RSMVars mp2) = do
     res <- sequence $ Map.elems $ Map.intersectionWith
-           (\e1 e2 -> [expr| (= e1 e2) |]) mp1 mp2
+           (\e1 e2 -> embed $ e1 :==: e2) mp1 mp2
     case res of
       [] -> embedConst (BoolValueC True)
       [e] -> return e
-      _ -> [expr| (and # ${res}) |]
+      _ -> embed $ AndLst res
   revType _ _ (RSMVar _) = IntRepr
 
 instance GetType (RSMVar v) where

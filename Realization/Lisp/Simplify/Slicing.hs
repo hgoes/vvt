@@ -113,7 +113,7 @@ defaultExpr tp = case tp of
   IntRepr -> LispExpr (Const $ IntValue 0)
   RealRepr -> LispExpr (Const $ RealValue 0)
   BitVecRepr bw -> LispExpr (Const $ BitVecValue 0 bw)
-  ArrayRepr idx el -> LispExpr (App (ConstArray idx el) (Cons (defaultExpr el) Nil))
+  ArrayRepr idx el -> LispExpr (App (ConstArray idx el) ((defaultExpr el) ::: Nil))
 
 recDependencies :: LispProgram -> DepState -> Set AnyName
 recDependencies prog dep = case todo dep of
@@ -167,6 +167,6 @@ getDependenciesExpr _ st = st
 
 getDependenciesIndex :: List LispExpr lvl -> DepState -> DepState
 getDependenciesIndex Nil st = st
-getDependenciesIndex (Cons e es) st
+getDependenciesIndex (e ::: es) st
   = getDependenciesExpr e $
     getDependenciesIndex es st

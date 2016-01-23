@@ -29,7 +29,7 @@ Flag Native-MathSAT
 Executable vvt-enc
   Main-Is:              bin/Encode.hs
   Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
-  Extensions:           KindSignatures,RankNTypes,DataKinds,TypeFamilies,GADTs,QuasiQuotes,StandaloneDeriving,FlexibleContexts,TypeOperators,TypeSynonymInstances,MultiParamTypeClasses,FlexibleInstances,ScopedTypeVariables,PolyKinds,ViewPatterns,OverloadedStrings
+  Extensions:           KindSignatures,RankNTypes,DataKinds,TypeFamilies,GADTs,StandaloneDeriving,FlexibleContexts,TypeOperators,TypeSynonymInstances,MultiParamTypeClasses,FlexibleInstances,ScopedTypeVariables,PolyKinds,ViewPatterns,OverloadedStrings,DeriveFunctor,DeriveFoldable,DeriveTraversable
 
 Executable vvt-pp
   Main-Is:              bin/Pretty.hs
@@ -37,7 +37,7 @@ Executable vvt-pp
 
 Executable vvt-bmc
   Main-Is:              bin/BMC.hs
-  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,AllowAmbiguousTypes
+  Extensions:           DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,AllowAmbiguousTypes
   Build-Depends:        base,mtl,containers,constraints,data-fix,smtlib2,smtlib2-pipe,smtlib2-z3,smtlib2-debug,atto-lisp,bytestring,attoparsec,text,dependent-sum,dependent-map,transformers,time
 
 Executable vvt-verify
@@ -51,16 +51,16 @@ Executable vvt-verify
   if flag(Native-MathSAT)
     Build-Depends:      smtlib2-mathsat
     CPP-Options:        -DNATIVE_MATHSAT
-  Extensions:           TemplateHaskell,QuasiQuotes,DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,CPP
+  Extensions:           DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,CPP
 
 Executable vvt-predicates
   Build-Depends:        base,containers,linear,fgl,smtlib2 >= 0.3, smtlib2-pipe, smtlib2-debug, dependent-map, atto-lisp, attoparsec, bytestring, transformers, mtl, text, dependent-sum, vector, constraints
-  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,QuasiQuotes,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
+  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
   Main-Is:              bin/Predicates.hs
 
 Executable vvt-opt
   Build-Depends:        base,mtl,dependent-sum,dependent-map,bytestring,attoparsec,atto-lisp,transformers,containers,text,constraints,smtlib2 >= 0.3,smtlib2-pipe,smtlib2-debug
-  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,QuasiQuotes,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
+  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
   Main-Is:              bin/Optimize.hs
   
 --executable vvt

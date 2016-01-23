@@ -14,7 +14,8 @@ module Domain
        )-} where
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Interface
+import Language.SMTLib2.Internals.Expression (NoVar)
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Monad
 import Language.SMTLib2.Internals.Embed
@@ -41,6 +42,7 @@ import Data.GADT.Compare
 import Data.GADT.Show
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
+import System.IO
 
 -- Test Modules
 --import Language.SMTLib2.Pipe
@@ -80,8 +82,8 @@ initialDomain verb backend ann = do
         vars <- createComposite (\tp rev -> declareVarNamed tp
                                             (revName (Proxy::Proxy a) rev)
                                 ) ann
-        top <- [expr| true |]
-        bot <- [expr| false |]
+        top <- true
+        bot <- false
         return DomainInstance { domainVars = vars
                               , domainNodes = Map.fromList
                                               [(domainTop,top)
@@ -94,13 +96,13 @@ initialDomain verb backend ann = do
     return $ name=="Z3"
   pool <- createSMTPool backend initInst
   return $ Domain { domainGraph = mkGraph
-                                  [(domainTop,(CompositeExpr ann (Const (BoolValue True)),DMap.empty))
-                                  ,(domainBot,(CompositeExpr ann (Const (BoolValue False)),DMap.empty))]
+                                  [(domainTop,(CompositeExpr ann (ConstBool True),DMap.empty))
+                                  ,(domainBot,(CompositeExpr ann (ConstBool False),DMap.empty))]
                                   [(domainTop,domainBot,())]
                   , domainGArg = gArg
                   , domainNodesRev = Map.fromList
-                                     [(CompositeExpr ann (Const (BoolValue True)),domainTop)
-                                     ,(CompositeExpr ann (Const (BoolValue False)),domainBot)]
+                                     [(CompositeExpr ann (ConstBool True),domainTop)
+                                     ,(CompositeExpr ann (ConstBool False),domainBot)]
                   , domainNextNode = 2
                   , domainPool = pool
                   , domainVerbosity = verb
@@ -125,71 +127,74 @@ domainTop,domainBot :: Node
 domainTop = 0
 domainBot = 1
 
-quickImplication :: (Extract i e)
-                 => AnalyzedExpr i e BoolType
-                 -> AnalyzedExpr i e BoolType
+quickImplication :: (Extract i e,GetType e)
+                 => i -> e BoolType -> e BoolType
                  -> Maybe Bool
-quickImplication [expr| false |] _ = Just True
-quickImplication _ [expr| true |] = Just True
-quickImplication [expr| true |] [expr| (<= (var $a) (var $b)) |]
-  = Just (defaultEq a b)
-quickImplication [expr| true |] [expr| (>= (var $a) (var $b)) |]
-  = Just (defaultEq a b)
-quickImplication
-  [expr| (< (var $a1) (var $a2)) |]
-  [expr| (< (var $b1) (var $b2)) |]
+quickImplication i (extract i -> Just (ConstBool False)) _ = Just True
+quickImplication i _ (extract i -> Just (ConstBool True)) = Just True
+quickImplication i
+  (extract i -> Just (ConstBool True))
+  (extract i -> Just ((extract i -> Just (Var a)) :<=: (extract i -> Just (Var b))))
+  = Just $ defaultEq a b
+quickImplication i
+  (extract i -> Just (ConstBool True))
+  (extract i -> Just ((extract i -> Just (Var a)) :>=: (extract i -> Just (Var b))))
+  = Just $ defaultEq a b
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :<: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :<: (extract i -> Just (Var b2))))
   = Just $ (defaultEq a1 b1) && (defaultEq a2 b2)
-quickImplication
-  [expr| (= (var $a1) (var $a2)) |]
-  [expr| (= (var $b1) (var $b2)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :==: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :==: (extract i -> Just (Var b2))))
   = Just $ ((defaultEq a1 b1) && (defaultEq a2 b2)) ||
     ((defaultEq a1 b2) && (defaultEq a2 b1))
-quickImplication
-  [expr| (<= (var $a1) (var $a2)) |]
-  [expr| (<= (var $b1) (var $b2)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :<=: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :<=: (extract i -> Just (Var b2))))
   = Just (defaultEq a1 b1 && defaultEq a2 b2)
-quickImplication
-  [expr| (< (var $a1) (var $a2)) |]
-  [expr| (<= (var $b1) (var $b2)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :<: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :<=: (extract i -> Just (Var b2))))
   = Just (defaultEq a1 b1 && defaultEq a2 b2)
-quickImplication
-  [expr| (<= (var $_) (var $_)) |]
-  [expr| (< (var $_) (var $_)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var _)) :<=: (extract i -> Just (Var _))))
+  (extract i -> Just ((extract i -> Just (Var _)) :<: (extract i -> Just (Var _))))
   = Just False
-quickImplication
-  [expr| (> (var $a1) (var $a2)) |]
-  [expr| (> (var $b1) (var $b2)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :>: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :>: (extract i -> Just (Var b2))))
   = Just (defaultEq a1 b1 && defaultEq a2 b2)
-quickImplication
-  [expr| (> (var $a1) (var $a2)) |]
-  [expr| (<= (var $b1) (var $b2)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :>: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :<=: (extract i -> Just (Var b2))))
   = Just (defaultEq a2 b1 && defaultEq a1 b2)
-quickImplication
-  [expr| (<= (var $_) (var $_)) |]
-  [expr| (> (var $_) (var $_)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var _)) :<=: (extract i -> Just (Var _))))
+  (extract i -> Just ((extract i -> Just (Var _)) :>: (extract i -> Just (Var _))))
   = Just False
-quickImplication
-  [expr| (> (var $a1) (var $a2)) |]
-  [expr| (< (var $b1) (var $b2)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :>: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :<: (extract i -> Just (Var b2))))
   = Just (defaultEq a1 b2 && defaultEq a2 b1)
-quickImplication
-  [expr| (< (var $a1) (var $a2)) |]
-  [expr| (> (var $b1) (var $b2)) |]
+quickImplication i
+  (extract i -> Just ((extract i -> Just (Var a1)) :<: (extract i -> Just (Var a2))))
+  (extract i -> Just ((extract i -> Just (Var b1)) :>: (extract i -> Just (Var b2))))
   = Just (defaultEq a1 b2 && defaultEq a2 b1)
-quickImplication
-  [expr| (var $a) |]
-  [expr| (var $b) |]
+quickImplication i
+  (extract i -> Just (Var a))
+  (extract i -> Just (Var b))
   = Just (defaultEq a b)
-quickImplication [expr| (var $_) |] _
+quickImplication i (extract i -> Just (Var _)) _
   = Just False
-quickImplication _ [expr| (var $_) |]
+quickImplication i _ (extract i -> Just (Var _))
   = Just False
-quickImplication _ _ = Nothing
+quickImplication _ _ _ = Nothing
 
 checkImplication :: Backend b => Expr b BoolType -> Expr b BoolType -> SMT b Bool
 checkImplication e1 e2 = stack $ do
   assert e1
-  [expr| (not e2) |] >>= assert
+  not' e2 >>= assert
   r <- checkSat
   return $ r==Unsat
 
@@ -226,7 +231,7 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
        if domainVerbosity dom >= 2
          then (do
                   --termStr <- renderDomainPred pred dom
-                  liftIO $ putStrLn $ "Adding predicate "++show pred)
+                  liftIO $ hPutStrLn stderr $ "Adding predicate "++show pred)
          else return ()
        let newNd = domainNextNode dom
            gr0 = insNode (newNd,(pred,vars)) (domainGraph dom)
@@ -249,7 +254,6 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
                          })
   where
     vars = collectRevVars DMap.empty pred
-    apred = analyze' () pred
     poseQuery :: Composite a => Domain a
               -> (forall b. Backend b
                   => DomainInstance a b
@@ -284,13 +288,13 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
     findParents cur = do
       let curCtx = context (domainGraph dom) cur
           (curTerm,curTermVars) = lab' curCtx
-      impl <- case quickImplication apred (analyze' () curTerm) of
+      impl <- case quickImplication () pred curTerm of
                Just r -> return r
                Nothing -> fmap not $ poseQuery dom
                           (\inst -> do
                               pred' <- concretizeExpr (domainVars inst) pred
                               term' <- concretizeExpr (domainVars inst) curTerm
-                              nterm <- [expr| (not term') |]
+                              nterm <- not' term'
                               return [pred',nterm])
       if not impl
         then return Nothing
@@ -302,13 +306,13 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
     findChildren cur = do
       let curCtx = context (domainGraph dom) cur
           (curTerm,curTermVars) = lab' curCtx
-      impl <- case quickImplication (analyze' () curTerm) apred of
+      impl <- case quickImplication () curTerm pred of
                Just r -> return r
                Nothing -> fmap not $ poseQuery dom
                           (\inst -> do
                               term' <- concretizeExpr (domainVars inst) curTerm
                               pred' <- concretizeExpr (domainVars inst) pred
-                              npred <- [expr| (not pred') |]
+                              npred <- not' pred'
                               return [term',npred])
       if not impl
         then return Nothing
@@ -362,13 +366,13 @@ toDomainTerm state dom vars = do
                   if act
                     then return pr
                     else (do
-                      npr <- [expr| (not pr) |]
+                      npr <- not' pr
                       return npr)
                ) (Vec.toList state)
   case conj of
-    [] -> [expr| true |]
+    [] -> true
     [x] -> return x
-    xs -> [expr| (and # ${xs}) |]
+    xs -> and' xs
 
 toDomainTerms :: (Embed m e,Composite a,GetType e)
               => AbstractState a -> Domain a -> a e -> m (Vector (Node,e BoolType,Bool))

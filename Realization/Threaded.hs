@@ -12,12 +12,14 @@ import Realization.Threaded.Options
 import Realization.Common (getFunctionName)
 import Args
 
-import Language.SMTLib2 hiding (define)
-import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2 hiding (define,constant)
+import Language.SMTLib2.Internals.Expression (Expression)
+import qualified Language.SMTLib2.Internals.Expression as E
+import Language.SMTLib2.Internals.Interface as I
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type
 
-import LLVM.FFI hiding (GetType,getType)
+import LLVM.FFI hiding (GetType,getType,And)
 import qualified LLVM.FFI as LLVM
 import Foreign.Ptr (Ptr,nullPtr)
 import Foreign.Storable (peek)
@@ -47,7 +49,7 @@ import Text.Show
 
 import Debug.Trace
 
-data RExpr inp st tp = RExpr (Expression NoVar NoVar NoFun NoCon NoField NoVar NoVar (RExpr inp st) tp)
+data RExpr inp st tp = RExpr (Expression E.NoVar E.NoVar E.NoFun E.NoCon E.NoField E.NoVar E.NoVar (RExpr inp st) tp)
                      | RInput (RevComp inp tp)
                      | RState (RevComp st tp)
                      | RRef (DefExpr tp)
@@ -144,13 +146,13 @@ instance GetType LLVMInit where
 
 instance (Composite inp,Composite st)
          => Embed (StateT (RealizationState inp st) IO) (RExpr inp st) where
-  type EmVar (StateT (RealizationState inp st) IO) (RExpr inp st) = NoVar
-  type EmQVar (StateT (RealizationState inp st) IO) (RExpr inp st) = NoVar
-  type EmFun (StateT (RealizationState inp st) IO) (RExpr inp st) = NoFun
-  type EmConstr (StateT (RealizationState inp st) IO) (RExpr inp st) = NoCon
-  type EmField (StateT (RealizationState inp st) IO) (RExpr inp st) = NoField
-  type EmFunArg (StateT (RealizationState inp st) IO) (RExpr inp st) = NoVar
-  type EmLVar (StateT (RealizationState inp st) IO) (RExpr inp st) = NoVar
+  type EmVar (StateT (RealizationState inp st) IO) (RExpr inp st) = E.NoVar
+  type EmQVar (StateT (RealizationState inp st) IO) (RExpr inp st) = E.NoVar
+  type EmFun (StateT (RealizationState inp st) IO) (RExpr inp st) = E.NoFun
+  type EmConstr (StateT (RealizationState inp st) IO) (RExpr inp st) = E.NoCon
+  type EmField (StateT (RealizationState inp st) IO) (RExpr inp st) = E.NoField
+  type EmFunArg (StateT (RealizationState inp st) IO) (RExpr inp st) = E.NoVar
+  type EmLVar (StateT (RealizationState inp st) IO) (RExpr inp st) = E.NoVar
   embed e = return (RExpr e)
   embedQuantifier = error "Cannot embed quantifier into RExpr."
   embedGetField = error "Cannot embed datatypes into RExpr."
@@ -159,8 +161,8 @@ instance (Composite inp,Composite st)
     val <- valueFromConcrete
            (error "Cannot embed datatypes into RExpr.")
            c
-    return (RExpr (Const val))
-  embedTypeOf (RExpr e) = expressionType (return.getType) (return.getType) (return.getFunType)
+    return (RExpr (E.Const val))
+  embedTypeOf (RExpr e) = E.expressionType (return.getType) (return.getType) (return.getFunType)
                           (return.getConType) (return.getFieldType) (return.getType) (return.getType)
                           embedTypeOf e
   embedTypeOf (RRef (DefExpr _ tp)) = return tp
@@ -415,14 +417,14 @@ withAliasAnalysis mod act = do
 -}
 
 mkAnd :: (Composite inp,Composite st) => [RExpr inp st BoolType] -> Realization inp st (RExpr inp st BoolType)
-mkAnd [] = [expr| true |]
+mkAnd [] = true
 mkAnd [x] = return x
-mkAnd xs = [expr| (and # ${xs}) |]
+mkAnd xs = and' xs
 
 mkOr :: (Composite inp,Composite st) => [RExpr inp st BoolType] -> Realization inp st (RExpr inp st BoolType)
-mkOr [] = [expr| false |]
+mkOr [] = false
 mkOr [x] = return x
-mkOr xs = [expr| (or # ${xs}) |]
+mkOr xs = or' xs
 
 constantIntValue :: (Composite inp,Composite st) => Integer -> Realization inp st (InstructionValue inp st)
 constantIntValue n = do
@@ -627,12 +629,12 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
          arg <- liftIO $ getOperand call 2
          arg' <- realizeValue thread arg edge
          return (Just arg')
-     cTrue <- [expr| true |]
+     cTrue <- true
      ntarget <- sequence $ Map.mapWithKey
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue thId') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- act .&. cond
                     return (ncond,idx)) (tpPtr $ symbolicType thId')
      nedge <- addEvent (WriteEvent { target = ntarget
                                    , writeContent = InstructionValue { symbolicType = TpThreadId (Map.singleton call ())
@@ -651,7 +653,8 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
      retTrg' <- realizeValue thread retTrg edge
      rthId <- memoryRead thread i thId' edge
      liftIO $ hPutStrLn stderr $ "join: "++show (symbolicValue rthId)
-     gt <- sequence [ [expr| (and cact (not ${RState $ ThreadActivation call'})) |]
+     gt <- sequence [ embed (Not $ RState $ ThreadActivation call') >>=
+                      embed.(cact :&:)
                     | (call',cact) <- Map.toList $ valThreadId $
                                       symbolicValue rthId
                     ] >>= mkOr
@@ -683,7 +686,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue retTrg') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- embed $ act :&: cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType retTrg')
      joinReturn <- mkResults (symbolicValue rthId) (Map.keys $ tpThreadId $ symbolicType rthId)
@@ -696,7 +699,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                                              , eventThread = thread
                                              , eventOrigin = castUp call
                                              }) edge
-     nact <- [expr| (and act cond) |]
+     nact <- embed $ act :&: cond
      return (Just nedge,nact)
    "__thread_kill" -> do
      thId <- liftIO $ getOperand call 0
@@ -713,7 +716,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                         Nothing -> return Nothing
                       case Map.lookup th (valThreadId $ symbolicValue rthId) of
                         Just cond -> do
-                          rcond <- [expr| (and act cond) |]
+                          rcond <- embed $ act :&: cond
                           return [(rcond,ret)]
               ) (tpThreadId $ symbolicType rthId)
      modify $ \s -> s { termEvents = Map.unionWith (++) (termEvents s) terms }
@@ -722,14 +725,14 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
      val <- liftIO $ getOperand call 0
      val' <- realizeValue thread val edge
      nact <- if dedicatedErrorState opts
-             then [expr| (and act ${valBool $ symbolicValue val'}) |]
+             then embed $ act :&: (valBool $ symbolicValue val')
              else return act
-     assertion <- [expr| (=> act ${valBool $ symbolicValue val'}) |]
+     assertion <- embed $ act :=>: (valBool $ symbolicValue val')
      modify $ \s -> s { assertions = (thread,assertion):(assertions s) }
      return (Just edge,nact)
    "__error" -> do
      dontStep <- gets $ Map.null . threadStateDesc . stateAnnotation
-     assertion <- [expr| (not act) |]
+     assertion <- embed $ Not act
      modify $ \s -> s { assertions = (thread,assertion):(assertions s) }
      return (Nothing,act)
    "pthread_mutex_init" -> do
@@ -752,7 +755,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- embed $ act :&: cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType ptr')
      writeValue <- constantBoolValue True
@@ -761,7 +764,8 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                                    , eventThread = thread
                                    , eventOrigin = castUp call
                                    }) edge1
-     nact <- [expr| (and act (not ${valBool $ symbolicValue lock})) |]
+     nact <- embed (Not $ valBool $ symbolicValue lock) >>=
+             embed.(act :&:)
      return (Just edge2,nact)
    "pthread_mutex_unlock" -> do
      ptr <- liftIO $ getOperand call 0
@@ -773,7 +777,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- embed $ act :&: cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType ptr')
      writeValue <- constantBoolValue False
@@ -803,11 +807,11 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- embed $ act :&: cond
                     return (ncond,idx)) (tpPtr $ symbolicType ptr')
      writeValue <- case symbolicValue lock of
        ValVector [wr,ValInt rd] -> do
-         nrd <- [expr| (+ rd 1) |]
+         nrd <- rd .+. (cint 1)
          return $ ValVector [wr,ValInt nrd]
      edge2 <- addEvent (WriteEvent { target = ntarget
                                    , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
@@ -816,7 +820,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                                    , eventThread = thread
                                    , eventOrigin = castUp call
                                    }) edge1
-     nact <- [expr| (and act (not ${valBool $ head $ valVector $ symbolicValue lock})) |]
+     nact <- act .&. (not' $ valBool $ head $ valVector $ symbolicValue lock)
      return (Just edge2,nact)
    "pthread_rwlock_wrlock" -> do
      ptr <- liftIO $ getOperand call 0
@@ -828,11 +832,11 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- act .&. cond
                     return (ncond,idx)) (tpPtr $ symbolicType ptr')
      writeValue <- do
-       wrLock <- [expr| true |]
-       rdLock <- [expr| 0 |]
+       wrLock <- true
+       rdLock <- 0
        return $ ValVector [ValBool wrLock,ValInt rdLock]
      edge2 <- addEvent (WriteEvent { target = ntarget
                                    , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
@@ -841,7 +845,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                                    , eventThread = thread
                                    , eventOrigin = castUp call
                                    }) edge1
-     nact <- [expr| (and act (not ${valBool $ head $ valVector $ symbolicValue lock})) |]
+     nact <- act .&. (not' $ valBool $ head $ valVector $ symbolicValue lock)
      return (Just edge2,nact)
    "pthread_rwlock_unlock" -> do
      ptr <- liftIO $ getOperand call 0
@@ -853,12 +857,12 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- act .&. cond
                     return (ncond,idx)) (tpPtr $ symbolicType ptr')
      writeValue <- case symbolicValue lock of
        ValVector [ValBool wr,ValInt rd] -> do
-         wrLock <- [expr| false |]
-         rdLock <- [expr| (ite (= rd 0) 0 (- rd 1)) |]
+         wrLock <- false
+         rdLock <- ite (rd .==. (cint 0)) (cint 0) (rd .-. (cint 1))
          return $ ValVector [ValBool wrLock
                             ,ValInt rdLock]
      edge2 <- addEvent (WriteEvent { target = ntarget
@@ -881,7 +885,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                  (\loc _ -> do
                      let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue mutex') of
                            Just r -> r
-                     ncond <- [expr| (and act cond) |]
+                     ncond <- act .&. cond
                      return (ncond,idx)) (tpPtr $ symbolicType mutex')
      mutexCont <- constantBoolValue False
      edge1 <- addEvent (WriteEvent { target = mutexTrg
@@ -896,11 +900,11 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue cond') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- embed $ act :&: cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType cond')
      condCont <- do
-       ctrue <- [expr| true |]
+       ctrue <- true
        return $ rcond { symbolicType = let orig = symbolicType rcond
                                        in orig { tpCondition = Map.insert thread ()
                                                                (tpCondition orig) }
@@ -928,7 +932,7 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue mutex') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- act .&. cond
                     return (ncond,idx)) (tpPtr $ symbolicType mutex')
      writeCont <- constantBoolValue True
      nedge <- addEvent (WriteEvent { target = ntarget
@@ -936,7 +940,10 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                                    , eventThread = thread
                                    , eventOrigin = castUp call
                                    }) edge
-     nact <- [expr| (and act (not waiting) (not locked)) |]
+     nact <- do
+       notWaiting <- embed $ Not waiting
+       notLocked <- embed $ Not locked
+       embed $ And (act ::: notWaiting ::: notLocked ::: Nil)
      return (Just nedge,nact)
    "__cond_signal" -> do
      -- We must select a thread at random
@@ -956,16 +963,12 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                       Just th -> ThreadInput' th nRev
                 return $ RInput pRev) (symbolicType rcond)
      nval <- fmap ValCondition $ sequence $ snd $ Map.mapAccum
-             (\cont (sel,act) -> (do
-                                     rcont <- cont
-                                     [expr| (and rcont (not (and sel act))) |],
-                                  do
-                                    rcont <- cont
-                                    [expr| (ite act (not (and rcont sel)) false) |])
-             ) [expr| true |]
+             (\cont (sel,act) -> (cont .&. (not' (sel .&. act)),
+                                  ite act (not' (cont .&. sel)) false)
+             ) true
              (Map.intersectionWith (\x y -> (x,y))
               (valCondition vec) (valCondition $ symbolicValue rcond))
-     hasSelected <- sequence [ [expr| (and sel act) |]
+     hasSelected <- sequence [ sel .&. act
                              | (sel,act) <- Map.elems (Map.intersectionWith (\x y -> (x,y))
                                                        (valCondition vec)
                                                        (valCondition $ symbolicValue rcond)) ]
@@ -974,14 +977,14 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue cond') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- act .&. cond
                     return (ncond,idx)) (tpPtr $ symbolicType cond')
      nedge <- addEvent (WriteEvent { target = ntarget
                                    , writeContent = rcond { symbolicValue = nval }
                                    , eventThread = thread
                                    , eventOrigin = i
                                    }) edge
-     nact <- [expr| (and act hasSelected) |]
+     nact <- act .&. hasSelected
      return (Just nedge,nact)
    "__cond_broadcast" -> do
      cond <- liftIO $ getOperand call 0
@@ -991,9 +994,9 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue cond') of
                           Just r -> r
-                    ncond <- [expr| (and act cond) |]
+                    ncond <- act .&. cond
                     return (ncond,idx)) (tpPtr $ symbolicType cond')
-     ncond <- fmap ValCondition $ sequence $ fmap (const [expr| false |])
+     ncond <- fmap ValCondition $ sequence $ fmap (const (constant False))
               (tpCondition $ symbolicType rcond)
      nedge <- addEvent (WriteEvent { target = ntarget
                                    , writeContent = rcond { symbolicValue = ncond
@@ -1020,13 +1023,13 @@ realizeInstruction opts thread blk sblk act i@(castDown -> Just call) edge = do
    "__assume" -> do
      cond <- liftIO $ getOperand call 0
      cond' <- realizeValue thread cond edge
-     nact <- [expr| (and act ${valBool $ symbolicValue cond'}) |]
+     nact <- act .&. (valBool $ symbolicValue cond')
      return (Just edge,nact)
    "__builtin_assume" -> return (Just edge,act)
    '_':'_':'u':'n':'s':'i':'g':'n':'e':'d':_ -> do
      var <- liftIO $ getOperand call 0
      var' <- realizeValue thread var edge
-     nact <- [expr| (and act (>= ${valInt $ symbolicValue var'} 0)) |]
+     nact <- act .&. ((valInt $ symbolicValue var') .>=. (cint 0))
      return (Just edge,nact)
    "pthread_exit" -> case thread of
      Nothing -> return (Nothing,act)
@@ -1067,8 +1070,8 @@ realizeInstruction _ thread blk sblk act (castDown -> Just br) edge = do
     cond <- liftIO $ branchInstGetCondition br
     cond' <- realizeValue thread cond edge
     let cond'' = valBool $ symbolicValue cond'
-    condT <- [expr| (and act cond'') |]
-    condF <- [expr| (and act (not cond'')) |]
+    condT <- act .&. cond''
+    condF <- act .&. (not' cond'')
     ifT <- liftIO $ terminatorInstGetSuccessor br 0
     ifF <- liftIO $ terminatorInstGetSuccessor br 1
     phisT <- realizePhis thread srcBlk ifT edge
@@ -1100,7 +1103,7 @@ realizeInstruction _ thread blk sblk act (castDown -> Just sw) edge = do
   where
     mkSwitch _ [] srcBlk defBlk conds = do
       phis <- realizePhis thread srcBlk defBlk edge
-      nact <- sequence [ [expr| (not c) |] | c <- conds ] >>=
+      nact <- sequence [ not' c | c <- conds ] >>=
               \acts -> mkAnd (act:acts)
       modify $ \s -> s { edges = Map.insertWith mappend (thread,defBlk,0)
                                  (edge { edgeConditions = [EdgeCondition { edgeActivation = nact
@@ -1111,7 +1114,7 @@ realizeInstruction _ thread blk sblk act (castDown -> Just sw) edge = do
       APInt _ rval <- liftIO $ constantIntGetValue cint >>= peek
       phis <- realizePhis thread srcBlk blk edge
       constRVal <- embedConst (IntValueC rval)
-      rcond <- [expr| (and act (= cond constRVal)) |]
+      rcond <- act .&. (cond .==. constRVal)
       modify $ \s -> s { edges = Map.insertWith mappend (thread,blk,0)
                                  (edge { edgeConditions = [EdgeCondition { edgeActivation = rcond
                                                                          , edgePhis = phis }]
@@ -1164,12 +1167,12 @@ realizeInstruction _ thread blk sblk act instr@(castDown -> Just atomic) edge = 
   newval <- case op of
     RMWXchg -> return val'
     RMWAdd -> do
-      res <- [expr| (+ ${valInt $ symbolicValue oldval'} ${valInt $ symbolicValue val'}) |]
+      res <- (valInt $ symbolicValue oldval') .+. (valInt $ symbolicValue val')
       return InstructionValue { symbolicType = TpInt
                               , symbolicValue = ValInt res
                               , alternative = Nothing }
     RMWSub -> do
-      res <- [expr| (- ${valInt $ symbolicValue oldval'} ${valInt $ symbolicValue val'}) |]
+      res <- (valInt $ symbolicValue oldval') .-. (valInt $ symbolicValue val')
       return InstructionValue { symbolicType = TpInt
                               , symbolicValue = ValInt res
                               , alternative = Nothing }
@@ -1214,43 +1217,43 @@ realizeDefInstruction thread (castDown -> Just opInst) edge = do
   let (tp,res) = case op of
         Add -> (TpInt,let ValInt v1 = symbolicValue valL
                           ValInt v2 = symbolicValue valR
-                      in fmap ValInt [expr| (+ v1 v2) |])
+                      in fmap ValInt (v1 .+. v2))
         Sub -> (TpInt,let ValInt v1 = symbolicValue valL
                           ValInt v2 = symbolicValue valR
-                      in fmap ValInt [expr| (- v1 v2) |])
+                      in fmap ValInt (v1 .-. v2))
         Mul -> (TpInt,let ValInt v1 = symbolicValue valL
                           ValInt v2 = symbolicValue valR
-                      in fmap ValInt [expr| (* v1 v2) |])
+                      in fmap ValInt (v1 .*. v2))
         LLVM.And -> case symbolicType valL of
           TpBool -> (TpBool,let ValBool v1 = symbolicValue valL
                                 ValBool v2 = symbolicValue valR
-                            in fmap ValBool [expr| (and v1 v2) |])
+                            in fmap ValBool (v1 .&. v2))
           TpInt -> case alternative valR of
             Just (IntConst 1) -> (TpInt,let ValInt v1 = symbolicValue valL
-                                        in fmap ValInt [expr| (mod v1 2) |])
+                                        in fmap ValInt (mod' v1 (cint 2)))
         LLVM.Or -> (TpBool,let ValBool v1 = symbolicValue valL
                                ValBool v2 = symbolicValue valR
-                           in fmap ValBool [expr| (or v1 v2) |])
+                           in fmap ValBool (v1 .|. v2))
         Xor -> (TpBool,let ValBool v1 = symbolicValue valL
                            ValBool v2 = symbolicValue valR
-                       in fmap ValBool [expr| (xor v1 v2) |])
+                       in fmap ValBool (xor' [v1,v2]))
         SRem -> (TpInt,let ValInt v1 = symbolicValue valL
                            ValInt v2 = symbolicValue valR
-                       in fmap ValInt [expr| (rem v1 v2) |])
+                       in fmap ValInt (rem' v1 v2))
         URem -> (TpInt,let ValInt v1 = symbolicValue valL
                            ValInt v2 = symbolicValue valR
-                       in fmap ValInt [expr| (rem v1 v2) |])
+                       in fmap ValInt (rem' v1 v2))
         Shl -> case alternative valR of
                  Nothing -> error "Left shift with non-constant not supported."
                  Just (IntConst vr)
                    -> (TpInt,let ValInt vl = symbolicValue valL
                              in do
                                c <- embedConst $ IntValueC $ 2^vr
-                               e <- [expr| (* vl c) |]
+                               e <- vl .*. c
                                return $ ValInt e)
         SDiv -> (TpInt,let ValInt v1 = symbolicValue valL
                            ValInt v2 = symbolicValue valR
-                       in fmap ValInt [expr| (div v1 v2) |])
+                       in fmap ValInt (div' v1 v2))
         _ -> error $ "Unknown operator: "++show op
   rval <- res
   return InstructionValue { symbolicType = tp
@@ -1284,7 +1287,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge = do
          tp <- case Map.lookup (Left i) mem of
            Just (TpStatic _ tp') -> return tp'
            Just (TpDynamic tp') -> return tp'
-         cond <- [expr| true |]
+         cond <- constant True
          return InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
                                  , symbolicValue = ValPtr (Map.singleton ptrLoc (cond,[])) tp
                                  , alternative = Nothing }
@@ -1296,8 +1299,8 @@ realizeDefInstruction thread i@(castDown -> Just call) edge = do
          tp <- case Map.lookup (Left i) mem of
            Just (TpStatic _ tp') -> return tp'
            Just (TpDynamic tp') -> return tp'
-         cond <- [expr| true |]
-         i0 <- [expr| 0 |]
+         cond <- constant True
+         i0 <- 0
          return InstructionValue { symbolicType = TpPtr (Map.singleton ptrLocDyn ()) tp
                                  , symbolicValue = ValPtr (Map.singleton ptrLocDyn (cond,[i0])) tp
                                  , alternative = Nothing }
@@ -1320,7 +1323,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge = do
                          Nothing -> MainState (LatchBlock blk sblk)
                          Just th' -> ThreadState' th' (LatchBlock blk sblk)
                  ] of
-            [] -> [expr| true |]
+            [] -> constant True
             xs -> mkOr xs
      return InstructionValue { symbolicType = TpBool
                              , symbolicValue = ValBool res
@@ -1382,44 +1385,44 @@ realizeDefInstruction thread i@(castDown -> Just icmp) edge = do
                           , alternative = Nothing }
   where
     cmp I_EQ (alternative -> Just (OrList xs)) (alternative -> Just (IntConst 0))
-      = sequence [ [expr| (= ${valInt x} 0) |] | x <- xs ] >>= mkAnd
+      = sequence [ (valInt x) .==. (cint 0) | x <- xs ] >>= mkAnd
     cmp I_EQ (alternative -> Just (IntConst 0)) (alternative -> Just (OrList xs))
-      = sequence [ [expr| (= ${valInt x} 0) |] | x <- xs ] >>= mkAnd
+      = sequence [ (valInt x) .==. (cint 0) | x <- xs ] >>= mkAnd
     cmp I_EQ x@(symbolicType -> TpBool) y@(symbolicType -> TpBool)
-      = [expr| (= ${valBool (symbolicValue x)} ${valBool (symbolicValue y)}) |]
+      = (valBool (symbolicValue x)) .==. (valBool (symbolicValue y))
     cmp I_EQ x@(symbolicType -> TpInt) y@(symbolicType -> TpInt)
-      = [expr| (= ${valInt (symbolicValue x)} ${valInt (symbolicValue y)}) |]
+      = (valInt (symbolicValue x)) .==. (valInt (symbolicValue y))
     cmp I_EQ x@(symbolicType -> TpPtr locx _) y@(symbolicType -> TpPtr locy _)
       = sequence (Map.elems $ Map.intersectionWith
                   (\(c1,i1) (c2,i2) -> do
-                      nc <- [expr| (= c1 c2) |]
-                      ncs <- sequence [ [expr| (= j1 j2) |] | (j1,j2) <- zip i1 i2 ]
+                      nc <- c1 .==. c2
+                      ncs <- sequence [ j1 .==. j2 | (j1,j2) <- zip i1 i2 ]
                       mkAnd (nc:ncs))
                   (valPtr $ symbolicValue x)
                   (valPtr $ symbolicValue y)) >>= mkOr
     cmp I_EQ (alternative -> Just NullPtr) y@(symbolicType -> TpInt)
-      = [expr| (= ${valInt (symbolicValue y)} 0) |]
+      = (valInt (symbolicValue y)) .==. (cint 0)
     cmp I_EQ x@(symbolicType -> TpInt) (alternative -> Just NullPtr)
-      = [expr| (= ${valInt (symbolicValue x)} 0) |]
+      = (valInt (symbolicValue x)) .==. (cint 0)
     cmp I_NE x y = do
       res <- cmp I_EQ x y
-      [expr| (not res) |]
+      not' res
     cmp I_SGE x y
-      = [expr| (>= ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .>=. (valInt $ symbolicValue y)
     cmp I_UGE x y
-      = [expr| (>= ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .>=. (valInt $ symbolicValue y)
     cmp I_SGT x y
-      = [expr| (> ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .>. (valInt $ symbolicValue y)
     cmp I_UGT x y
-      = [expr| (> ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .>. (valInt $ symbolicValue y)
     cmp I_SLE x y
-      = [expr| (<= ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .<=. (valInt $ symbolicValue y)
     cmp I_ULE x y
-      = [expr| (<= ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .<=. (valInt $ symbolicValue y)
     cmp I_SLT x y
-      = [expr| (< ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .<. (valInt $ symbolicValue y)
     cmp I_ULT x y
-      = [expr| (< ${valInt $ symbolicValue x} ${valInt $ symbolicValue y}) |]
+      = (valInt $ symbolicValue x) .<. (valInt $ symbolicValue y)
     cmp op x y = error $ "Cannot compare "++show (symbolicType x)++" and "++show (symbolicType y)++" using "++show op
 realizeDefInstruction thread i@(castDown -> Just (zext::Ptr ZExtInst)) edge = do
   op <- liftIO $ getOperand zext 0
@@ -1427,7 +1430,7 @@ realizeDefInstruction thread i@(castDown -> Just (zext::Ptr ZExtInst)) edge = do
   fop <- realizeValue thread op edge
   if tp==Singleton TpBool
     then do
-    rval <- [expr| (ite ${valBool $ symbolicValue fop} 1 0) |]
+    rval <- ite (valBool $ symbolicValue fop) (cint 1) (cint 0)
     return InstructionValue { symbolicType = TpInt
                             , symbolicValue = ValInt rval
                             , alternative = Just $ ExtBool (valBool $ symbolicValue fop)
@@ -1453,7 +1456,7 @@ realizeDefInstruction thread i@(castDown -> Just (_::Ptr AllocaInst)) edge = do
   tp <- case Map.lookup (Left i) memDesc of
     Just (TpStatic _ tp') -> return tp'
     Just (TpDynamic tp') -> return tp'
-  cond <- [expr| true |]
+  cond <- constant True
   return InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
                           , symbolicValue = ValPtr (Map.singleton ptrLoc (cond,[])) tp
                           , alternative = Nothing }
@@ -1474,7 +1477,7 @@ realizeDefInstruction thread i@(castDown -> Just (trunc::Ptr TruncInst)) edge = 
                                                 , alternative = Nothing
                                                 }
     _ -> do
-      res <- [expr| (= ${valInt $ symbolicValue rval} 1) |]
+      res <- (valInt $ symbolicValue rval) .==. (cint 1)
       return InstructionValue { symbolicType = TpBool
                               , symbolicValue = ValBool res
                               , alternative = Nothing }
@@ -1622,10 +1625,10 @@ memoryWrite th origin act ptr val edge = do
                  (cond,idx) <- case Map.lookup loc (valPtr $ symbolicValue ptr) of
                        Just r -> return r
                        Nothing -> do
-                         c <- [expr| false |]
-                         i <- sequence [ [expr| 0 |] | DynamicAccess <- offsetPattern loc ]
+                         c <- constant False
+                         i <- sequence [ 0 | DynamicAccess <- offsetPattern loc ]
                          return (c,i)
-                 ncond <- [expr| (and act cond) |]
+                 ncond <- act .&. cond
                  return (ncond,idx)) (tpPtr $ symbolicType ptr)
   addEvent (WriteEvent { target = ntarget
                        , writeContent = val
@@ -1711,7 +1714,7 @@ realizeValue thread (castDown -> Just glob) edge = do
           return $ case Map.lookup (Right glob) globs of
             Just (TpStatic _ t) -> t
             Just (TpDynamic t) -> t
-  cond <- [expr| true |]
+  cond <- constant True
   return InstructionValue { symbolicType = TpPtr (Map.singleton ptr ()) tp
                           , symbolicValue = ValPtr (Map.singleton ptr (cond,[])) tp
                           , alternative = Nothing
@@ -1734,12 +1737,12 @@ defaultSymValue (castDown -> Just itp) = do
   bw <- liftIO $ getBitWidth itp
   if bw==1
     then do
-    val <- [expr| false |]
+    val <- constant False
     return InstructionValue { symbolicType = TpBool
                             , symbolicValue = ValBool val
                             , alternative = Just (IntConst 0) }
     else do
-    val <- [expr| 0 |]
+    val <- 0
     return InstructionValue { symbolicType = TpInt
                             , symbolicValue = ValInt val
                             , alternative = Just (IntConst 0) }
@@ -2044,10 +2047,10 @@ computeRStep = do
                                         Just th'' -> ThreadState' th'' $ LatchBlock blk sblk
                                       | (th',blk,sblk) <- Map.keys $ internalYieldEdges st
                                       , th'/=th]
-                 notOthers <- mapM (\x -> [expr| (not x) |]) otherSteps
-                 notOtherIntYield <- mapM (\x -> [expr| (not x) |]) otherIntYields
-                 canStep <- [expr| (and # ${thisStep:thisRunning++notOthers++notOtherIntYield}) |]
-                 mustStep <- [expr| (or # ${canStep:thisIntYields}) |]
+                 notOthers <- mapM (\x -> not' x) otherSteps
+                 notOtherIntYield <- mapM (\x -> not' x) otherIntYields
+                 canStep <- and' (thisStep:thisRunning++notOthers++notOtherIntYield)
+                 mustStep <- or' (canStep:thisIntYields)
                  rstep' <- define ("rstep"++(if n==0 then "" else show n)) mustStep
                  return (th,rstep')
              | (th,n) <- zip allThreads [0..] ]
@@ -2060,9 +2063,7 @@ computeTransitionRelation = do
       th desc start = do
         blks <- sequence $ Map.mapWithKey
                 (\(blk,sblk) _ -> fmap Init $
-                                  if blk==start && sblk==0
-                                  then [expr| true |]
-                                  else [expr| false |]
+                                  constant (blk==start && sblk==0)
                 ) (latchBlockDesc desc)
         vals <- mapM (\tp -> createComposite
                              (\tp' _ -> return (NoInit tp')) tp
@@ -2088,7 +2089,7 @@ computeTransitionRelation = do
              (\thId thd -> do
                  let Just start = Map.lookup thId (threadBlocks st)
                  st <- th thd start
-                 running <- [expr| false |]
+                 running <- constant False
                  return (Init running,st)
              ) (threadStateDesc $ stateAnnotation st)
   memInit <- sequence $ Map.mapWithKey
@@ -2118,7 +2119,7 @@ computeTransitionRelation = do
                     Just th' -> ThreadState' th' $ LatchBlock blk sblk
               act <- mkOr $ [ edgeActivation cond
                             | cond <- edgeConditions re ]
-              [expr| (ite rstep act old) |]
+              ite rstep act old
           ) (latchBlockDesc desc)
       nxtValues th desc = do
         let Just rstep = Map.lookup th rsteps
@@ -2142,10 +2143,10 @@ computeTransitionRelation = do
                   if alwaysDefined
                     then symITE rstep (symbolicValue val) old
                     else do
-                    cond <- [expr| (and rstep act) |]
+                    cond <- rstep .&. act
                     symITE cond (symbolicValue val) old
                 Nothing -> do
-                  ctrue <- [expr| true |]
+                  ctrue <- true
                   symITEs $ [ (phiVal,edgeActivation cond)
                             | edge <- Map.elems (edges st)
                             , cond <- edgeConditions edge
@@ -2170,10 +2171,10 @@ computeTransitionRelation = do
               case Map.lookup th' (spawnEvents st) of
                 Nothing -> return (Just (arg,old))
                 Just terms -> do
-                  lcond <- [expr| true |]
+                  lcond <- true
                   new <- sequence [ do
                                       let Just rstepOth = Map.lookup oth rsteps
-                                      ract <- [expr| (and rstepOth act) |]
+                                      ract <- rstepOth .&. act
                                       return (symbolicValue ret,ract)
                                   | (oth,act,Just ret) <- terms ] >>=
                          \conds -> symITEs $ conds++[(old,lcond)]
@@ -2189,7 +2190,7 @@ computeTransitionRelation = do
               case Map.lookup th' (termEvents st) of
                 Nothing -> return (Just old)
                 Just terms -> do
-                  lcond <- [expr| true |]
+                  lcond <- constant True
                   new <- symITEs $ [ (symbolicValue ret,act)
                                    | (act,Just ret) <- terms ]++
                          [(old,lcond)]
@@ -2237,14 +2238,14 @@ computeTransitionRelation = do
                   Just spawns -> do
                     anySpawn <- mapM (\(spawner,cond,_) -> do
                                          let Just rstepSpawner = Map.lookup spawner rsteps
-                                         [expr| (and rstepSpawner cond) |]
+                                         rstepSpawner .&. cond
                                      ) spawns >>= mkOr
-                    [expr| (or oldAct anySpawn) |]
+                    oldAct .|. anySpawn
                 act2 <- case Map.lookup thd (termEvents st) of
                   Nothing -> return act1
                   Just terms -> do
                     cond <- mkOr (fmap fst terms)
-                    [expr| (and (not (and rstep cond)) act1) |]
+                    (not' (rstep .&. cond)) .&. act1
                 st <- nxtThread (Just thd) desc
                 return (act2,st)
             ) (threadStateDesc $ stateAnnotation st)
@@ -2260,7 +2261,7 @@ computeTransitionRelation = do
                                           then do
                                             (res,ncur,_) <- accessAlloc
                                                             (\val _ -> do
-                                                                rcond <- [expr| (and rstep cond) |]
+                                                                rcond <- rstep .&. cond
                                                                 nval <- symITE rcond
                                                                         (symbolicValue $
                                                                          writeContent ev)
@@ -2275,7 +2276,7 @@ computeTransitionRelation = do
             ) (memoryDesc $ stateAnnotation st)
   asserts <- mapM (\(th,e) -> do
                       let Just rstep = Map.lookup th rsteps
-                      [expr| (or (not rstep) e) |]
+                      (not' rstep) .|. e
                   ) (assertions st)
   return $ LLVMTransRel { llvmInputDesc = inputAnnotation st
                         , llvmStateDesc = stateAnnotation st
@@ -2345,8 +2346,8 @@ getConstant (castDown -> Just cint) = do
   v <- constantIntGetValue cint
   rv <- apIntGetSExtValue v
   if bw==1
-    then return $ Singleton $ ValBool $ RExpr $ Const $ BoolValue (rv/=0)
-    else return $ Singleton $ ValInt $ RExpr $ Const $ IntValue (fromIntegral rv)
+    then return $ Singleton $ ValBool $ RExpr $ E.Const $ BoolValue (rv/=0)
+    else return $ Singleton $ ValInt $ RExpr $ E.Const $ IntValue (fromIntegral rv)
 getConstant (castDown -> Just czero) = do
   tp <- LLVM.getType (czero::Ptr ConstantAggregateZero)
   zeroInit tp
@@ -2354,8 +2355,8 @@ getConstant (castDown -> Just czero) = do
      zeroInit (castDown -> Just itp) = do
        bw <- getBitWidth itp
        if bw==1
-         then return $ Singleton $ ValBool $ RExpr $ Const $ BoolValue False
-         else return $ Singleton $ ValInt $ RExpr $ Const $ IntValue 0
+         then return $ Singleton $ ValBool $ RExpr $ E.Const $ BoolValue False
+         else return $ Singleton $ ValInt $ RExpr $ E.Const $ IntValue 0
      zeroInit (castDown -> Just struct) = do
        specialInit <- do
          hasName <- structTypeHasName struct
@@ -2364,10 +2365,10 @@ getConstant (castDown -> Just czero) = do
            name <- structTypeGetName struct >>= stringRefData
            case name of
             "struct.pthread_mutex_t" -> return $ Just $ Singleton $
-                                        ValBool $ RExpr $ Const $ BoolValue False
+                                        ValBool $ RExpr $ E.Const $ BoolValue False
             "struct.pthread_rwlock_t" -> return $ Just $ Singleton $
-                                         ValVector [ValBool $ RExpr $ Const $ BoolValue False
-                                                   ,ValInt $ RExpr $ Const $ IntValue 0]
+                                         ValVector [ValBool $ RExpr $ E.Const $ BoolValue False
+                                                   ,ValInt $ RExpr $ E.Const $ IntValue 0]
             "struct.__thread_id" -> return $ Just $ Singleton $
                                     ValThreadId $ Map.empty
             "struct.pthread_cond_t" -> return $ Just $ Singleton $
