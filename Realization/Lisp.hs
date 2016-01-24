@@ -772,7 +772,11 @@ data LispRev tp where
           -> RevValue '(lvl,tps) tp
           -> LispRev tp
 
-deriving instance Show (LispRev tp)
+instance Show (LispRev tp) where
+  showsPrec p (LispRev name (RevVar Nil)) = showsPrec p name
+  showsPrec p (LispRev name (RevVar idx))
+    = showsPrec p name . showsPrec p idx
+  showsPrec p (LispRev name (RevSize lvl)) = showsPrec p name . showString "@" . showsPrec p lvl
 
 instance GShow LispRev where
   gshowsPrec = showsPrec
