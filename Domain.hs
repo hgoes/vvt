@@ -23,6 +23,7 @@ import Language.SMTLib2.Internals.Backend (SMTMonad)
 
 import Args
 import SMTPool
+import Simplify
 
 import Control.Monad.Identity
 import Data.Graph.Inductive
@@ -43,6 +44,7 @@ import Data.GADT.Show
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
 import System.IO
+import Control.Monad.Reader (runReader)
 
 -- Test Modules
 --import Language.SMTLib2.Pipe
@@ -51,6 +53,7 @@ import "mtl" Control.Monad.Trans (liftIO)
 -- | Stores a lattice of abstractions.
 --   An edge from A to B signifies that A includes B
 data Domain a = Domain { domainGArg :: a (RevComp a)
+                       , domainDescr :: CompDescr a
                        , domainGraph :: Gr (CompositeExpr a BoolType,
                                             DMap (RevComp a) NoVar) ()
                        , domainNodesRev :: Map (CompositeExpr a BoolType) Node
@@ -100,6 +103,7 @@ initialDomain verb backend ann = do
                                   ,(domainBot,(CompositeExpr ann (ConstBool False),DMap.empty))]
                                   [(domainTop,domainBot,())]
                   , domainGArg = gArg
+                  , domainDescr = ann
                   , domainNodesRev = Map.fromList
                                      [(CompositeExpr ann (ConstBool True),domainTop)
                                      ,(CompositeExpr ann (ConstBool False),domainBot)]
@@ -219,7 +223,7 @@ domainAddUniqueUnsafe pred dom = do
 domainAdd :: Composite a => CompositeExpr a BoolType -- ^ The predicate.
           -> Domain a -- ^ The domain to which to add the predicate
           -> IO (Node,Domain a)
-domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
+domainAdd pred dom = case Map.lookup npred (domainNodesRev dom) of
   Just nd -> return (nd,dom)
   Nothing -> do
     Just parents <- findParents domainTop
@@ -231,10 +235,10 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
        if domainVerbosity dom >= 2
          then (do
                   --termStr <- renderDomainPred pred dom
-                  liftIO $ hPutStrLn stderr $ "Adding predicate "++show pred)
+                  liftIO $ hPutStrLn stderr $ "Adding predicate "++show npred)
          else return ()
        let newNd = domainNextNode dom
-           gr0 = insNode (newNd,(pred,vars)) (domainGraph dom)
+           gr0 = insNode (newNd,(npred,vars)) (domainGraph dom)
            gr1 = foldl (\cgr parent
                         -> let (Just (pred,_,pterm,succs),cgr') = match parent cgr
                                succs' = foldl (\csucc x -> delete ((),x) csucc) succs childs
@@ -249,11 +253,11 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
                        ) gr1 childs
        return (newNd,dom { domainGraph = gr2
                          , domainNextNode = succ newNd
-                         , domainNodesRev = Map.insert pred newNd
+                         , domainNodesRev = Map.insert npred newNd
                                             (domainNodesRev dom)
                          })
   where
-    vars = collectRevVars DMap.empty pred
+    vars = collectRevVars DMap.empty npred
     poseQuery :: Composite a => Domain a
               -> (forall b. Backend b
                   => DomainInstance a b
@@ -288,11 +292,11 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
     findParents cur = do
       let curCtx = context (domainGraph dom) cur
           (curTerm,curTermVars) = lab' curCtx
-      impl <- case quickImplication () pred curTerm of
+      impl <- case quickImplication () npred curTerm of
                Just r -> return r
                Nothing -> fmap not $ poseQuery dom
                           (\inst -> do
-                              pred' <- concretizeExpr (domainVars inst) pred
+                              pred' <- concretizeExpr (domainVars inst) npred
                               term' <- concretizeExpr (domainVars inst) curTerm
                               nterm <- not' term'
                               return [pred',nterm])
@@ -306,12 +310,12 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
     findChildren cur = do
       let curCtx = context (domainGraph dom) cur
           (curTerm,curTermVars) = lab' curCtx
-      impl <- case quickImplication () curTerm pred of
+      impl <- case quickImplication () curTerm npred of
                Just r -> return r
                Nothing -> fmap not $ poseQuery dom
                           (\inst -> do
                               term' <- concretizeExpr (domainVars inst) curTerm
-                              pred' <- concretizeExpr (domainVars inst) pred
+                              pred' <- concretizeExpr (domainVars inst) npred
                               npred <- not' pred'
                               return [term',npred])
       if not impl
@@ -321,6 +325,7 @@ domainAdd pred dom = case Map.lookup pred (domainNodesRev dom) of
                  case catMaybes childs of
                    [] -> return $ Just (Set.singleton cur)
                    xs -> return $ Just (Set.unions xs))
+    npred = runReader (simplify () pred) (domainDescr dom)
 
 -- | Create an abstract state from a concrete state.
 domainAbstract :: Composite a
