@@ -138,7 +138,7 @@ mkCompExpr f descr
                   arg <- createComposite (\_ rev -> return (CompositeExpr descr (Var rev))) descr
                   f arg) descr
 
-concretizeExpr :: (Embed m e,Composite arg,GetType e)
+concretizeExpr :: (Embed m e,Composite arg)
                => arg e
                -> CompositeExpr arg tp
                -> m (e tp)

@@ -1,6 +1,11 @@
 module Simplify where
 
-import Language.SMTLib2
+import Args
+
+import Language.SMTLib2 hiding (simplify)
+import qualified Language.SMTLib2 as SMT (simplify)
+import qualified Language.SMTLib2.Internals.Backend as SMTB
+import Language.SMTLib2.Internals.Monad (embedSMT)
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
@@ -37,3 +42,10 @@ simplify i e = case extract i e of
     nargs <- List.mapM (simplify i) args
     embed $ E.App fun nargs
   _ -> return e
+
+simplifySMT :: (Composite a,Backend b) => CompositeExpr a tp -> SMT b (CompositeExpr a tp)
+simplifySMT e = stack $ do
+  (vars,rev) <- createRevComp (\tp _ -> embedSMT $ SMTB.declareVar tp Nothing) (compositeDescr e)
+  ne <- concretizeExpr vars e
+  simp <- SMT.simplify ne
+  relativizeExpr (compositeDescr e) rev simp

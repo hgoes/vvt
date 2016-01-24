@@ -11,8 +11,9 @@ import PartialArgs
 import SMTPool
 import LitOrder
 import BackendOptions
+import Simplify
 
-import Language.SMTLib2
+import Language.SMTLib2 hiding (simplify)
 import Language.SMTLib2.Pipe (createPipe)
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
@@ -58,6 +59,7 @@ import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
 import Data.Type.Equality
 import Data.GADT.Show
+import Control.Monad.Reader (runReader)
 
 data AnyBackend m = forall b. (Backend b,SMTMonad b ~ m) => AnyBackend { anyBackend :: m b }
 
@@ -951,7 +953,7 @@ check :: TR.TransitionRelation mdl
          -> Maybe String -- ^ Dump domain?
          -> IO (Either [(Unpacked (TR.State mdl),
                          Unpacked (TR.Input mdl))]
-                       [Dom.AbstractState (TR.State mdl)])
+                       (CompositeExpr (TR.State mdl) BoolType))
 check st opts verb stats dumpDomain = do
   tr <- createBackend (optBackend opts Map.! Base) $
         \b -> withBackendExitCleanly b (baseCases st)
@@ -968,7 +970,11 @@ check st opts verb stats dumpDomain = do
                       ic3DumpStats (case res of
                                       Left _ -> Nothing
                                       Right fp -> Just fp)
-                      return res
+                      case res of
+                        Left tr -> return (Left tr)
+                        Right fp -> do
+                          dom <- gets ic3Domain
+                          return $ Right $ renderFixpoint dom fp
                  ) `ic3Catch` (\ex -> do
                                    ic3DumpStats Nothing
                                    throw (ex::SomeException))
@@ -976,7 +982,7 @@ check st opts verb stats dumpDomain = do
     checkIt :: TR.TransitionRelation mdl
             => IC3 mdl (Either [(Unpacked (TR.State mdl),
                                  Unpacked (TR.Input mdl))]
-                               [Dom.AbstractState (TR.State mdl)])
+                        [Dom.AbstractState (TR.State mdl)])
     checkIt = do
       ic3DebugAct 1 (do
                         lvl <- k
@@ -1057,14 +1063,22 @@ check st opts verb stats dumpDomain = do
       concrs <- getWitness real xs
       return $ (concr1,concr2):concrs
 
-getFixpoint :: (Backend b,Composite st)
-            => Dom.Domain st -> [Dom.AbstractState st] -> st (Expr b)
-            -> SMT b (Expr b BoolType)
+getFixpoint :: (Embed m e,Composite st)
+            => Dom.Domain st -> [Dom.AbstractState st] -> st e
+            -> m (e BoolType)
 getFixpoint domain sts inp = do
   terms <- mapM (\st -> do
                     trm <- Dom.toDomainTerm st domain inp
                     not' trm) sts
   and' terms
+
+renderFixpoint :: (Composite st) => Dom.Domain st -> [Dom.AbstractState st]
+               -> CompositeExpr st BoolType
+renderFixpoint dom fp = runReader (getFixpoint dom fp arg >>= simplify ()) descr
+  where
+    descr = Dom.domainDescr dom
+    arg = runIdentity $ createComposite
+          (\_ rev -> return (CompositeExpr descr (Var rev))) descr
 
 getAbstractFixpoint :: Int -> IC3 mdl [Dom.AbstractState (TR.State mdl)]
 getAbstractFixpoint level = do

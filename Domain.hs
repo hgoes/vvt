@@ -13,7 +13,7 @@ module Domain
        ,renderDomain
        )-} where
 
-import Language.SMTLib2
+import Language.SMTLib2 hiding (simplify)
 import Language.SMTLib2.Internals.Interface
 import Language.SMTLib2.Internals.Expression (NoVar)
 import Language.SMTLib2.Internals.Type
@@ -359,7 +359,7 @@ domainAbstract expr mustUse dom = do
     exprVars = collectRevVars DMap.empty expr
 
 -- | Create an SMT expression that represents an abstract state.
-toDomainTerm :: (Embed m e,Composite a,GetType e)
+toDomainTerm :: (Embed m e,Composite a)
              => AbstractState a -- ^ The abstract state to represent
              -> Domain a -- ^ The domain to use (The abstract state must have been created using this domain)
              -> a e -- ^ An instance of the abstracted data type
