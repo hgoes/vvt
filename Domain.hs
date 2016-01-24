@@ -189,10 +189,6 @@ quickImplication i
   (extract i -> Just (Var a))
   (extract i -> Just (Var b))
   = Just (defaultEq a b)
-quickImplication i (extract i -> Just (Var _)) _
-  = Just False
-quickImplication i _ (extract i -> Just (Var _))
-  = Just False
 quickImplication _ _ _ = Nothing
 
 checkImplication :: Backend b => Expr b BoolType -> Expr b BoolType -> SMT b Bool
@@ -347,6 +343,7 @@ domainAbstract expr mustUse dom = do
                          " doesn't have a valid abstraction")
         mapM (\(nd,repr) -> do
                  let Just (_,predVars) = lab (domainGraph dom) nd
+                 -- Only use predicates which have only variables that appear in the expression
                  if nd==mustUse || (DMap.null $ DMap.difference predVars exprVars)
                    then (do
                             BoolValueC c <- getValue repr
