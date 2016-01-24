@@ -552,12 +552,16 @@ updateAbstraction ref = do
      (stateDomainHash st == Dom.domainHash dom)
     then return False
     else (do
-             let concr = mkCompExpr (\x -> do
+             let {-concr = mkCompExpr (\x -> do
                                         eqs <- fmap catMaybes $
                                                assignPartial assignEq x (stateLifted st)
                                         and' eqs
-                                    ) (TR.stateAnnotation mdl)
-             full <- liftIO $ Dom.domainAbstract concr
+                                    ) (TR.stateAnnotation mdl)-}
+                 concrFull = mkCompExpr (\x -> do
+                                            rst <- liftComp (stateFull st)
+                                            eqComposite x rst
+                                        ) (TR.stateAnnotation mdl)
+             full <- liftIO $ Dom.domainAbstract concrFull
                      initialPred
                      dom
              lifted <- case stateSuccessor st of
