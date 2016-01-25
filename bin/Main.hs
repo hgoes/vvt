@@ -1,6 +1,6 @@
 module Main where
 
-import Paths_hctigar
+import Paths_vvt
 
 import System.Process
 import System.IO
