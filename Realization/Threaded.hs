@@ -1883,7 +1883,7 @@ realizeBlock opts thread blk sblk info = do
                   (\(_,instr) val -> do
                       iname <- liftIO $ getNameString instr
                       rval <- defineSym iname val
-                      return (defCond,rval)
+                      return (act,rval)
                   ) edgePhi
   modify $ \s -> s { instructions = Map.union (instructions s) edgePhiGates }
   phiDefs <- mapM (\_ -> if isEntryBlock
@@ -2063,19 +2063,18 @@ computeTransitionRelation = do
                 (\(blk,sblk) _ -> fmap Init $
                                   constant (blk==start && sblk==0)
                 ) (latchBlockDesc desc)
-        vals <- mapM (\tp -> createComposite
-                             (\tp' _ -> return (NoInit tp')) tp
+        vals <- mapM (\tp -> foldExprs (\_ -> fmap Init . embedConst) (defaultConst tp)
                      ) (latchValueDesc desc)
         arg <- case threadArgumentDesc desc of
           Nothing -> return Nothing
           Just (arg,tp) -> do
-            v <- createComposite (\tp' _ -> return (NoInit tp')) tp
+            v <- foldExprs (\_ -> fmap Init . embedConst) (defaultConst tp)
             return (Just (arg,v))
         lmem <- mapM (\el -> foldExprs (\_ e -> return $ Init e) el) $
                 Map.intersection (memoryInit st) (threadGlobalDesc desc)
         ret <- case threadReturnDesc desc of
           Nothing -> return Nothing
-          Just tp -> fmap Just $ createComposite (\tp' _ -> return (NoInit tp')) tp
+          Just tp -> fmap Just $ foldExprs (\_ -> fmap Init . embedConst) (defaultConst tp)
         return ThreadState { latchBlocks = blks
                            , latchValues = vals
                            , threadArgument = arg
@@ -2138,11 +2137,13 @@ computeTransitionRelation = do
                                            Just SometimesDefined -> return False
                                            _ -> return False
                                           ) True (edges st)
-                  if alwaysDefined
+                  cond <- rstep .&. act
+                  symITE cond (symbolicValue val) old
+                  {-if alwaysDefined
                     then symITE rstep (symbolicValue val) old
                     else do
                     cond <- rstep .&. act
-                    symITE cond (symbolicValue val) old
+                    symITE cond (symbolicValue val) old-}
                 Nothing -> do
                   ctrue <- true
                   symITEs $ [ (phiVal,edgeActivation cond)
