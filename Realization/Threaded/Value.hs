@@ -6,28 +6,23 @@ import Gates
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type
-{-import Language.SMTLib2.Internals.Type.Nat-}
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Interface as I
-{-import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
-import qualified Language.SMTLib2.Internals.Type.Struct as Struct-}
 import Data.Map (Map)
 import qualified Data.Map as Map
 import LLVM.FFI hiding (Type,Value,Vector,ArrayType,GetType,getType,Select,Store)
 import Foreign.Ptr (Ptr)
 import Data.Typeable
-import Data.List (genericIndex,genericReplicate,genericLength)
+import Data.List (genericIndex)
 import Data.Traversable
 import Data.Foldable
 import System.IO.Unsafe
-import Data.Maybe (mapMaybe,catMaybes)
+import Data.Maybe (catMaybes)
 import Prelude hiding (sequence,mapM)
 import Data.GADT.Show
 import Data.GADT.Compare
 import Text.Show
 import Control.Monad.State
-import Debug.Trace
 
 data Struct a = Singleton { singleton :: a }
               | Struct { struct :: [Struct a] }

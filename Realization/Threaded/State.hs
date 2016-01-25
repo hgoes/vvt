@@ -12,8 +12,6 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Typeable
 import Text.Show
-import System.IO.Unsafe
-import Data.List (zipWith5)
 import Data.GADT.Show
 import Data.GADT.Compare
 

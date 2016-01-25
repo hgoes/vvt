@@ -7,19 +7,12 @@ import Realization.Lisp.Array
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
-import Language.SMTLib2.Internals.Type.Struct (Struct(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
-import Language.SMTLib2.Internals.Type.Nat
-import Data.Typeable
-import Data.List
 import Data.Either
 import qualified Data.Dependent.Map as DMap
 import Data.GADT.Compare
 import Data.Functor.Identity
-
-import Debug.Trace
 
 simplifyProgram :: LispProgram -> LispProgram
 simplifyProgram prog

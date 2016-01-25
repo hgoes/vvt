@@ -1,26 +1,15 @@
 module Realization.Lisp.Predicates where
 
 import Realization.Lisp
-import Realization.Lisp.Value
-import Realization.Lisp.Array
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.Nat
-import Language.SMTLib2.Internals.Type.Struct (Struct(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
-import Data.Set (Set)
-import qualified Data.Set as Set
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
-import Data.Typeable (cast)
 import Data.Foldable
 import Prelude hiding (foldl)
-import Data.Proxy
 import Data.GADT.Compare
 import Data.Functor.Identity
 

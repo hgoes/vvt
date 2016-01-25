@@ -2,12 +2,10 @@
 module Realization.Threaded.Translation where
 
 import Args
-import Gates
 import Realization.Threaded
 import Realization.Threaded.State
 import Realization.Threaded.Value hiding (Struct(..))
 import qualified Realization.Threaded.Value as Th
-import Realization.Threaded.Options
 import qualified Realization.Lisp.Value as L
 import qualified Realization.Lisp as L
 import qualified Realization.Lisp.Array as L
@@ -15,7 +13,6 @@ import qualified Realization.Lisp.Array as L
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Interface
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
@@ -23,7 +20,6 @@ import qualified Language.SMTLib2.Internals.Expression as E
 
 import LLVM.FFI hiding (GetType,getType,And)
 
-import Data.Fix
 import qualified Data.AttoLisp as L
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -32,11 +28,8 @@ import qualified Data.Dependent.Map as DMap
 import Control.Monad.State (get,put,execState)
 import Data.Traversable
 import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
-import Data.Foldable
 import qualified Data.Text as T
 import Foreign.Ptr (Ptr)
-import Data.Typeable
-import System.IO.Unsafe
 import Data.Functor.Identity
 
 import Debug.Trace

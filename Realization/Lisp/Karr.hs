@@ -4,7 +4,6 @@ import Args
 import PartialArgs
 import Realization.Lisp
 import Realization.Lisp.Value
-import Realization.Lisp.Array
 import Karr
 
 import Language.SMTLib2
@@ -12,8 +11,6 @@ import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.Nat
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 import qualified Language.SMTLib2.Internals.Backend as B
 
@@ -24,10 +21,6 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.AttoLisp as L
-import Data.Proxy
-import Data.Functor.Identity
-import Data.GADT.Compare
-import Control.Monad.State
 import Data.Maybe
 import Control.Monad.State
 import Debug.Trace

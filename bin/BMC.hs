@@ -10,19 +10,15 @@ import System.Environment
 import Language.SMTLib2
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Pipe (createPipe)
-import Language.SMTLib2.Z3
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Embed
 import Args
 import PartialArgs
-import Data.Map (Map)
-import qualified Data.Map as Map
 import Control.Monad.Trans (MonadIO,liftIO)
-import qualified Data.Text as T
 import Data.Proxy
-import Data.GADT.Show
+--import Data.GADT.Show
 import Data.Time.Clock
 import Control.Concurrent
 import Control.Exception (catch)

@@ -2,15 +2,10 @@
              PackageImports,DeriveDataTypeable,TypeFamilies #-}
 module Realization.Common where
 
-import Gates
-import PartialArgs
-
 import LLVM.FFI hiding (Vector)
 import Foreign.Ptr
 import Foreign.C
 import Foreign.Marshal.Array
-import Data.Map (Map)
-import qualified Data.Map as Map
 
 getFunctionName :: Ptr CallInst -> IO String
 getFunctionName ci = do

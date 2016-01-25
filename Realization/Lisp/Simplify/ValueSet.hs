@@ -9,30 +9,18 @@ import Args
 
 import Language.SMTLib2
 import Language.SMTLib2.Pipe
-import Language.SMTLib2.Debug
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.Nat
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface hiding (constant)
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import qualified Data.Text as T
 import Data.List
-import Data.Maybe (catMaybes)
-import Data.Typeable (cast,gcast)
-import Data.Constraint
-import Control.Monad.Trans
 import System.IO
 import Control.Monad
 import Data.GADT.Compare
-import Data.Proxy
 import Data.Functor.Identity
 import Data.Dependent.Sum
 import qualified Data.Dependent.Map as DMap
-
-import Debug.Trace
 
 data ValueSet = ValueSet { valueMask :: [Header]
                          , values :: [[Entry]]

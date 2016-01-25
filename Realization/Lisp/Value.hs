@@ -17,19 +17,15 @@ import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface
 
-import Data.List (genericIndex,genericLength,genericReplicate)
+import Data.List (genericLength)
 import Data.Foldable
 import Data.Traversable
 import Data.Typeable
-import Data.Constraint
 import Prelude hiding (mapM,foldl,and,concat)
-import Data.Proxy
 import Data.GADT.Compare
 import Data.GADT.Show
 import Control.Monad.Identity
 import Text.Show
-
-import Debug.Trace
 
 data LispValue (sig :: ([Type],Tree Type)) (e::Type -> *) where
   LispValue :: Size e sz -> Struct (Sized e sz) tps -> LispValue '(sz,tps) e

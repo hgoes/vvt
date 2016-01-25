@@ -18,16 +18,13 @@ import Language.SMTLib2.Pipe (createPipe)
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
 import Language.SMTLib2.ModulusEmulator
-import Language.SMTLib2.Internals.Backend (SMTMonad,Var,LVar)
+import Language.SMTLib2.Internals.Backend (SMTMonad,LVar)
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.Nat
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Monad (embedSMT)
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -35,12 +32,11 @@ import qualified Data.Vector as Vec
 import qualified Data.IntSet as IntSet
 import Data.IORef
 import Control.Monad (when)
-import Control.Applicative (Applicative(..))
 import Data.Functor.Identity
 import "mtl" Control.Monad.Trans (MonadIO,liftIO)
 import "mtl" Control.Monad.Reader (MonadReader(..),ask,asks)
 import "mtl" Control.Monad.State (MonadState,gets,get,put,modify)
-import Data.List (sort,sortBy,genericIndex,intercalate)
+import Data.List (sort,sortBy,intercalate)
 import Data.PQueue.Min (MinQueue)
 import qualified Data.PQueue.Min as Queue
 import Data.Graph.Inductive (Node)
@@ -52,13 +48,11 @@ import Data.Bits (shiftL)
 import Data.Maybe (catMaybes)
 import Data.Either (partitionEithers)
 import Data.Time.Clock
-import Control.Exception (Exception,SomeException,finally,catch,throw)
+import Control.Exception (Exception,SomeException,catch,throw)
 import System.IO
 import System.Exit
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
-import Data.Type.Equality
-import Data.GADT.Show
 import Control.Monad.Reader (runReader)
 
 data AnyBackend m = forall b. (Backend b,SMTMonad b ~ m) => AnyBackend { anyBackend :: m b }
@@ -130,7 +124,7 @@ data InterpolationState mdl b
                        , interpInputs :: TR.Input mdl (Expr b)
                        , interpNxtInputs :: TR.Input mdl (Expr b)
                        , interpAsserts :: [Expr b BoolType]
-                       , interpReverse :: DMap (Var b) (RevComp (TR.State mdl))
+                       , interpReverse :: DMap (B.Var b) (RevComp (TR.State mdl))
                        }
 
 data LiftingState mdl b

@@ -21,25 +21,20 @@ import Language.SMTLib2.Internals.Type
 
 import LLVM.FFI hiding (GetType,getType,And)
 import qualified LLVM.FFI as LLVM
-import Foreign.Ptr (Ptr,nullPtr)
+import Foreign.Ptr (Ptr)
 import Foreign.Storable (peek)
 import Foreign.Marshal.Array (peekArray)
 import Data.Monoid
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Set (Set)
-import qualified Data.Set as Set
 import Data.Typeable
 import "mtl" Control.Monad.State
-import "mtl" Control.Monad.Reader
 import Data.Foldable
-import Data.Traversable
 import Data.List (genericReplicate,genericIndex)
 import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
 import Control.Exception
 import System.IO.Unsafe
 import System.IO
-import Data.Functor.Identity
 import Data.GADT.Compare
 import Data.GADT.Show
 import Data.Dependent.Map (DMap,DSum(..))

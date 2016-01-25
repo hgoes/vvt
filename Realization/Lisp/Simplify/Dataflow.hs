@@ -7,13 +7,9 @@ import Realization.Lisp.Value
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
-import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.Nat
-import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
-import qualified Language.SMTLib2.Internals.Type.Struct as Struct
+import Language.SMTLib2.Internals.Type.Struct (Tree(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 
-import qualified Data.Text as T
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Dependent.Map (DMap,DSum(..))
@@ -21,7 +17,6 @@ import qualified Data.Dependent.Map as DMap
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Control.Monad.Identity
-import Data.Typeable (cast)
 import Control.Monad.State
 import Data.GADT.Compare
 

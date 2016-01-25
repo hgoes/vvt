@@ -6,20 +6,13 @@ import Realization.Lisp.Value
 import Realization.Lisp.Array
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Type.Nat
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
-import Language.SMTLib2.Internals.Type.Struct (Struct(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import Language.SMTLib2.Internals.Expression
 
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Map (Map)
-import qualified Data.Map as Map
-import qualified Data.Text as T
-import Data.Typeable
 import Data.Foldable (foldl)
 import Prelude hiding (foldl)
 import Data.Functor.Identity

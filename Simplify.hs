@@ -38,6 +38,15 @@ simplify i e = case extract i e of
       concatAnd (e:es) = case extract i e of
         Just (AndLst ys) -> ys++concatAnd es
         _ -> e:concatAnd es
+  Just (OrLst xs) -> do
+    xs' <- mapM (simplify i) xs
+    embed $ OrLst $ concatOr xs'
+    where
+      concatOr :: [e BoolType] -> [e BoolType]
+      concatOr [] = []
+      concatOr (e:es) = case extract i e of
+        Just (OrLst ys) -> ys++concatOr es
+        _ -> e:concatOr es      
   Just (E.App fun args) -> do
     nargs <- List.mapM (simplify i) args
     embed $ E.App fun nargs

@@ -4,18 +4,11 @@ module PartialArgs where
 import Args
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Monad
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type hiding (Constr,Field)
-import qualified Language.SMTLib2.Internals.Backend as B
 
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Traversable
 import Data.Typeable
-import Data.Dependent.Map (DMap)
-import qualified Data.Dependent.Map as DMap
 import Data.GADT.Compare
 import Data.GADT.Show
 

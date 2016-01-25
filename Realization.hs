@@ -6,7 +6,6 @@ import PartialArgs
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Monad (embedSMT)
 import qualified Language.SMTLib2.Internals.Backend as B
@@ -15,7 +14,6 @@ import Control.Monad.State (MonadIO)
 import Data.Proxy
 import Data.Typeable
 import Data.Dependent.Map (DMap)
-import qualified Data.Dependent.Map as DMap
 
 class (PartialComp (State t),PartialComp (Input t))
       => TransitionRelation t where

@@ -10,7 +10,6 @@ import RSM
 import Language.SMTLib2
 import Language.SMTLib2.Pipe hiding (Var)
 import Language.SMTLib2.Internals.Type.Nat
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree)
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
@@ -18,8 +17,7 @@ import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface as I
 import qualified Language.SMTLib2.Internals.Expression as E
-import qualified Language.SMTLib2.Internals.Backend as B
-import Data.Dependent.Map (DMap,DSum(..))
+import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
 import Data.Dependent.Sum
 import Data.GADT.Compare
@@ -32,18 +30,14 @@ import qualified Data.Text as T
 import Data.Typeable
 import qualified Data.AttoLisp as L
 import qualified Data.Attoparsec.Number as L
-import Data.Constraint
 import System.IO (Handle)
 import qualified Data.ByteString as BS
 import Data.Attoparsec
---import Control.Applicative
 import Control.Exception
 import Control.Monad.Trans.Except
-import Control.Monad.Identity
-import Control.Monad.Trans.Identity
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans
-import Data.List (genericLength)
+import Data.Functor.Identity
 
 data LispName (sig :: ([Type],Tree Type)) where
   LispName :: List Repr sz -> Struct Repr tp -> T.Text -> LispName '(sz,tp)

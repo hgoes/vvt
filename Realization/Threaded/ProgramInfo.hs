@@ -5,8 +5,7 @@ import Realization.Threaded.ThreadFinder
 import Realization.Threaded.Slicing (getSlicing)
 
 import LLVM.FFI
-import Foreign.Ptr (Ptr,nullPtr)
-import Data.Set (Set)
+import Foreign.Ptr (Ptr)
 import Data.Map (Map)
 import qualified Data.Map as Map
 

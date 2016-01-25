@@ -1,6 +1,6 @@
-Name:           hctigar
+Name:           vvt
 Version:        0.1
-Cabal-Version:  >= 1.2
+Cabal-Version:  >= 1.8
 Build-Type:     Simple
 Data-Files:     include/assert.h
                 include/pthread.h
@@ -13,57 +13,89 @@ Flag Native-Z3
 Flag Native-MathSAT
   Description: Bind to the MathSAT C-API
   Default: False
-                  
---Executable hctigar
---  Main-Is:              Main.hs
---  Build-Depends:        base,vector,bindings-llvm,fgl,pqueue,containers,
---                        smtlib2,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,
---                        array,resource-pool,mtl,bytestring,attoparsec<0.11,
---                        atto-lisp,text,time,linear,data-fix,constraints
---  GHC-Options:          -threaded -fwarn-unused-imports
 
---Executable vvt-karr
---  Main-Is:              bin/Karr.hs
---  Build-Depends:        base,vector,smtlib2
-
-Executable vvt-enc
-  Main-Is:              bin/Encode.hs
-  Build-Depends:        bindings-llvm,fgl,array,linear,vector,time,pqueue,smtlib2-emulated-modulus,smtlib2-timing,resource-pool
-  Extensions:           KindSignatures,RankNTypes,DataKinds,TypeFamilies,GADTs,StandaloneDeriving,FlexibleContexts,TypeOperators,TypeSynonymInstances,MultiParamTypeClasses,FlexibleInstances,ScopedTypeVariables,PolyKinds,ViewPatterns,OverloadedStrings,DeriveFunctor,DeriveFoldable,DeriveTraversable
-
-Executable vvt-pp
-  Main-Is:              bin/Pretty.hs
-  Build-Depends:        base,bytestring,atto-lisp,attoparsec,text,pretty
-
-Executable vvt-bmc
-  Main-Is:              bin/BMC.hs
-  Extensions:           DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,AllowAmbiguousTypes
-  Build-Depends:        base,mtl,containers,constraints,data-fix,smtlib2,smtlib2-pipe,smtlib2-z3,smtlib2-debug,atto-lisp,bytestring,attoparsec,text,dependent-sum,dependent-map,transformers,time
-
-Executable vvt-verify
-  Main-Is:              bin/Verify.hs
-  GHC-Options:          -threaded
-  Build-Depends:        base, smtlib2 >= 0.3, smtlib2-debug, smtlib2-pipe, smtlib2-timing, smtlib2-emulated-modulus, containers, vector, pqueue, fgl, time, mtl,
-                        dependent-sum, text, atto-lisp, constraints, bytestring, attoparsec, transformers, resource-pool, dependent-map
+Library
+  Exposed-Modules:
+    Args
+    PartialArgs
+    Karr
+    RSM
+    Gates
+    Realization
+    Realization.Common
+    Realization.Lisp
+    Realization.Lisp.Array
+    Realization.Lisp.Karr
+    Realization.Lisp.Transforms
+    Realization.Lisp.Value
+    Realization.Lisp.Predicates
+    Realization.Lisp.Simplify.Dataflow
+    Realization.Lisp.Simplify.ExprSimplify
+    Realization.Lisp.Simplify.Inliner
+    Realization.Lisp.Simplify.Slicing
+    Realization.Lisp.Simplify.ValueSet
+    Realization.Threaded
+    Realization.Threaded.Value
+    Realization.Threaded.Translation
+    Realization.Threaded.Options
+    Realization.Threaded.State
+    Realization.Threaded.ProgramInfo
+    Realization.Threaded.ThreadFinder
+    Realization.Threaded.Slicing
+    BackendOptions
+    CTIGAR
+    SMTPool
+    Domain
+    Consecution
+    LitOrder
+    Simplify
+  GHC-Options: -fwarn-unused-imports
+  Build-Depends:
+    base,mtl,linear,containers,vector,transformers,attoparsec,bytestring,constraints,atto-lisp,text,dependent-sum,smtlib2,smtlib2-pipe,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,bindings-llvm,fgl,dependent-map,resource-pool,pqueue,time
+  Extensions:
+    RankNTypes,KindSignatures,DataKinds,TypeOperators,TypeFamilies,GADTs,ScopedTypeVariables,FlexibleContexts,MultiParamTypeClasses,TypeSynonymInstances,FlexibleInstances,StandaloneDeriving,PolyKinds,ViewPatterns,OverloadedStrings,GeneralizedNewtypeDeriving,DeriveFunctor,DeriveFoldable,DeriveTraversable,CPP
   if flag(Native-Z3)
     Build-Depends:      smtlib2-z3
     CPP-Options:        -DNATIVE_Z3
   if flag(Native-MathSAT)
     Build-Depends:      smtlib2-mathsat
     CPP-Options:        -DNATIVE_MATHSAT
-  Extensions:           DataKinds,GADTs,RankNTypes,TypeFamilies,FlexibleInstances,TypeOperators,PolyKinds,ViewPatterns,ScopedTypeVariables,OverloadedStrings,FlexibleContexts,StandaloneDeriving,MultiParamTypeClasses,ImpredicativeTypes,CPP
+
+
+Executable vvt-enc
+  Hs-Source-Dirs:       bin
+  Main-Is:              Encode.hs
+  Build-Depends:        vvt,base,bindings-llvm
+
+Executable vvt-pp
+  Hs-Source-Dirs:       bin
+  Main-Is:              Pretty.hs
+  Build-Depends:        base,bytestring,atto-lisp,attoparsec,text,pretty
+
+Executable vvt-bmc
+  Hs-Source-Dirs:       bin
+  Main-Is:              BMC.hs
+  Extensions:           RankNTypes,DataKinds,FlexibleContexts
+  Build-Depends:        vvt,base,smtlib2,smtlib2-pipe,smtlib2-debug,mtl,time
+
+Executable vvt-verify
+  Hs-Source-Dirs:       bin
+  Main-Is:              Verify.hs
+  GHC-Options:          -threaded
+  Build-Depends:        vvt,base
 
 Executable vvt-predicates
-  Build-Depends:        base,containers,linear,fgl,smtlib2 >= 0.3, smtlib2-pipe, smtlib2-debug, dependent-map, atto-lisp, attoparsec, bytestring, transformers, mtl, text, dependent-sum, vector, constraints
-  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
-  Main-Is:              bin/Predicates.hs
+  Hs-Source-Dirs:       bin
+  Main-Is:              Predicates.hs
+  Build-Depends:        vvt,base,smtlib2,smtlib2-pipe,smtlib2-debug,containers
 
 Executable vvt-opt
-  Build-Depends:        base,mtl,dependent-sum,dependent-map,bytestring,attoparsec,atto-lisp,transformers,containers,text,constraints,smtlib2 >= 0.3,smtlib2-pipe,smtlib2-debug
-  Extensions:           RankNTypes,KindSignatures,DataKinds,TypeFamilies,FlexibleContexts,MultiParamTypeClasses,StandaloneDeriving,GADTs,TypeOperators,ScopedTypeVariables,PolyKinds,ViewPatterns,FlexibleInstances,OverloadedStrings,GeneralizedNewtypeDeriving
-  Main-Is:              bin/Optimize.hs
+  Hs-Source-Dirs:       bin
+  Main-Is:              Optimize.hs
+  Build-Depends:        vvt,base,text,containers
   
---executable vvt
---  Main-Is:              bin/Main.hs
---  Build-Depends:        process,filepath
---  GHC-Options:          -threaded
+executable vvt
+  Hs-Source-Dirs:       bin
+  Main-Is:              Main.hs
+  Build-Depends:        base,process,filepath
+  GHC-Options:          -threaded

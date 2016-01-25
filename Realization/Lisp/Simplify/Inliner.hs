@@ -8,20 +8,13 @@ import Realization.Lisp.Simplify.Dataflow
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Expression
-import Language.SMTLib2.Internals.Type
-import Language.SMTLib2.Internals.Type.List (List(..))
 import qualified Language.SMTLib2.Internals.Type.List as List
-import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
-import qualified Language.SMTLib2.Internals.Type.Struct as Struct
+import Language.SMTLib2.Internals.Type.Struct (Struct(..))
 
-import Data.Map (Map)
+import Data.Traversable (mapAccumL)
 import qualified Data.Map as Map
-import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Traversable (Traversable,mapAccumL)
-import qualified Data.Text as T
 import Control.Monad.Identity
-import Data.Typeable (cast)
 import Data.Dependent.Map (DMap,DSum(..))
 import qualified Data.Dependent.Map as DMap
 
