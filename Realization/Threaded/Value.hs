@@ -1,7 +1,6 @@
 module Realization.Threaded.Value where
 
 import Args
-import Gates
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
@@ -22,7 +21,6 @@ import Prelude hiding (sequence,mapM)
 import Data.GADT.Show
 import Data.GADT.Compare
 import Text.Show
-import Control.Monad.State
 
 data Struct a = Singleton { singleton :: a }
               | Struct { struct :: [Struct a] }
@@ -598,127 +596,6 @@ sameArrayType :: Struct (SymArray e) -> Struct (SymArray e) -> Bool
 sameArrayType x1 x2 = sameStructType
                       (fmap symArrType x1)
                       (fmap symArrType x2)
-
-addSymGate :: (Embed m e)
-           => GateMap m e -> SymType
-           -> m (SymVal e) -> Maybe String
-           -> (SymVal GateExpr,GateMap m e)
-addSymGate gts TpBool f name
-  = let (expr,ngts) = addGate gts (Gate { gateTransfer = fmap valBool f
-                                        , gateType = BoolRepr
-                                        , gateName = name })
-    in (ValBool expr,ngts)
-addSymGate gts TpInt f name
-  = let (expr,ngts) = addGate gts (Gate { gateTransfer = fmap valInt f
-                                        , gateType = IntRepr
-                                        , gateName = name })
-    in (ValInt expr,ngts)
-addSymGate gts (TpPtr trgs tp) f name
-  = let (ngts,trgExprs) = Map.mapAccumWithKey
-                          (\gts loc _ -> let gt = Gate { gateTransfer = do
-                                                           x <- f
-                                                           case Map.lookup loc (valPtr x) of
-                                                             Just (r,_) -> return r
-                                                             Nothing -> embedConst (BoolValueC False)
-                                                       , gateType = BoolRepr
-                                                       , gateName = name }
-                                             (cond,gts1) = addGate gts gt
-                                             ((_,gts2),idx) = mapAccumL
-                                                              (\(n,gts) _ -> let gt = Gate { gateTransfer = fmap ((!!n).snd.(Map.! loc).valPtr) f
-                                                                                           , gateType = IntRepr
-                                                                                           , gateName = name }
-                                                                                 (idx,ngts) = addGate gts gt
-                                                                             in ((n+1,ngts),idx)
-                                                              ) (0,gts1) [ () | DynamicAccess <- offsetPattern loc ]
-                                         in (gts2,(cond,idx))
-                          ) gts trgs
-    in (ValPtr trgExprs tp,ngts)
-addSymGate gts (TpThreadId trgs) f name
-  = let (ngts,trgExprs) = Map.mapAccumWithKey
-                          (\gts th _ -> let gt = Gate { gateTransfer = fmap ((Map.! th).valThreadId) f
-                                                      , gateType = BoolRepr
-                                                      , gateName = name }
-                                            (cond,ngts) = addGate gts gt
-                                        in (ngts,cond)
-                          ) gts trgs
-    in (ValThreadId trgExprs,ngts)
-addSymGate gts (TpCondition trgs) f name
-  = let (ngts,trgExprs) = Map.mapAccumWithKey
-                          (\gts th _ -> let gt = Gate { gateTransfer = fmap ((Map.! th).valCondition) f
-                                                      , gateType = BoolRepr
-                                                      , gateName = name }
-                                            (cond,ngts) = addGate gts gt
-                                        in (ngts,cond)
-                          ) gts trgs
-    in (ValCondition trgExprs,ngts)
-addSymGate gts (TpVector tps) f name
-  = let (ngts,nvals) = mapAccumL (\gts (tp,i) -> let (val,ngts) = addSymGate gts tp (fmap ((!!i).valVector) f) name
-                                                 in (ngts,val)
-                                 ) gts (zip tps [0..])
-    in (ValVector nvals,ngts)
-
-addSymArrGate :: (Functor m,Monad m)
-              => GateMap m e -> SymType
-              -> m (SymArray e) -> Maybe String
-              -> (SymArray GateExpr,GateMap m e)
-addSymArrGate gts TpBool f name
-  = let (arr,ngts) = addGate gts (Gate { gateTransfer = fmap arrBool f
-                                       , gateType = ArrayRepr (List.list1 IntRepr) BoolRepr
-                                       , gateName = name })
-    in (ArrBool arr,ngts)
-addSymArrGate gts TpInt f name
-  = let (arr,ngts) = addGate gts (Gate { gateTransfer = fmap arrInt f
-                                       , gateType = ArrayRepr (List.list1 IntRepr) IntRepr
-                                       , gateName = name })
-    in (ArrInt arr,ngts)
-addSymArrGate gts (TpPtr trgs tp) f name = (ArrPtr conds tp,ngts)
-  where
-    (ngts,conds) = Map.mapAccumWithKey
-                   (\gts loc _ -> addPtrGate gts loc) gts trgs
-    addPtrGate gts loc = let gt = Gate { gateTransfer = fmap (fst.(Map.! loc).arrPtr) f
-                                       , gateType = ArrayRepr (List.list1 IntRepr) BoolRepr
-                                       , gateName = name }
-                             (cond,gts1) = addGate gts gt
-                             ((_,gts2),idx) = mapAccumL (addIdxGate loc) (0,gts1)
-                                              [ () | DynamicAccess <- offsetPattern loc ]
-                         in (gts2,(cond,idx))
-    addIdxGate loc (n,gts) _ = let gt = Gate { gateTransfer = fmap ((!!n).snd.(Map.! loc).arrPtr) f
-                                             , gateType = ArrayRepr (List.list1 IntRepr) IntRepr
-                                             , gateName = name }
-                                   (idx,ngts) = addGate gts gt
-                               in ((n+1,ngts),idx)
---addSymArrGate gts (TpThreadId trgs) f name = (ArrThreadId conds,ngts)
-
-addStructGate :: (Functor m)
-              => (GateMap m e -> a
-                  -> m (b e)
-                  -> Maybe String -> (b GateExpr,GateMap m e))
-              -> GateMap m e -> Struct a
-              -> m (Struct (b e))
-              -> Maybe String
-              -> (Struct (b GateExpr),GateMap m e)
-addStructGate add gts (Singleton tp) f name
-  = let (nval,ngts) = add gts tp (fmap singleton f) name
-    in (Singleton nval,ngts)
-addStructGate add gts (Struct tps) f name
-  = let ((ngts,_),nvals) = mapAccumL
-                           (\(gts,n) tp
-                            -> let (nval,ngts) = addStructGate add gts tp (fmap ((!!n).struct) f) name
-                               in ((ngts,n+1),nval)
-                           ) (gts,0) tps
-    in (Struct nvals,ngts)
-
-addCompositeGate :: Composite arg
-                 => GateMap m e
-                 -> arg (Gate m e)
-                 -> (arg GateExpr,GateMap m e)
-addCompositeGate mp arg
-  = runState (foldExprs
-              (\rev gt -> do
-                  cmp <- get
-                  let (ne,nmp) = addGate cmp gt
-                  put nmp
-                  return ne) arg) mp
 
 compositeITE :: (Embed m e,GetType e,Composite arg) => e BoolType -> arg e -> arg e -> m (arg e)
 compositeITE c arg1 arg2
