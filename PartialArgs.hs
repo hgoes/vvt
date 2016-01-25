@@ -1,104 +1,67 @@
 {-# LANGUAGE TypeFamilies,ScopedTypeVariables #-}
 module PartialArgs where
 
+import Args
+
 import Language.SMTLib2
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Expression
+import Language.SMTLib2.Internals.Type hiding (Constr,Field)
 
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Traversable
 import Data.Typeable
+import Data.GADT.Compare
+import Data.GADT.Show
 
-class LiftArgs a => PartialArgs a where
-  type PartialValue a
-  maskValue :: a -> PartialValue a -> [Bool] -> (PartialValue a,[Bool])
-  unmaskValue :: a -> Unpacked a -> PartialValue a
-  assignPartial :: a -> PartialValue a -> [Maybe (SMTExpr Bool)]
+class (Composite a,Ord (Unpacked a),Show (Unpacked a)) => LiftComp a where
+  type Unpacked a
+  liftComp :: (Embed m e,GetType e)
+           => Unpacked a
+           -> m (a e)
+  unliftComp :: (Embed m e,GetType e) => (forall t. e t -> m (ConcreteValue t))
+             -> a e
+             -> m (Unpacked a)
 
-assignPartial' :: PartialArgs a => a -> PartialValue a -> [SMTExpr Bool]
-assignPartial' v p = [ cond
-                     | Just cond <- assignPartial v p ]
+class (LiftComp a,Ord (Partial a),Show (Partial a)) => PartialComp a where
+  type Partial a
+  maskValue :: Proxy a -> Partial a -> [Bool] -> (Partial a,[Bool])
+  unmaskValue :: Proxy a -> Unpacked a -> Partial a
+  assignPartial :: (Embed m e,GetType e) => (forall t. e t -> ConcreteValue t -> m p)
+                -> a e -> Partial a -> m [Maybe p]
 
-instance SMTValue t => PartialArgs (SMTExpr t) where
-  type PartialValue (SMTExpr t) = Maybe t
-  maskValue _ val (x:xs) = (if x
-                            then val
-                            else Nothing,xs)
-  unmaskValue _ val = Just val
-  assignPartial _ Nothing = [Nothing]
-  assignPartial expr (Just v) = [Just $ expr .==. (constantAnn v (extractAnnotation expr))]
+data PValue t where
+  NoPValue :: Repr t -> PValue t
+  PValue :: ConcreteValue t -> PValue t
 
-instance (PartialArgs a1,PartialArgs a2) => PartialArgs (a1,a2) where
-  type PartialValue (a1,a2) = (PartialValue a1,PartialValue a2)
-  maskValue (_::(a1,a2)) (v1,v2) xs = let (r1,rest1) = maskValue (undefined::a1) v1 xs
-                                          (r2,rest2) = maskValue (undefined::a2) v2 rest1
-                                      in ((r1,r2),rest2)
-  unmaskValue (_::(a1,a2)) (v1,v2) = (unmaskValue (undefined::a1) v1,
-                                      unmaskValue (undefined::a2) v2)
-  assignPartial (e1,e2) (v1,v2) = (assignPartial e1 v1)++
-                                  (assignPartial e2 v2)
+instance GEq PValue where
+  geq (NoPValue tp1) (NoPValue tp2) = case geq tp1 tp2 of
+    Just Refl -> Just Refl
+    Nothing -> Nothing
+  geq (NoPValue _) _ = Nothing
+  geq _ (NoPValue _) = Nothing
+  geq (PValue v1) (PValue v2) = case geq v1 v2 of
+    Just Refl -> Just Refl
+    Nothing -> Nothing
 
-instance (PartialArgs a1,PartialArgs a2,PartialArgs a3)
-         => PartialArgs (a1,a2,a3) where
-  type PartialValue (a1,a2,a3) = (PartialValue a1,PartialValue a2,PartialValue a3)
-  maskValue (_::(a1,a2,a3)) (v1,v2,v3) xs
-    = let (r1,rest1) = maskValue (undefined::a1) v1 xs
-          (r2,rest2) = maskValue (undefined::a2) v2 rest1
-          (r3,rest3) = maskValue (undefined::a3) v3 rest2
-      in ((r1,r2,r3),rest3)
-  unmaskValue (_::(a1,a2,a3)) (v1,v2,v3)
-    = (unmaskValue (undefined::a1) v1,
-       unmaskValue (undefined::a2) v2,
-       unmaskValue (undefined::a3) v3)
-  assignPartial (e1,e2,e3) (v1,v2,v3)
-    = (assignPartial e1 v1)++
-      (assignPartial e2 v2)++
-      (assignPartial e3 v3)
+instance GCompare PValue where
+  gcompare (NoPValue tp1) (NoPValue tp2) = case gcompare tp1 tp2 of
+    GEQ -> GEQ
+    GLT -> GLT
+    GGT -> GGT
+  gcompare (NoPValue _) _ = GLT
+  gcompare _ (NoPValue _) = GGT
+  gcompare (PValue v1) (PValue v2) = case gcompare v1 v2 of
+    GEQ -> GEQ
+    GLT -> GLT
+    GGT -> GGT
 
-instance (PartialArgs a1,PartialArgs a2,PartialArgs a3,PartialArgs a4)
-         => PartialArgs (a1,a2,a3,a4) where
-  type PartialValue (a1,a2,a3,a4) = (PartialValue a1,PartialValue a2,PartialValue a3,PartialValue a4)
-  maskValue (_::(a1,a2,a3,a4)) (v1,v2,v3,v4) xs
-    = let (r1,rest1) = maskValue (undefined::a1) v1 xs
-          (r2,rest2) = maskValue (undefined::a2) v2 rest1
-          (r3,rest3) = maskValue (undefined::a3) v3 rest2
-          (r4,rest4) = maskValue (undefined::a4) v4 rest3
-      in ((r1,r2,r3,v4),rest4)
-  unmaskValue (_::(a1,a2,a3,a4)) (v1,v2,v3,v4)
-    = (unmaskValue (undefined::a1) v1,
-       unmaskValue (undefined::a2) v2,
-       unmaskValue (undefined::a3) v3,
-       unmaskValue (undefined::a4) v4)
-  assignPartial (e1,e2,e3,e4) (v1,v2,v3,v4)
-    = (assignPartial e1 v1)++
-      (assignPartial e2 v2)++
-      (assignPartial e3 v3)++
-      (assignPartial e4 v4)
+instance Show (PValue t) where
+  showsPrec p (NoPValue _) = showChar '*'
+  showsPrec p (PValue c) = gshowsPrec p c
 
-instance (Typeable a,Ord a,Show a,PartialArgs b) => PartialArgs (Map a b) where
-  type PartialValue (Map a b) = Map a (PartialValue b)
-  maskValue (_::Map a b) mpPart mask
-    = let (rmask,rmp) = mapAccumL
-                        (\cmask pval -> let (pval',nmask) = maskValue (undefined::b) pval cmask
-                                        in (nmask,pval')
-                        ) mask mpPart
-      in (rmp,rmask)
-  unmaskValue (_::Map a b) mp = fmap (unmaskValue (undefined::b)) mp
-  assignPartial mp mpPart = concat $ Map.elems $ Map.intersectionWith assignPartial mp mpPart
+instance GShow PValue where
+  gshowsPrec = showsPrec
 
-instance (PartialArgs a) => PartialArgs (Maybe a) where
-  type PartialValue (Maybe a) = Maybe (PartialValue a)
-  maskValue _ Nothing mask = (Nothing,mask)
-  maskValue (_::Maybe a) (Just x) mask = let (nx,nmask) = maskValue (undefined::a) x mask
-                                         in (Just nx,nmask)
-  unmaskValue (_::Maybe a) v = fmap (unmaskValue (undefined::a)) v
-  assignPartial Nothing Nothing = []
-  assignPartial (Just x) (Just vx) = assignPartial x vx
-
-instance (PartialArgs a) => PartialArgs [a] where
-  type PartialValue [a] = [PartialValue a]
-  maskValue _ [] mask = ([],mask)
-  maskValue (_::[a]) (x:xs) mask = let (x',mask1) = maskValue (undefined::a) x mask
-                                       (xs',mask2) = maskValue (undefined::[a]) xs mask1
-                                   in (x':xs',mask2)
-  unmaskValue (_::[a]) xs = fmap (unmaskValue (undefined::a)) xs
-  assignPartial xs ys = concat $ zipWith assignPartial xs ys
+assignEq :: (Embed m e,GetType e) => e t -> ConcreteValue t -> m (e BoolType)
+assignEq var c = do
+  val <- embedConst c
+  embed $ App (Eq (getType val) (Succ (Succ Zero))) (var ::: val ::: Nil)

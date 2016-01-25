@@ -3,21 +3,27 @@ module Realization.Lisp.Simplify.Inliner where
 
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Array
 import Realization.Lisp.Simplify.Dataflow
 
-import Language.SMTLib2.Internals
+import Language.SMTLib2
+import Language.SMTLib2.Internals.Expression
+import qualified Language.SMTLib2.Internals.Type.List as List
+import Language.SMTLib2.Internals.Type.Struct (Struct(..))
 
-import Data.Map (Map)
+import Data.Traversable (mapAccumL)
 import qualified Data.Map as Map
-import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Traversable (Traversable,mapAccumL)
-import qualified Data.Text as T
 import Control.Monad.Identity
-import Data.Typeable (cast)
+import Data.Dependent.Map (DMap,DSum(..))
+import qualified Data.Dependent.Map as DMap
 
-data Inlining = Inlining { inliningCache :: Map T.Text (Maybe LispVar)
+data Inlining = Inlining { inliningCache :: DMap LispName InlineStatus
                          , inliningDeps :: DependencyMap }
+
+data InlineStatus tp where
+  Inlined :: LispVar LispExpr tp -> InlineStatus tp
+  Used :: InlineStatus tp
 
 doInlining :: LispProgram -> LispProgram
 doInlining prog = prog { programState = nstate
@@ -30,95 +36,143 @@ doInlining prog = prog { programState = nstate
                        , programAssumption = nassump
                        , programPredicates = npreds }
   where
-    inl = Inlining Map.empty (generateDependencyMapUp prog)
-    (ngates,inl1) = inlineList (\prog (tp,var) inl
-                                -> let (nvar,ninl) = inlineVar prog var inl
-                                   in ((tp,nvar),ninl))
+    inl = Inlining DMap.empty (generateDependencyMapUp prog)
+    (ngates,inl1) = inlineMap (\prog gt inl
+                               -> let (ndef,ninl) = inlineVar prog (gateDefinition gt) inl
+                                   in (gt { gateDefinition = ndef },ninl))
                     prog (programGates prog) inl
-    (nnext,inl2) = inlineList inlineVar prog (programNext prog) inl1
+    (nnext,inl2) = inlineMap inlineVar prog (programNext prog) inl1
     (nprop,inl3) = inlineList inlineExpr prog (programProperty prog) inl2
     (ninvar,inl4) = inlineList inlineExpr prog (programInvariant prog) inl3
     (nassump,inl5) = inlineList inlineExpr prog (programAssumption prog) inl4
     (npreds,inl6) = inlineList inlineExpr prog (programPredicates prog) inl5
-    -- All variables that have been inlined
-    inlined = Map.mapMaybe (\x -> case x of
-                              Just inl -> Just ()
-                              _ -> Nothing
-                           ) (inliningCache inl6)
-    -- All variables that are used, but not inlined
-    used = Map.mapMaybe (\x -> case x of
-                            Nothing -> Just ()
-                            Just _ -> Nothing
-                        ) (inliningCache inl6)
-    nstate = Map.difference (programState prog) inlined
-    --nstate = Map.intersection (programState prog) used
-    ninput = Map.difference (programInput prog) inlined
-    --ninput = Map.intersection (programInput prog) used
-    --ngates' = Map.difference ngates inlined
-    ngates' = Map.intersection ngates used
-    nnext' = Map.difference nnext inlined
-    --nnext' = Map.intersection nnext used
-    ninit = Map.difference (programInit prog) inlined
-    --ninit = Map.intersection (programInit prog) used
+    nstate = filterMap (programState prog) inl6
+    ninput = filterMap (programInput prog) inl6
+    ngates' = filterMap ngates inl6
+    nnext' = filterMap nnext inl6
+    ninit = filterMap (programInit prog) inl6
 
-isSimple :: LispVar -> Bool
-isSimple (NamedVar _ _ _) = True
-isSimple (LispConstr val) = case size val of
-  Size [] -> isSimpleStruct (value val)
+filterMap :: DMap LispName a -> Inlining -> DMap LispName a
+filterMap mp inl = DMap.fromAscList
+                   [ name :=> ann
+                   | name :=> ann <- DMap.toAscList mp
+                   , case DMap.lookup name (inliningCache inl) of
+                     Just Used -> True
+                     Nothing -> True
+                     _ -> False ]
+
+inlineMap :: (forall sig. LispProgram -> a sig -> Inlining -> (a sig,Inlining))
+          -> LispProgram -> DMap LispName a -> Inlining
+          -> (DMap LispName a,Inlining)
+inlineMap f prog mp inl = (DMap.fromAscList nlst,ninl)
+  where
+    lst = DMap.toAscList mp
+    (ninl,nlst) = mapAccumL (\inl (name :=> e)
+                             -> let (ne,ninl) = f prog e inl
+                                in (ninl,name :=> ne)
+                            ) inl lst
+
+isSimple :: LispVar LispExpr tp -> Bool
+isSimple (NamedVar _ _) = True
+isSimple (LispConstr (LispValue sz val)) = case sz of
+  Size Nil Nil -> isSimpleStruct val
   _ -> False
   where
-    isSimpleStruct (Singleton (Val x)) = isSimpleExpr x
+    isSimpleStruct :: Struct (Sized LispExpr lvl) tp -> Bool
+    isSimpleStruct (Singleton (Sized x)) = isSimpleExpr x
     isSimpleStruct (Struct _) = False
 
-    isSimpleExpr (Const _ _) = True
-    isSimpleExpr (InternalObj _ _) = True
+    isSimpleExpr (LispExpr (Const _)) = True
+    isSimpleExpr (LispRef _ _) = True
     isSimpleExpr _ = False
 
-inlineVar :: LispProgram -> LispVar -> Inlining -> (LispVar,Inlining)
-inlineVar prog v@(NamedVar name cat tp) inl = case cat of
-  Gate -> let def = snd $ (programGates prog) Map.! name
-              (res,ninl) = getInlining prog name def inl
+inlineVar :: LispProgram -> LispVar LispExpr sig -> Inlining -> (LispVar LispExpr sig,Inlining)
+inlineVar prog v@(NamedVar name cat) inl = case cat of
+  Gate -> let def = gateDefinition $ (programGates prog) DMap.! name
+              (res,ninl) = getInlining prog name Gate def inl
           in (case res of
-                Nothing -> v
-                Just r -> r,ninl)
+                Used -> v
+                Inlined r -> r,ninl)
   _ -> (v,inl)
 inlineVar prog (LispStore var idx idx_dyn expr) inl
   = (LispStore var' idx idx_dyn' expr',inl3)
   where
     (var',inl1) = inlineVar prog var inl
-    (idx_dyn',inl2) = inlineList inlineExpr prog idx_dyn inl1
+    (idx_dyn',inl2) = inlineArrayIndex prog idx_dyn inl1
     (expr',inl3) = inlineExpr prog expr inl2
-inlineVar prog (LispConstr val) inl = (LispConstr (LispValue { size = Size nsize
-                                                             , value = nvalue }),inl2)
+inlineVar prog (LispConstr (LispValue sz val)) inl = (LispConstr (LispValue nsize nvalue),inl2)
   where
-    (inl1,nsize) = mapAccumL (\inl (SizeElement expr)
-                              -> let (nexpr,ninl) = inlineExpr prog expr inl
-                                 in (ninl,SizeElement nexpr)
-                             ) inl (sizeElements $ size val)
-    (nvalue,inl2) = inlineStruct prog (value val) inl1
-    inlineStruct prog (Singleton (Val x)) inl = let (nx,inl') = inlineExpr prog x inl
-                                           in (Singleton (Val nx),inl')
+    (nsize,inl1) = inlineSize prog sz inl
+    (nvalue,inl2) = inlineStruct prog val inl1
+    inlineStruct :: LispProgram -> Struct (Sized LispExpr lvl) tp
+                 -> Inlining -> (Struct (Sized LispExpr lvl) tp,Inlining)
+    inlineStruct prog (Singleton (Sized x)) inl
+      = let (nx,inl') = inlineExpr prog x inl
+        in (Singleton (Sized nx),inl')
     inlineStruct prog (Struct xs) inl
-      = let (nxs,ninl) = inlineList inlineStruct prog xs inl
+      = let (nxs,ninl) = inlineStructs prog xs inl
         in (Struct nxs,ninl)
+    inlineStructs :: LispProgram -> List (Struct (Sized LispExpr lvl)) sig
+                  -> Inlining -> (List (Struct (Sized LispExpr lvl)) sig,Inlining)
+    inlineStructs prog Nil inl = (Nil,inl)
+    inlineStructs prog (x ::: xs) inl
+      = let (nx,inl1) = inlineStruct prog x inl
+            (nxs,inl2) = inlineStructs prog xs inl1
+        in (nx ::: nxs,inl2)
 inlineVar prog (LispITE cond v1 v2) inl = (LispITE ncond nv1 nv2,inl3)
   where
     (ncond,inl1) = inlineExpr prog cond inl
     (nv1,inl2) = inlineVar prog v1 inl1
     (nv2,inl3) = inlineVar prog v2 inl2
 
-inlineExpr :: LispProgram -> SMTExpr t -> Inlining -> (SMTExpr t,Inlining)
-inlineExpr prog (App fun args) inl = (App fun nargs,ninl)
+inlineSize :: LispProgram -> Size LispExpr lvl
+           -> Inlining -> (Size LispExpr lvl,Inlining)
+inlineSize prog (Size tps szs) inl
+  = (Size tps nszs,ninl)
+  where
+    (ninl,nszs) = runIdentity $ List.mapAccumM
+                  (\inl e -> do
+                      let (ne,ninl) = inlineExpr prog e inl
+                      return (ninl,ne)
+                  ) inl szs
+
+inlineExpr :: LispProgram -> LispExpr t -> Inlining -> (LispExpr t,Inlining)
+inlineExpr prog (LispExpr (App fun args)) inl = (LispExpr $ App fun nargs,ninl)
   where
     (ninl,nargs) = runIdentity $
-                   foldExprs (\inl expr _ -> do
-                                  let (nexpr,inl') = inlineExpr prog expr inl
-                                  return (inl',nexpr)
-                             ) inl args (extractArgAnnotation args)
-inlineExpr prog (InternalObj (cast -> Just acc) ann) inl = (InternalObj nacc ann,ninl)
+                   List.mapAccumM (\inl expr -> do
+                                      let (nexpr,inl') = inlineExpr prog expr inl
+                                      return (inl',nexpr)
+                                  ) inl args
+inlineExpr prog (LispExpr e) inl = (LispExpr e,inl)
+inlineExpr prog (LispRef var idx) inl = (LispRef nvar idx,inl1)
   where
-    (nacc,ninl) = inlineAccess prog acc inl
-inlineExpr prog expr inl = (expr,inl)
+    (nvar,inl1) = inlineVar prog var inl
+inlineExpr prog (LispEq v1 v2) inl = (LispEq nv1 nv2,inl2)
+  where
+    (nv1,inl1) = inlineVar prog v1 inl
+    (nv2,inl2) = inlineVar prog v2 inl1
+inlineExpr prog (ExactlyOne xs) inl = (ExactlyOne nxs,ninl)
+  where
+    (ninl,nxs) = mapAccumL (\inl x -> let (nx,ninl) = inlineExpr prog x inl
+                                      in (ninl,nx)
+                           ) inl xs
+inlineExpr prog (AtMostOne xs) inl = (AtMostOne nxs,ninl)
+  where
+    (ninl,nxs) = mapAccumL (\inl x -> let (nx,ninl) = inlineExpr prog x inl
+                                      in (ninl,nx)
+                           ) inl xs
+
+inlineArrayIndex :: LispProgram -> List LispExpr arrlvl
+                 -> Inlining -> (List LispExpr arrlvl,
+                                 Inlining)
+inlineArrayIndex prog idx inl = (nidx,ninl)
+  where
+    (ninl,nidx) = runIdentity $ List.mapAccumM
+                  (\inl e -> do
+                      let (ne,ninl) = inlineExpr prog e inl
+                      return (ninl,ne)
+                  ) inl idx
 
 inlineList :: Traversable t => (LispProgram -> a -> Inlining -> (a,Inlining))
            -> LispProgram -> t a -> Inlining -> (t a,Inlining)
@@ -128,31 +182,16 @@ inlineList f prog xs inl = (nxs,ninl)
                                       in (ninl,nx)
                            ) inl xs
 
-inlineAccess :: LispProgram -> LispVarAccess -> Inlining -> (LispVarAccess,Inlining)
-inlineAccess prog (LispVarAccess var idx dyn_idx) inl = (LispVarAccess nvar idx ndyn_idx,inl2)
-  where
-    (nvar,inl1) = inlineVar prog var inl
-    (ndyn_idx,inl2) = inlineList inlineExpr prog dyn_idx inl1
-inlineAccess prog (LispSizeAccess var idx) inl = (LispSizeAccess nvar nidx,inl2)
-  where
-    (nvar,inl1) = inlineVar prog var inl
-    (nidx,inl2) = inlineList inlineExpr prog idx inl1
-inlineAccess prog (LispSizeArrAccess var idx) inl = (LispSizeArrAccess nvar idx,inl1)
-  where
-    (nvar,inl1) = inlineVar prog var inl
-inlineAccess prog (LispEq v1 v2) inl = (LispEq nv1 nv2,inl2)
-  where
-    (nv1,inl1) = inlineVar prog v1 inl
-    (nv2,inl2) = inlineVar prog v2 inl1 
-
-getInlining :: LispProgram -> T.Text -> LispVar -> Inlining -> (Maybe LispVar,Inlining)
-getInlining prog name def inl = case Map.lookup name (inliningCache inl) of
+getInlining :: LispProgram -> LispName sig -> LispVarCat -> LispVar LispExpr sig -> Inlining
+            -> (InlineStatus sig,Inlining)
+getInlining prog name@(LispName _ _ name') cat def inl = case DMap.lookup name (inliningCache inl) of
   Just res -> (res,inl)
   Nothing -> if isSimple def || Set.size deps < 2
-             then (Just nvar,inl1 { inliningCache = Map.insert name (Just nvar) (inliningCache inl1) })
-             else (Nothing,inl { inliningCache = Map.insert name Nothing (inliningCache inl) })
+             then (Inlined nvar,inl1 { inliningCache = DMap.insert name (Inlined nvar) (inliningCache inl1) })
+             else (Used,inl { inliningCache = DMap.insert name Used (inliningCache inl) })
     where
-      deps = case Map.lookup name (inliningDeps inl) of
+      deps = case Map.lookup (AnyName name (cat==State)) (inliningDeps inl) of
         Nothing -> Set.empty
         Just d -> d
       (nvar,inl1) = inlineVar prog def inl
+      

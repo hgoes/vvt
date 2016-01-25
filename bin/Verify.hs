@@ -12,6 +12,8 @@ import System.Exit
 import Control.Concurrent
 import Control.Exception
 import System.IO
+import Data.Proxy
+import Control.Monad (when)
 
 data Options = Options { optBackends :: BackendOptions
                        , optShowHelp :: Bool
@@ -19,6 +21,7 @@ data Options = Options { optBackends :: BackendOptions
                        , optVerbosity :: Int
                        , optStats :: Bool
                        , optDumpDomain :: Maybe String
+                       , optPrintFixpoint :: Bool
                        }
 
 defaultOptions :: Options
@@ -28,6 +31,7 @@ defaultOptions = Options { optBackends = defaultBackendOptions
                          , optVerbosity = 0
                          , optStats = False
                          , optDumpDomain = Nothing
+                         , optPrintFixpoint = False
                          }
 
 allOpts :: [OptDescr (Options -> Options)]
@@ -37,7 +41,7 @@ allOpts
     ,Option [] ["backend"]
      (ReqArg (\b opt -> case readsPrec 0 b of
                [(backend,':':solver)]
-                 -> opt { optBackends = setBackend backend solver
+                 -> opt { optBackends = setBackend backend (read solver)
                                         (optBackends opt)
                         }) "<backend>:solver")
      "The SMT solver used for the specified backend."
@@ -61,6 +65,8 @@ allOpts
     ,Option [] ["dump-domain"]
      (ReqArg (\file opt -> opt { optDumpDomain = Just file }) "file")
      "Dump the domain graph into a file."
+    ,Option [] ["print-fixpoint"]
+     (NoArg $ \opt -> opt { optPrintFixpoint = True }) "If the program can be proven correct, output the fixpoint."
     ]
 
 parseTime :: String -> Int
@@ -114,7 +120,7 @@ main = do
      mapM_ (hPutStrLn stderr) errs
      exitWith (ExitFailure (-1))
    Right opts -> do
-     prog <- fmap parseLispProgram (readLispFile stdin)
+     prog <- fmap parseProgram (readLispFile stdin)
      tr <- case optTimeout opts of
             Nothing -> check prog
                        (optBackends opts)
@@ -141,20 +147,23 @@ main = do
                  hPutStrLn stderr "Timeout"
                  exitWith ExitSuccess
      case tr of
-      Right fp -> putStrLn "No bug found."
+      Right fp -> do
+        putStrLn "No bug found."
+        when (optPrintFixpoint opts) $
+          putStrLn $ "Fixpoint: "++show fp
       Left tr' -> do
         putStrLn "Bug found:"
         mapM_ (\(step,inp) -> do
                   putStr "State: "
-                  renderPartialState prog
-                    (unmaskValue (getUndefState prog) step) >>= putStrLn
+                  putStrLn $ renderPartialState prog
+                    (unmaskValue (getUndefState prog) step)
                   putStr "Input: "
-                  renderPartialInput prog
-                    (unmaskValue (getUndefInput prog) inp) >>= putStrLn
+                  putStrLn $ renderPartialInput prog
+                    (unmaskValue (getUndefInput prog) inp)
               ) tr'
 
-getUndefState :: TransitionRelation tr => tr -> State tr
-getUndefState _ = undefined
+getUndefState :: TransitionRelation tr => tr -> Proxy (State tr)
+getUndefState _ = Proxy
 
-getUndefInput :: TransitionRelation tr => tr -> Input tr
-getUndefInput _ = undefined
+getUndefInput :: TransitionRelation tr => tr -> Proxy (Input tr)
+getUndefInput _ = Proxy

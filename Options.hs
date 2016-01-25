@@ -62,8 +62,8 @@ allOpts
     ,Option [] ["backend"]
      (ReqArg (\b opt -> case readsPrec 0 b of
                [(backend,':':solver)]
-                 -> opt { optBackends = setBackend backend solver (optBackends opt)
-                        }) "<backend>:solver")
+                 -> opt { optBackends = setBackend backend (read solver) (optBackends opt)
+                        }) "<backend>:<solver>")
      "The SMT solver used for the specified backend."
     ,Option [] ["debug-backend"]
      (ReqArg (\b opt -> case readsPrec 0 b of
@@ -130,6 +130,11 @@ showHelp = do
              ,"       where <file> is an LLVM bitcode file."
              ,""
              ,"  <backend> can be \"cons\", \"lifting\", \"domain\", \"init\" or \"interp\"."
+             ,"  <solver> can be:"
+             ,"    pipe:EXEC [ARG...] - An executable with arguments that uses the SMTLib2 specification."
+#ifdef NATIVE_Z3
+             ,"    Z3 - Native Z3 C-API."
+#endif
              ]
     ) allOpts
   exitWith ExitSuccess

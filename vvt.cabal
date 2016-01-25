@@ -1,0 +1,99 @@
+Name:           vvt
+Version:        0.1
+Cabal-Version:  >= 1.8
+Build-Type:     Simple
+Data-Files:     include/assert.h
+                include/pthread.h
+                include/stdlib.h
+                include/vvt.h
+
+Flag Native-Z3
+  Description: Bind to the Z3 C-API
+  Default: False
+Flag Native-MathSAT
+  Description: Bind to the MathSAT C-API
+  Default: False
+
+Library
+  Exposed-Modules:
+    Args
+    PartialArgs
+    Karr
+    RSM
+    Realization
+    Realization.Common
+    Realization.Lisp
+    Realization.Lisp.Array
+    Realization.Lisp.Karr
+    Realization.Lisp.Transforms
+    Realization.Lisp.Value
+    Realization.Lisp.Predicates
+    Realization.Lisp.Simplify.Dataflow
+    Realization.Lisp.Simplify.ExprSimplify
+    Realization.Lisp.Simplify.Inliner
+    Realization.Lisp.Simplify.Slicing
+    Realization.Lisp.Simplify.ValueSet
+    Realization.Threaded
+    Realization.Threaded.Value
+    Realization.Threaded.Translation
+    Realization.Threaded.Options
+    Realization.Threaded.State
+    Realization.Threaded.ProgramInfo
+    Realization.Threaded.ThreadFinder
+    Realization.Threaded.Slicing
+    BackendOptions
+    CTIGAR
+    SMTPool
+    Domain
+    Consecution
+    LitOrder
+    Simplify
+  GHC-Options: -fwarn-unused-imports
+  Build-Depends:
+    base,mtl,linear,containers,vector,transformers,attoparsec,bytestring,atto-lisp,text,dependent-sum,smtlib2 >= 1.0 && < 1.1,smtlib2-pipe >= 1.0 && < 1.1,smtlib2-debug >= 1.0 && < 1.1,smtlib2-timing >= 1.0 && < 1.1,smtlib2-emulated-modulus >= 1.0 && < 1.1,bindings-llvm,fgl,dependent-map,resource-pool,pqueue,time
+  Extensions:
+    RankNTypes,KindSignatures,DataKinds,TypeOperators,TypeFamilies,GADTs,ScopedTypeVariables,FlexibleContexts,MultiParamTypeClasses,TypeSynonymInstances,FlexibleInstances,StandaloneDeriving,PolyKinds,ViewPatterns,OverloadedStrings,GeneralizedNewtypeDeriving,DeriveFunctor,DeriveFoldable,DeriveTraversable,CPP
+  if flag(Native-Z3)
+    Build-Depends:      smtlib2-z3 >= 1.0 && < 1.1
+    CPP-Options:        -DNATIVE_Z3
+  if flag(Native-MathSAT)
+    Build-Depends:      smtlib2-mathsat >= 1.0 && < 1.1
+    CPP-Options:        -DNATIVE_MATHSAT
+
+Executable vvt-enc
+  Hs-Source-Dirs:       bin
+  Main-Is:              Encode.hs
+  Build-Depends:        vvt,base,bindings-llvm
+
+Executable vvt-pp
+  Hs-Source-Dirs:       bin
+  Main-Is:              Pretty.hs
+  Build-Depends:        base,bytestring,atto-lisp,attoparsec,text,pretty
+
+Executable vvt-bmc
+  Hs-Source-Dirs:       bin
+  Main-Is:              BMC.hs
+  Extensions:           RankNTypes,DataKinds,FlexibleContexts
+  Build-Depends:        vvt,base,smtlib2,smtlib2-pipe,smtlib2-debug,mtl,time
+
+Executable vvt-verify
+  Hs-Source-Dirs:       bin
+  Main-Is:              Verify.hs
+  GHC-Options:          -threaded
+  Build-Depends:        vvt,base
+
+Executable vvt-predicates
+  Hs-Source-Dirs:       bin
+  Main-Is:              Predicates.hs
+  Build-Depends:        vvt,base,smtlib2,smtlib2-pipe,smtlib2-debug,containers
+
+Executable vvt-opt
+  Hs-Source-Dirs:       bin
+  Main-Is:              Optimize.hs
+  Build-Depends:        vvt,base,text,containers
+  
+executable vvt
+  Hs-Source-Dirs:       bin
+  Main-Is:              Main.hs
+  Build-Depends:        base,process,filepath
+  GHC-Options:          -threaded

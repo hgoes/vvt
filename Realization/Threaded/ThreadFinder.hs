@@ -2,11 +2,8 @@
 module Realization.Threaded.ThreadFinder where
 
 import LLVM.FFI
-import LLVM.FFI.Loop
 import Foreign.Ptr (Ptr,nullPtr)
 import Foreign.Storable (peek)
-
-import Debug.Trace
 
 data Quantity = Finite Integer
               | Infinite

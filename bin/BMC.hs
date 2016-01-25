@@ -4,18 +4,21 @@ import Realization
 import Realization.Lisp
 import Realization.Lisp.Value
 import System.IO
-import System.Console.GetOpt
+import System.Console.GetOpt hiding (NoArg)
+import qualified System.Console.GetOpt as Opt
 import System.Environment
-import Language.SMTLib2.Pipe
 import Language.SMTLib2
 import Language.SMTLib2.Debug
+import Language.SMTLib2.Pipe (createPipe)
+import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Interface
+import qualified Language.SMTLib2.Internals.Backend as B
+import Language.SMTLib2.Internals.Embed
+import Args
 import PartialArgs
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Control.Monad.Trans (liftIO)
-import qualified Data.Text as T
-import qualified Data.AttoLisp as L
-import Data.Typeable (gcast)
+import Control.Monad.Trans (MonadIO,liftIO)
+import Data.Proxy
+--import Data.GADT.Show
 import Data.Time.Clock
 import Control.Concurrent
 import Control.Exception (catch)
@@ -43,19 +46,27 @@ defaultOptions = Options { showHelp = False
                          , debug = False }
 
 optDescr :: [OptDescr (Options -> Options)]
-optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
-           ,Option ['d'] ["depth"] (ReqArg (\str opt -> opt { bmcDepth = case read str of
-                                                                -1 -> Nothing
-                                                                n -> Just n }) "n") "The BMC depth (-1 means no limit)"
-           ,Option ['s'] ["solver"] (ReqArg (\str opt -> let solv:args = words str
-                                                         in opt { solver = solv
-                                                                , solverArgs = args }) "bin") "The SMT solver executable"
-           ,Option ['i'] ["incremental"] (NoArg $ \opt -> opt { incremental = True }) "Run in incremental mode"
-           ,Option ['c'] ["completeness"] (NoArg $ \opt -> opt { completeness = True }) "Check completeness"
-           ,Option ['t'] ["timing"] (NoArg $ \opt -> opt { timing = True }) "Output timing information"
-           ,Option [] ["timeout"] (ReqArg (\str opt -> opt { timeout = Just $ parseTime str
-                                                           }) "time") "Abort the solver after a specified timeout"
-           ,Option [] ["debug"] (NoArg $ \opt -> opt { debug = True }) "Output the SMT stream"]
+optDescr = [Option ['h'] ["help"] (Opt.NoArg $ \opt -> opt { showHelp = True }
+                                  ) "Show this help"
+           ,Option ['d'] ["depth"] (Opt.ReqArg (\str opt -> opt { bmcDepth = case read str of
+                                                                  -1 -> Nothing
+                                                                  n -> Just n }) "n"
+                                   ) "The BMC depth (-1 means no limit)"
+           ,Option ['s'] ["solver"] (Opt.ReqArg (\str opt -> let solv:args = words str
+                                                             in opt { solver = solv
+                                                                    , solverArgs = args }) "bin"
+                                    ) "The SMT solver executable"
+           ,Option ['i'] ["incremental"] (Opt.NoArg $ \opt -> opt { incremental = True }
+                                         ) "Run in incremental mode"
+           ,Option ['c'] ["completeness"] (Opt.NoArg $ \opt -> opt { completeness = True }
+                                          ) "Check completeness"
+           ,Option ['t'] ["timing"] (Opt.NoArg $ \opt -> opt { timing = True }
+                                    ) "Output timing information"
+           ,Option [] ["timeout"] (Opt.ReqArg (\str opt -> opt { timeout = Just $ parseTime str
+                                                               }) "time"
+                                  ) "Abort the solver after a specified timeout"
+           ,Option [] ["debug"] (Opt.NoArg $ \opt -> opt { debug = True }
+                                ) "Output the SMT stream"]
 
 parseTime :: String -> Int
 parseTime str = parseNumber 0 0 str
@@ -91,17 +102,21 @@ main = do
              startTime <- if timing opts
                           then fmap Just getCurrentTime
                           else return Nothing
-             prog <- fmap parseLispProgram $ readLispFile stdin
-             pipe <- createSMTPipe (solver opts) (solverArgs opts)
-             let act = do
-                   st0 <- createStateVars "" prog
-                   inp0 <- createInputVars "" prog
-                   assert $ initialState prog st0
+             prog <- fmap parseProgram $ readLispFile stdin
+             let pipe = createPipe (solver opts) (solverArgs opts)
+             --let pipe = z3Solver
+             let act :: forall b. (Backend b,MonadIO (B.SMTMonad b))
+                     => SMT b (Either Bool [Unpacked (State LispProgram)])
+                 act = do
+                   st0 <- createState prog
+                   inp0 <- createInput prog
+                   init <- initialState prog st0
+                   assert init
                    bmc prog (completeness opts) (incremental opts) (bmcDepth opts)
                      0 startTime st0 inp0 []
                  act' = if debug opts
-                        then (withSMTBackendExitCleanly (namedDebugBackend "bmc" pipe) act)
-                        else (withSMTBackendExitCleanly pipe act)
+                        then withBackend (fmap (namedDebugBackend "bmc") pipe) act
+                        else withBackend pipe act
              res <- case timeout opts of
                Nothing -> act'
                Just to -> do
@@ -109,54 +124,52 @@ main = do
                  timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
                  catch act' (\ex -> case ex of
                               ExitFailure _ -> return (Left False))
-             case startTime of
-               Nothing -> return ()
-               Just time -> do
-                 time' <- getCurrentTime
-                 putStrLn $ "Total runtime: "++show (diffUTCTime time' time)
              case res of
               Left compl -> putStrLn $ "No bug found ("++
                             (if compl then "Complete" else "Incomplete")++")"
               Right bug -> do
-                pbug <- mapM (\st -> renderPartialState prog
-                                     (unmaskValue (undefined::State LispProgram) st)
-                             ) bug
-                putStrLn $ "Bug found:"
-                mapM_ putStrLn pbug)
+                mapM_ (\p -> putStrLn $ showsPrec 0 p "") bug)
   where
-    bmc :: LispProgram -> Bool -> Bool -> Maybe Integer -> Integer
+    bmc :: (TransitionRelation t,Backend b,MonadIO (B.SMTMonad b))
+        => t -> Bool -> Bool -> Maybe Integer -> Integer
         -> Maybe UTCTime
-        -> Map T.Text LispValue -> Map T.Text LispValue
-        -> [(Map T.Text LispValue,SMTExpr Bool)]
-        -> SMT (Either Bool [Map T.Text (LispStruct LispUValue)])
+        -> State t (B.Expr b) -> Input t (B.Expr b)
+        -> [(State t (B.Expr b),B.Expr b BoolType)]
+        -> SMT b (Either Bool [Unpacked (State t)])
     bmc prog compl inc (Just l) n startTime st inp sts
       | n>=l = do
           if compl
             then push
             else return ()
           if inc
-            then assert $ not' $ snd $ head sts
-            else assert $ app or' $ fmap (not'.snd) sts
+            then not' (snd $ head sts) >>= assert
+            else not' (or' $ fmap snd sts) >>= assert
           res <- checkSat
-          if res
-            then do
-            bug <- mapM (\(st,_) -> unliftArgs st getValue
-                        ) sts
-            if compl
-              then pop
-              else return ()
-            return $ Right bug
-            else if compl
-                 then do
-                   pop
-                   isCompl <- checkCompleteness prog st
-                   return (Left isCompl)
-                 else return $ Left False
+          case res of
+            Sat -> do
+              bug <- mapM (\(st,_) -> unliftComp getValue st
+                          ) sts
+              if compl
+                then pop
+                else return ()
+              return $ Right bug
+            Unsat -> if compl
+                     then do
+                       pop
+                       isCompl <- checkCompleteness prog st
+                       return (Left isCompl)
+                     else return (Left False)
     bmc prog compl inc l n startTime st inp sts = do
-      assert $ stateInvariant prog inp st
-      (assumps,gts1) <- declareAssumptions prog st inp Map.empty
+      invar <- stateInvariant prog st inp
+      assert invar
+      let gts0 = startingProgress prog
+      (assumps,gts1) <- declareAssumptions
+                        (\name e -> defineVar e)
+                        prog st inp gts0
       mapM_ assert assumps
-      (asserts,gts2) <- declareAssertions prog st inp gts1
+      (asserts,gts2) <- declareAssertions
+                        (\name e -> defineVar e)
+                        prog st inp gts1
       res <- if inc
              then do
                push
@@ -168,41 +181,40 @@ main = do
                liftIO $ putStrLn $ "Level "++show n++(case diff of
                                                        Nothing -> ""
                                                        Just diff' -> "("++show diff'++")")
-               assert $ app or' $ fmap not' asserts
+               negProp <- not' $ and' asserts
+               assert negProp
                r <- checkSat
-               if r
-                 then (do
-                          vals <- mapM (\st -> unliftArgs st getValue
+               case r of
+                 Sat -> do
+                          vals <- mapM (\st -> unliftComp getValue st
                                        ) (st:(fmap fst sts))
                           pop
-                          return $ Right vals)
-                 else do
-                 pop
-                 isComplete <- checkCompleteness prog st
-                 return (Left isComplete)
+                          return $ Right vals
+                 Unsat -> do
+                   pop
+                   isComplete <- checkCompleteness prog st
+                   return (Left isComplete)
              else return (Left False)
       case res of
        Right bug -> return $ Right bug
        Left True -> return $ Left True
        Left False -> do
-         (nxt,gts3) <- declareNextState prog st inp Nothing gts2
-         ninp <- createInputVars "" prog
+         (nxt,gts3) <- declareNextState
+                       (\name e -> defineVar e)
+                       prog st inp gts2
+         ninp <- createComposite (\tp rev -> declareVar tp
+                                 ) (inputAnnotation prog)
          if compl
-           then assert $ app or' (Map.elems $ Map.intersectionWith
-                                  (\x y -> not' $ valueEq x y)
-                                  st nxt)
+           then do
+           noProgress <- eqComposite st nxt
+           progress <- not' noProgress
+           assert progress
            else return ()
-         bmc prog compl inc l (n+1) startTime nxt ninp ((st,app and' asserts):sts)
- 
-    checkCompleteness :: LispProgram -> Map T.Text LispValue -> SMT Bool
+         conjAss <- and' asserts
+         bmc prog compl inc l (n+1) startTime nxt ninp ((st,conjAss):sts)
+
     checkCompleteness prog st = stack $ do
-      let pcs = Map.filter (\(_,ann) -> case Map.lookup "pc" ann of
-                             Just (L.Symbol "true") -> True
-                             _ -> False
-                           ) (programState prog)
-          acts = Map.intersectionWith
-                 (\_ val -> case value val of
-                   Singleton (Val e) -> case gcast e of
-                     Just b -> b) pcs st
-      assert $ app or' $ Map.elems acts
-      fmap not checkSat
+      end <- isEndState prog st
+      not' end >>= assert
+      res <- checkSat
+      return $ res==Unsat

@@ -1,136 +1,165 @@
 module Realization.Lisp.Simplify.Slicing where
 
+import Args
 import Realization.Lisp
 import Realization.Lisp.Value
+import Realization.Lisp.Array
 
-import Language.SMTLib2.Internals
+import Language.SMTLib2
+import Language.SMTLib2.Internals.Type
+import qualified Language.SMTLib2.Internals.Type.List as List
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
+import Language.SMTLib2.Internals.Expression
 
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Map (Map)
-import qualified Data.Map as Map
-import qualified Data.Text as T
-import Data.Typeable
 import Data.Foldable (foldl)
 import Prelude hiding (foldl)
+import Data.Functor.Identity
+import Data.Dependent.Map (DMap,DSum(..))
+import qualified Data.Dependent.Map as DMap
+import Data.GADT.Compare
+import Control.Monad.State
 
-data DepState = DepState { dependencies :: Set (T.Text,LispVarCat)
-                         , todo :: [(T.Text,LispVarCat)] }
+data AnyName = forall lvl tps. AnyName { anyName :: LispName '(lvl,tps)
+                                       , anyCat :: LispVarCat }
+
+data DepState = DepState { dependencies :: Set AnyName
+                         , todo :: [AnyName] }
+
+
+instance Eq AnyName where
+  (==) (AnyName n1 s1) (AnyName n2 s2)
+    = if s1==s2
+      then False
+      else defaultEq n1 n2
+
+instance Ord AnyName where
+  compare (AnyName n1 s1) (AnyName n2 s2) = case compare s1 s2 of
+    EQ -> defaultCompare n1 n2
+    r -> r
 
 slice :: LispProgram -> LispProgram
-slice prog = prog { programState = Map.intersection (programState prog) keepState
-                  , programInput = Map.intersection (programInput prog) keepInput
-                  , programGates = Map.intersection (programGates prog) keepGates
-                  , programNext  = Map.intersection (programNext prog) keepState
-                  , programInit  = Map.intersection (programInit prog) keepState
+slice prog = prog { programState = filterMap (programState prog) State
+                  , programInput = filterMap (programInput prog) Input
+                  , programGates = filterMap (programGates prog) Gate
+                  , programNext  = filterMap (programNext prog) State
+                  , programInit  = filterMap (programInit prog) State
                   , programInvariant = fmap filterExpr (programInvariant prog)
                   }
   where
-    keepInput = Map.fromList [ (name,()) | (name,Input) <- Set.toList deps ]
-    keepState = Map.fromList [ (name,()) | (name,State) <- Set.toList deps ]
-    keepGates = Map.fromList [ (name,()) | (name,Gate) <- Set.toList deps ]
+    filterMap :: DMap LispName a -> LispVarCat -> DMap LispName a
+    filterMap mp cat = DMap.fromAscList
+                       [ name :=> ann
+                       | name@(LispName _ _ _) :=> ann <- DMap.toAscList mp
+                       , Set.member (AnyName name cat) deps ]
     dep0 = DepState { dependencies = Set.empty
                     , todo = []
                     }
     dep1 = foldl (\st e -> getDependenciesExpr e st
                  ) dep0 (programProperty prog)
     deps = recDependencies prog dep1
-    filterExpr :: SMTExpr t -> SMTExpr t
-    filterExpr (InternalObj (cast -> Just acc) ann) = case acc of
-      LispVarAccess var idx dyn -> case filterVar var of
-        Nothing -> defaultExpr ann
-        Just var' -> InternalObj (LispVarAccess var' idx (fmap filterExpr dyn)) ann
-      LispSizeAccess var dyn -> case filterVar var of
-        Nothing -> defaultExpr ann
-        Just var' -> InternalObj (LispSizeAccess var' (fmap filterExpr dyn)) ann
-      LispSizeArrAccess var i -> case filterVar var of
-        Nothing -> defaultExpr ann
-        Just var' -> InternalObj (LispSizeArrAccess var' i) ann
-      LispEq v1 v2 -> case filterVar v1 of
-        Nothing -> defaultExpr ann
-        Just v1' -> case filterVar v2 of
-          Nothing -> defaultExpr ann
-          Just v2' -> InternalObj (LispEq v1' v2') ann
-    filterExpr (App fun args)
-      = App fun (snd $ foldExprsId (\_ e _ -> ((),filterExpr e)) () args
-                       (extractArgAnnotation args))
-    filterExpr e = e
-    filterVar v@(NamedVar name cat tp) = case cat of
-      Input -> if Map.member name keepInput
-               then Just v
-               else Nothing
-      State -> if Map.member name keepState
-               then Just v
-               else Nothing
-      Gate -> if Map.member name keepGates
-              then Just v
-              else Nothing
+    filterExpr :: LispExpr t -> LispExpr t
+    filterExpr (LispExpr (App fun args)) = LispExpr (App fun nargs)
+      where
+        nargs = runIdentity $ List.mapM (return.filterExpr) args
+    filterExpr (LispExpr e) = LispExpr e
+    filterExpr e@(LispRef var idx) = case filterVar var of
+      Nothing -> defaultExpr (getType e)
+      Just nvar -> LispRef nvar idx
+    filterExpr (LispEq v1 v2) = case filterVar v1 of
+      Nothing -> LispExpr (Const $ BoolValue True)
+      Just v1' -> case filterVar v2 of
+        Nothing -> LispExpr (Const $ BoolValue True)
+        Just v2' -> LispEq v1' v2'
+    filterExpr (ExactlyOne xs) = ExactlyOne $ fmap filterExpr xs
+    filterExpr (AtMostOne xs) = AtMostOne $ fmap filterExpr xs
+
+    filterVar :: LispVar LispExpr sig -> Maybe (LispVar LispExpr sig)
+    filterVar v@(NamedVar name@(LispName _ _ _) cat)
+      = if Set.member (AnyName name cat) deps
+        then Just v
+        else Nothing
     filterVar (LispStore v idx sidx val) = do
       v' <- filterVar v
-      let sidx' = fmap filterExpr sidx
+      let sidx' = filterArrayIndex sidx
           val' = filterExpr val
       return (LispStore v' idx sidx' val')
-    filterVar (LispConstr val) = Just $ LispConstr $ LispValue { size = nsize
-                                                               , value = nvalue }
+    filterVar (LispConstr (LispValue sz val))
+      = Just $ LispConstr $ LispValue nsize nvalue
       where
-        nsize = case size val of
-          Size elem -> Size (fmap (\(SizeElement e) -> SizeElement $ filterExpr e) elem)
-        nvalue = fmap (\(Val v) -> Val (filterExpr v)) (value val)
+        nsize = filterSize sz
+        nvalue = runIdentity $ Struct.mapM (\(Sized v) -> return $ Sized (filterExpr v)) val
     filterVar (LispITE c ifT ifF) = do
       ifT' <- filterVar ifT
       ifF' <- filterVar ifF
       return (LispITE (filterExpr c) ifT' ifF')
+    filterArrayIndex :: List LispExpr lvl
+                     -> List LispExpr lvl
+    filterArrayIndex = runIdentity . List.mapM (return.filterExpr)
+    filterSize :: Size LispExpr lvl -> Size LispExpr lvl
+    filterSize (Size tps szs) = Size tps (runIdentity $ List.mapM (return.filterExpr) szs)
 
-recDependencies :: LispProgram -> DepState -> Set (T.Text,LispVarCat)
+defaultExpr :: Repr tp -> LispExpr tp
+defaultExpr tp = case tp of
+  BoolRepr -> LispExpr (Const $ BoolValue True)
+  IntRepr -> LispExpr (Const $ IntValue 0)
+  RealRepr -> LispExpr (Const $ RealValue 0)
+  BitVecRepr bw -> LispExpr (Const $ BitVecValue 0 bw)
+  ArrayRepr idx el -> LispExpr (App (ConstArray idx el) ((defaultExpr el) ::: Nil))
+
+recDependencies :: LispProgram -> DepState -> Set AnyName
 recDependencies prog dep = case todo dep of
   [] -> dependencies dep
-  ((name,cat):todo') -> case cat of
-    Gate -> case Map.lookup name (programGates prog) of
-      Just (_,var) -> recDependencies prog $ getDependencies var (dep { todo = todo' })
-    State -> case Map.lookup name (programNext prog) of
+  ((AnyName name cat):todo') -> case cat of
+    Gate -> case DMap.lookup name (programGates prog) of
+      Just gt -> recDependencies prog $ getDependencies (gateDefinition gt) (dep { todo = todo' })
+    State -> case DMap.lookup name (programNext prog) of
       Just var -> recDependencies prog $ getDependencies var (dep { todo = todo' })
+      Nothing -> error $ "Missing next state for "++show name
     Input -> recDependencies prog $ dep { todo = todo' }
 
-getDependencies :: LispVar -> DepState -> DepState
-getDependencies (NamedVar name cat _) st
-  = if Set.member (name,cat) (dependencies st)
+getDependencies :: LispVar LispExpr '(lvl,tp)
+                -> DepState -> DepState
+getDependencies (NamedVar name@(LispName _ _ _) cat) st
+  = if Set.member (AnyName name cat) (dependencies st)
     then st
-    else DepState { dependencies = Set.insert (name,cat) $ dependencies st
-                  , todo = (name,cat):todo st }
+    else DepState { dependencies = Set.insert (AnyName name cat) $ dependencies st
+                  , todo = (AnyName name cat):todo st }
 getDependencies (LispStore var _ idx val) st0 = st3
   where
     st1 = getDependencies var st0
-    st2 = foldl (\st i -> getDependenciesExpr i st) st1 idx
+    st2 = getDependenciesIndex idx st1
     st3 = getDependenciesExpr val st2
 getDependencies (LispConstr val) st
-  = foldl (\st (Val v) -> getDependenciesExpr v st
-          ) st (value val)
+  = execState (foldExprs (\_ v -> do
+                             st <- get
+                             put $ getDependenciesExpr v st
+                             return v
+                          ) val) st
 getDependencies (LispITE c v1 v2) st0 = st3
   where
     st1 = getDependenciesExpr c st0
     st2 = getDependencies v1 st1
     st3 = getDependencies v2 st2
 
-getDependenciesExpr :: SMTExpr a -> DepState -> DepState
-getDependenciesExpr (InternalObj (cast -> Just acc) _) st
-  = getDependenciesAccess acc st
-getDependenciesExpr (App fun args) st
-  = fst $ foldExprsId (\st e _ -> (getDependenciesExpr e st,e)) st args
-    (extractArgAnnotation args)
+getDependenciesExpr :: LispExpr a -> DepState -> DepState
+getDependenciesExpr (LispExpr (App fun args)) st
+  = runIdentity $ List.foldM (\st e -> return $ getDependenciesExpr e st
+                             ) st args
+getDependenciesExpr (LispRef var _) st
+  = getDependencies var st
+getDependenciesExpr (LispEq lhs rhs) st
+  = getDependencies lhs $
+    getDependencies rhs st
+getDependenciesExpr (ExactlyOne xs) st
+  = foldl (\st x -> getDependenciesExpr x st) st xs
+getDependenciesExpr (AtMostOne xs) st
+  = foldl (\st x -> getDependenciesExpr x st) st xs
 getDependenciesExpr _ st = st
 
-getDependenciesAccess :: LispVarAccess -> DepState -> DepState
-getDependenciesAccess (LispVarAccess var _ idx) st0 = st2
-  where
-    st1 = getDependencies var st0
-    st2 = foldl (\st e -> getDependenciesExpr e st) st1 idx
-getDependenciesAccess (LispSizeAccess var idx) st0 = st2
-  where
-    st1 = getDependencies var st0
-    st2 = foldl (\st e -> getDependenciesExpr e st) st1 idx
-getDependenciesAccess (LispSizeArrAccess var _) st
-  = getDependencies var st
-getDependenciesAccess (LispEq v1 v2) st = st2
-  where
-    st1 = getDependencies v1 st
-    st2 = getDependencies v2 st1
+getDependenciesIndex :: List LispExpr lvl -> DepState -> DepState
+getDependenciesIndex Nil st = st
+getDependenciesIndex (e ::: es) st
+  = getDependenciesExpr e $
+    getDependenciesIndex es st

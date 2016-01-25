@@ -7,6 +7,7 @@ import Realization.Lisp.Karr
 import Language.SMTLib2
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Debug
+import Language.SMTLib2.Internals.Type (Repr(..))
 
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -14,6 +15,7 @@ import System.Console.GetOpt
 import System.Environment
 import System.Exit
 import System.IO
+import Data.Functor.Identity
 
 data Options = Options { addKarrPredicates :: Bool
                        , addIneqPredicates :: Bool
@@ -78,20 +80,20 @@ main = do
      mapM_ (hPutStrLn stderr) errs
      exitWith (ExitFailure (-1))
    Right opts -> do
-     prog <- fmap parseLispProgram (readLispFile stdin)
-     let lins = Set.toList $ linearStates prog
-         ineqs = ineqPredicates lins
+     prog <- fmap parseProgram (readLispFile stdin)
+     let lins = statesOfType IntRepr prog
+         ineqs = runIdentity $ ineqPredicates lins
          prog1 = if addIneqPredicates opts
                  then prog { programPredicates = ineqs++programPredicates prog }
                  else prog
          prog2 = if addBoolPredicates opts
-                 then prog1 { programPredicates = boolStates prog++programPredicates prog1
+                 then prog1 { programPredicates = statesOfType BoolRepr prog++
+                                                  programPredicates prog1
                             }
                  else prog1
      prog3 <- if addKarrPredicates opts
               then (do
-                       pipe <- createSMTPipe "z3" ["-smt2","-in"]
-                       preds <- withSMTBackend ({-namedDebugBackend "karr"-} pipe)
+                       preds <- withBackend (createPipe "z3" ["-smt2","-in"])
                                 (karrPredicates prog)
                        return (prog2 { programPredicates = preds++programPredicates prog2 }))
               else return prog2
