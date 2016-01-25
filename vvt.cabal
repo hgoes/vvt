@@ -50,7 +50,7 @@ Library
     Simplify
   GHC-Options: -fwarn-unused-imports
   Build-Depends:
-    base,mtl,linear,containers,vector,transformers,attoparsec,bytestring,constraints,atto-lisp,text,dependent-sum,smtlib2,smtlib2-pipe,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,bindings-llvm,fgl,dependent-map,resource-pool,pqueue,time
+    base,mtl,linear,containers,vector,transformers,attoparsec,bytestring,atto-lisp,text,dependent-sum,smtlib2,smtlib2-pipe,smtlib2-debug,smtlib2-timing,smtlib2-emulated-modulus,bindings-llvm,fgl,dependent-map,resource-pool,pqueue,time
   Extensions:
     RankNTypes,KindSignatures,DataKinds,TypeOperators,TypeFamilies,GADTs,ScopedTypeVariables,FlexibleContexts,MultiParamTypeClasses,TypeSynonymInstances,FlexibleInstances,StandaloneDeriving,PolyKinds,ViewPatterns,OverloadedStrings,GeneralizedNewtypeDeriving,DeriveFunctor,DeriveFoldable,DeriveTraversable,CPP
   if flag(Native-Z3)
@@ -59,7 +59,6 @@ Library
   if flag(Native-MathSAT)
     Build-Depends:      smtlib2-mathsat
     CPP-Options:        -DNATIVE_MATHSAT
-
 
 Executable vvt-enc
   Hs-Source-Dirs:       bin
