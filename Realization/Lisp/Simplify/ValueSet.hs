@@ -12,15 +12,19 @@ import Language.SMTLib2.Pipe
 import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface hiding (constant)
+import Language.SMTLib2.Internals.Backend (SMTMonad)
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 
 import Data.List
 import System.IO
+import Control.Monad.Trans (liftIO)
 import Control.Monad
 import Data.GADT.Compare
 import Data.Functor.Identity
 import Data.Dependent.Sum
 import qualified Data.Dependent.Map as DMap
+
+import Debug.Trace
 
 data ValueSet = ValueSet { valueMask :: [Header]
                          , values :: [[Entry]]
@@ -36,7 +40,7 @@ instance Eq Entry where
 
 valueSetAnalysis :: Int -> Int -> String -> LispProgram -> IO LispProgram
 valueSetAnalysis verbosity threshold solver prog = do
-  vs <- deduceValueSet threshold solver prog
+  vs <- deduceValueSet verbosity threshold solver prog
   when (verbosity >= 1)
     (hPutStrLn stderr $ "Value set:\n"++showValueSet vs)
   let consts = getConstants vs
@@ -45,12 +49,12 @@ valueSetAnalysis verbosity threshold solver prog = do
                    Just Refl -> replaceVarWith rev (runIdentity $ embedConst val) prog'
                   ) prog consts
 
-deduceValueSet :: Int -> String -> LispProgram -> IO ValueSet
-deduceValueSet threshold solver prog = do
+deduceValueSet :: Int -> Int -> String -> LispProgram -> IO ValueSet
+deduceValueSet verbosity threshold solver prog = do
   let bin:args = words solver
   --let pipe' = debugBackend pipe
-  withBackend (createPipe bin args) $ initialValueSet threshold prog
-    >>= refineValueSet threshold prog
+  withBackend (createPipe bin args) $ initialValueSet verbosity threshold prog
+    >>= refineValueSet verbosity threshold prog
 
 getConstants :: ValueSet -> [(Header,Entry)]
 getConstants vs = concat $ zipWith getConstants' [0..] (valueMask vs)
@@ -76,16 +80,20 @@ addState :: [Entry] -> ValueSet -> ValueSet
 addState vs vals = vals { values = vs:values vals
                         , vsize = (vsize vals)+1 }
 
-refineValueSet :: (Backend b) => Int -> LispProgram -> ValueSet
+refineValueSet :: (Backend b,SMTMonad b ~ IO) => Int -> Int -> LispProgram -> ValueSet
                -> SMT b ValueSet
-refineValueSet threshold prog vs = stack $ do
+refineValueSet verbosity threshold prog vs = stack $ do
   cur <- createState prog
   inp <- createInput prog
+  stateInvariant prog cur inp >>= assert
   (nxt,_) <- createNextState prog cur inp (startingProgress prog)
   res <- getValues cur nxt vs
   return res
   where
     getValues cur nxt vs = do
+      if verbosity >= 2
+        then liftIO $ hPutStrLn stderr $ "Current value set:\n"++showValueSet vs
+        else return ()
       nvs <- stack $ do
         curEqs <- mapM (\val -> do
                            eqs <- eqValueState vs cur val
@@ -100,14 +108,14 @@ refineValueSet threshold prog vs = stack $ do
         if hasMore==Sat
           then do
             nst <- extractValueState vs nxt
-            return $ Just $ enforceThreshold threshold $ addState nst vs
+            return $ Just $ enforceThreshold verbosity threshold $ addState nst vs
           else return Nothing
       case nvs of
         Just vs' -> getValues cur nxt vs'
         Nothing -> return vs
             
-initialValueSet :: (Backend b) => Int -> LispProgram -> SMT b ValueSet
-initialValueSet threshold prog = stack $ do
+initialValueSet :: (Backend b) => Int -> Int -> LispProgram -> SMT b ValueSet
+initialValueSet verbosity threshold prog = stack $ do
   vars <- createState prog
   initialState prog vars >>= assert
   let vs = ValueSet { valueMask = mkMask (DMap.toList (programState prog))
@@ -133,7 +141,7 @@ initialValueSet threshold prog = stack $ do
                  let vs' = addState nst vs
                  if vsize vs' > threshold
                    then (do
-                            let vs'' = enforceThreshold threshold vs'
+                            let vs'' = enforceThreshold verbosity threshold vs'
                             pop
                             push
                             mapM (\val -> do
@@ -165,14 +173,17 @@ eqValueState vs vars st
                    h' .==. ce
              ) (valueMask vs) st
 
-enforceThreshold :: Int -> ValueSet -> ValueSet
-enforceThreshold threshold vs
+enforceThreshold :: Int -> Int -> ValueSet -> ValueSet
+enforceThreshold verbosity threshold vs
   = if vsize vs > threshold
-    then enforceThreshold threshold (reduceValueSet vs)
+    then enforceThreshold verbosity threshold (reduceValueSet verbosity vs)
     else vs
 
-reduceValueSet :: ValueSet -> ValueSet
-reduceValueSet vs = nvs
+reduceValueSet :: Int -> ValueSet -> ValueSet
+reduceValueSet verbosity vs
+  = (if verbosity >= 2
+     then trace ("Delete column "++show idx)
+     else id) nvs
   where
     nvs =  ValueSet { valueMask = nmask
                     , values = nvalues
