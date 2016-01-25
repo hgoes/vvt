@@ -1253,8 +1253,7 @@ interpolateState j s inp = do
           cleanInterpolant nmp body
         Divisible n x -> do
           nx <- cleanInterpolant mp x
-          c <- embedConst (IntValueC n)
-          (mod' nx c) .==. (cint 0)
+          (mod' nx (cint n)) .==. (cint 0)
         Neg x -> do
           nx <- cleanInterpolant mp x
           embed (Neg nx)
@@ -1321,8 +1320,8 @@ interpolateState j s inp = do
              -> [CompositeExpr a BoolType]
     splitEqs [] = []
     splitEqs (x:xs)
-      = concat (fmap (\x' -> [x { compositeExpr = x :>=: x' }
-                             ,x { compositeExpr = x :>: x' }]
+      = concat (fmap (\x' -> [x { compositeExpr = x :<=: x' }
+                             ,x { compositeExpr = x :==: x' }]
                      ) xs) ++
         (splitEqs xs)
 
