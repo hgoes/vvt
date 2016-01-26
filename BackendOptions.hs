@@ -78,7 +78,7 @@ defaultBackendOptions
 #ifdef NATIVE_MATHSAT
     mathsat = NativeMathSAT
 #else
-    mathsat = BackendPipe "mathsat" []
+    mathsat = BackendPipe "mathsat" ["-random_seed=1"]
 #endif
 
 setBackend :: BackendType -> BackendUse -> BackendOptions -> BackendOptions
