@@ -17,7 +17,7 @@ extern "C" {
   extern void __unsigned_uint(unsigned int arg);
 
   extern void __yield(int loc);
-  extern void __yield_internal(int loc);
+  extern void __yield_local(int loc);
   extern bool __act(void *(*thread) (void *),int loc,...);
   extern void __atomic_begin(void);
   extern void __atomic_end(void);
