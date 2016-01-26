@@ -16,19 +16,22 @@ data Options = Options { karrAnalysis :: Bool
                        , showHelp :: Bool
                        , defines :: [String]
                        , clangBin :: String
+                       , unroll :: Bool
                        }
 
 defaultOptions :: Options
 defaultOptions = Options { karrAnalysis = False
                          , showHelp = False
                          , defines = []
-                         , clangBin = "clang" }
+                         , clangBin = "clang"
+                         , unroll = False }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
            ,Option ['k'] ["karr"] (NoArg $ \opt -> opt { karrAnalysis = True }) "Use Karr analysis to get better predicates"
            ,Option [] ["with-clang"] (ReqArg (\arg opt -> opt { clangBin = arg }) "path") "The path to the clang compiler executable"
-           ,Option ['D'] [] (ReqArg (\arg opt -> opt { defines = arg:defines opt }) "VAR[=VAL]") "Define macros for the C-preprocessor"]
+           ,Option ['D'] [] (ReqArg (\arg opt -> opt { defines = arg:defines opt }) "VAR[=VAL]") "Define macros for the C-preprocessor"
+           ,Option [] ["unroll"] (NoArg $ \opt -> opt { unroll = True }) "Use LLVM to unroll loops"]
 
 getAction :: IO (Maybe (Action,Options))
 getAction = do
@@ -51,13 +54,14 @@ getAction = do
             "show-llvm":rest -> case rest of
               [] -> error "Please provide a C-file to compile."
               [file] -> return (ShowLLVM file)
+            (x:_) -> error $ "Unknown action "++show x++"."
     return (Just (act,opts))
 
 performAction :: (Action,Options) -> IO ()
 performAction (Encode fn,opts) = do
   outp <- openFile (replaceExtension fn "l") WriteMode
   (inp,_) <- compile opts fn
-  ph <- execPipe inp outp [progOptimize
+  ph <- execPipe inp outp [progOptimize opts
                           ,progEncode
                           ,progSimplify
                           ,progPredicates (karrAnalysis opts)
@@ -66,9 +70,9 @@ performAction (Encode fn,opts) = do
   return ()
 performAction (ShowLLVM fn,opts) = do
   (inp,_) <- compile opts fn
-  ph <- execPipe inp stdout [progOptimize,progDisassemble]
+  ph <- execPipe inp stdout [progOptimize opts,progDisassemble]
   waitForProcess ph
-  return ()  
+  return ()
 
 main :: IO ()
 main = do
@@ -94,24 +98,27 @@ compile opts fp = do
   includePath <- getDataFileName "include"
   let clangExe:clangOpts = words (clangBin opts)
       clang = (proc clangExe $ clangOpts++
-                    ["-O0","-emit-llvm","-c","-o","-",fp,"-I"++includePath,"-DHCTIGAR"]++
+                    ["-O0","-emit-llvm","-c","-o","-",fp,"-I"++includePath,"-DVVT"]++
                     ["-D"++def | def <- defines opts ]) { std_out = CreatePipe }
   --let clang = (proc "ls" ["-l"]) { std_out = CreatePipe }
   (_,Just pout,_,ph) <- createProcess clang
   return (pout,ph)
 
-progOptimize :: IO (FilePath,[String])
-progOptimize = return ("opt",["-mem2reg"
-                             ,"-internalize-public-api-list=main"
-                             ,"-internalize"
-                             ,"-inline"
-                             ,"-loops"
-                             ,"-loop-simplify"
-                             ,"-loop-rotate"
-                             ,"-lcssa"
-                             ,"-loop-unroll"
-                             ,"-instnamer"
-                             ,"-","-o","-"])
+progOptimize :: Options -> IO (FilePath,[String])
+progOptimize opt = return ("opt",
+                           ["-mem2reg"
+                           ,"-internalize-public-api-list=main"
+                           ,"-internalize"
+                           ,"-inline"
+                           ,"-loops"
+                           ,"-loop-simplify"
+                           ,"-loop-rotate"
+                           ,"-lcssa"]++
+                           (if unroll opt
+                            then ["-loop-unroll"]
+                            else [])++
+                           ["-instnamer"
+                           ,"-","-o","-"])
 
 progDisassemble :: IO (FilePath,[String])
 progDisassemble = return ("llvm-dis",["-","-o","-"])
