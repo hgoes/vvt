@@ -507,7 +507,7 @@ parseNexts st inps gts lst = DMap.fromList lst'
                             in case geq lvl lvl' of
                             Just Refl -> case geq tp tp' of
                               Just Refl -> return e
-                              Nothing -> throwE $ "type error"
+                              Nothing -> throwE $ "type error: expected "++show tp++", got: "++show tp'
                             Nothing -> throwE $ "type error") of
                   Right res -> res
                   Left err -> error $ "Cannot parse next expression: "++show name++"; "++show def++" ["++err++"]")
