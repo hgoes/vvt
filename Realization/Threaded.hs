@@ -545,6 +545,7 @@ runRealization info st mod fun act = do
                             }
   hPutStrLn stderr $ "Aliasing: "++show st
   (res,nreal) <- runStateT (do
+                               initEdges
                                act
                                nst <- get
                                let nxt0 = writeBasedAliasAnalysis nst (stateAnnotation nst)
@@ -569,6 +570,33 @@ runRealization info st mod fun act = do
                      ) (DMap.toList $ llvmDefinitions trans) ""
       return trans
     Left nst -> runRealization info nst mod fun act
+
+initEdges :: Realization ProgramInput ProgramState ()
+initEdges = do
+  info <- gets programInfo
+  edges' <- fmap Map.fromList $ sequence
+            [ do
+                phis <- if sblk==0
+                        then liftIO $ allPhiNodes blk
+                        else return []
+                phis' <- mapM (\phi -> do
+                                  val <- mkLatchInstr th (castUp phi)
+                                  return ((th,castUp phi),
+                                          InstructionValue (symType val) val Nothing)
+                              ) phis
+                return ((th,blk,sblk),
+                        Edge { edgeValues = Map.empty
+                             , edgeConditions = [EdgeCondition { edgeActivation = act
+                                                               , edgePhis = Map.fromList phis' }]
+                             , observedEvents = Map.empty })
+            | (th,thInfo) <- (Nothing,mainThread info):
+                             [(Just th',thInfo') | (th',thInfo') <- Map.toList (threads info)]
+            , (blk,sblk) <- Map.keys (entryPoints thInfo)
+            , let revAct = LatchBlock blk sblk
+                  act = RState $ case th of
+                    Nothing -> MainState revAct
+                    Just th' -> ThreadState' th' revAct ]
+  modify $ \s -> s { edges = edges' }
 
 realizeProgram :: TranslationOptions
                -> ProgramInfo
@@ -1955,6 +1983,21 @@ allPhis src trg = do
         then phiNodeGetIncomingValue phi n
         else findPhi phi (n+1)
 
+allPhiNodes :: Ptr BasicBlock -> IO [Ptr PHINode]
+allPhiNodes trg = do
+  instrs <- getInstList trg
+  it <- ipListBegin instrs
+  allPhis' it
+  where
+    allPhis' it = do
+      instr <- iListIteratorDeref it
+      case castDown instr of
+       Nothing -> return []
+       Just phi -> do
+         nxt_it <- iListIteratorNext it
+         xs <- allPhis' nxt_it
+         return (phi:xs)
+
 {-outputValues :: LLVMRealization (Map (Maybe (Ptr CallInst),Ptr Instruction)
                                  (SymType,LLVMVal))
 outputValues = do
@@ -2102,15 +2145,10 @@ computeTransitionRelation = do
         let Just rstep = Map.lookup th rsteps
         sequence $ Map.mapWithKey
           (\(blk,sblk) _ -> do
-              let e1 = Map.lookup (th,blk,sblk) (yieldEdges st)
+              let e0 = Map.lookup (th,blk,sblk) (edges st)
+                  e1 = Map.lookup (th,blk,sblk) (yieldEdges st)
                   e2 = Map.lookup (th,blk,sblk) (internalYieldEdges st)
-                  re = case e1 of
-                    Just e1' -> case e2 of
-                      Just e2' -> mappend e1' e2'
-                      Nothing -> e1'
-                    Nothing -> case e2 of
-                      Just e2' -> e2'
-                      Nothing -> mempty
+                  re = mconcat [ e | Just e <- [e0,e1,e2] ]
                   old = RState $ case th of
                     Nothing -> MainState $ LatchBlock blk sblk
                     Just th' -> ThreadState' th' $ LatchBlock blk sblk
