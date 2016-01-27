@@ -15,23 +15,31 @@ data Action = Verify FilePath
 data Options = Options { karrAnalysis :: Bool
                        , showHelp :: Bool
                        , defines :: [String]
-                       , clangBin :: String
+                       , llvmDir :: Maybe String
                        , unroll :: Bool
+                       , ineqPreds :: Bool
                        }
+
+llvmExec :: String -> Options -> String
+llvmExec bin opts = case llvmDir opts of
+  Nothing -> bin
+  Just dir -> dir </> bin
 
 defaultOptions :: Options
 defaultOptions = Options { karrAnalysis = False
                          , showHelp = False
                          , defines = []
-                         , clangBin = "clang"
-                         , unroll = False }
+                         , llvmDir = Nothing
+                         , unroll = False
+                         , ineqPreds = False }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
            ,Option ['k'] ["karr"] (NoArg $ \opt -> opt { karrAnalysis = True }) "Use Karr analysis to get better predicates"
-           ,Option [] ["with-clang"] (ReqArg (\arg opt -> opt { clangBin = arg }) "path") "The path to the clang compiler executable"
+           ,Option [] ["with-llvm"] (ReqArg (\arg opt -> opt { llvmDir = Just arg }) "path") "The path to the directory containing the LLVM binaries"
            ,Option ['D'] [] (ReqArg (\arg opt -> opt { defines = arg:defines opt }) "VAR[=VAL]") "Define macros for the C-preprocessor"
-           ,Option [] ["unroll"] (NoArg $ \opt -> opt { unroll = True }) "Use LLVM to unroll loops"]
+           ,Option [] ["unroll"] (NoArg $ \opt -> opt { unroll = True }) "Use LLVM to unroll loops"
+           ,Option [] ["ineq"] (NoArg $ \opt -> opt { ineqPreds = True }) "Add inequality predicates"]
 
 getAction :: IO (Maybe (Action,Options))
 getAction = do
@@ -64,13 +72,13 @@ performAction (Encode fn,opts) = do
   ph <- execPipe inp outp [progOptimize opts
                           ,progEncode
                           ,progSimplify
-                          ,progPredicates (karrAnalysis opts)
+                          ,progPredicates opts
                           ,progPretty]
   waitForProcess ph
   return ()
 performAction (ShowLLVM fn,opts) = do
   (inp,_) <- compile opts fn
-  ph <- execPipe inp stdout [progOptimize opts,progDisassemble]
+  ph <- execPipe inp stdout [progOptimize opts,progDisassemble opts]
   waitForProcess ph
   return ()
 
@@ -96,8 +104,7 @@ execPipe inp outp (act:acts) = do
 compile :: Options -> FilePath -> IO (Handle,ProcessHandle)
 compile opts fp = do
   includePath <- getDataFileName "include"
-  let clangExe:clangOpts = words (clangBin opts)
-      clang = (proc clangExe $ clangOpts++
+  let clang = (proc (llvmExec "clang" opts) $
                     ["-O0","-emit-llvm","-c","-o","-",fp,"-I"++includePath,"-DVVT"]++
                     ["-D"++def | def <- defines opts ]) { std_out = CreatePipe }
   --let clang = (proc "ls" ["-l"]) { std_out = CreatePipe }
@@ -105,7 +112,7 @@ compile opts fp = do
   return (pout,ph)
 
 progOptimize :: Options -> IO (FilePath,[String])
-progOptimize opt = return ("opt",
+progOptimize opt = return (llvmExec "opt" opt,
                            ["-mem2reg"
                            ,"-internalize-public-api-list=main"
                            ,"-internalize"
@@ -120,18 +127,20 @@ progOptimize opt = return ("opt",
                            ["-instnamer"
                            ,"-","-o","-"])
 
-progDisassemble :: IO (FilePath,[String])
-progDisassemble = return ("llvm-dis",["-","-o","-"])
+progDisassemble :: Options -> IO (FilePath,[String])
+progDisassemble opts = return (llvmExec "llvm-dis" opts,["-","-o","-"])
 
 progEncode :: IO (FilePath,[String])
 progEncode = do
   bin <- getBinDir
   return (bin </> "vvt-enc",[])
 
-progPredicates :: Bool -> IO (FilePath,[String])
-progPredicates useKarr = do
+progPredicates :: Options -> IO (FilePath,[String])
+progPredicates opts = do
   bin <- getBinDir
-  return (bin </> "vvt-predicates",if useKarr then ["--karr=on"] else [])
+  return (bin </> "vvt-predicates",
+          (if karrAnalysis opts then ["--karr=on"] else ["--karr=off"])++
+          (if ineqPreds opts then ["--ineq=on"] else ["--ineq=off"]))
 
 progVerify :: IO (FilePath,[String])
 progVerify = do
