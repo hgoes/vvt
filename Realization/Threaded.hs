@@ -1469,7 +1469,9 @@ realizeDefInstruction thread i@(castDown -> Just select) edge = do
   res <- symITE (valBool $ symbolicValue cond')
          (symbolicValue tVal')
          (symbolicValue fVal')
-  return InstructionValue { symbolicType = symbolicType tVal'
+  return InstructionValue { symbolicType = case typeUnion (symbolicType tVal')
+                                                (symbolicType fVal') of
+                              Just ntp -> ntp
                           , symbolicValue = res
                           , alternative = Nothing }
 realizeDefInstruction thread i@(castDown -> Just (phi::Ptr PHINode)) edge
