@@ -318,7 +318,9 @@ domainAdd pred dom = case Map.lookup npred (domainNodesRev dom) of
                  case catMaybes childs of
                    [] -> return $ Just (Set.singleton cur)
                    xs -> return $ Just (Set.unions xs))
-    npred = runReader (simplify () pred) (domainDescr dom)
+    npred = case runReader (simplify () pred) (domainDescr dom) of
+      CompositeExpr { compositeExpr = Not x } -> x
+      e -> e
 
 -- | Create an abstract state from a concrete state.
 domainAbstract :: Composite a
