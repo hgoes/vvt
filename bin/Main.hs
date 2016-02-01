@@ -18,6 +18,7 @@ data Options = Options { karrAnalysis :: Bool
                        , llvmDir :: Maybe String
                        , unroll :: Bool
                        , ineqPreds :: Bool
+                       , lipton :: Maybe String
                        }
 
 llvmExec :: String -> Options -> String
@@ -31,7 +32,8 @@ defaultOptions = Options { karrAnalysis = False
                          , defines = []
                          , llvmDir = Nothing
                          , unroll = False
-                         , ineqPreds = False }
+                         , ineqPreds = False
+                         , lipton = Nothing }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
@@ -39,7 +41,10 @@ optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Sho
            ,Option [] ["with-llvm"] (ReqArg (\arg opt -> opt { llvmDir = Just arg }) "path") "The path to the directory containing the LLVM binaries"
            ,Option ['D'] [] (ReqArg (\arg opt -> opt { defines = arg:defines opt }) "VAR[=VAL]") "Define macros for the C-preprocessor"
            ,Option [] ["unroll"] (NoArg $ \opt -> opt { unroll = True }) "Use LLVM to unroll loops"
-           ,Option [] ["ineq"] (NoArg $ \opt -> opt { ineqPreds = True }) "Add inequality predicates"]
+           ,Option [] ["ineq"] (NoArg $ \opt -> opt { ineqPreds = True }) "Add inequality predicates"
+           ,Option [] ["lipton"] (OptArg (\arg opt -> case arg of
+                                             Nothing -> opt { lipton = Just "LiptonPass" }
+                                             Just bin -> opt { lipton = Just bin }) "path") "Use the lipton reduction tool to annotate parallel programs."]
 
 getAction :: IO (Maybe (Action,Options))
 getAction = do
@@ -69,11 +74,40 @@ performAction :: (Action,Options) -> IO ()
 performAction (Encode fn,opts) = do
   outp <- openFile (replaceExtension fn "l") WriteMode
   (inp,_) <- compile opts fn
-  ph <- execPipe inp outp [progOptimize opts
-                          ,progEncode
-                          ,progSimplify
-                          ,progPredicates opts
-                          ,progPretty]
+  let pipe = case lipton opts of
+        Nothing -> [progOptimize opts
+                   ,progEncode
+                   ,progSimplify
+                   ,progPredicates opts
+                   ,progPretty]
+        Just _ -> [return (llvmExec "opt" opts,
+                           ["-mem2reg"
+                           ,"-internalize-public-api-list=main"
+                           ,"-internalize"
+                           ,"-inline"
+                           ,"-loops"
+                           ,"-loop-simplify"
+                           ,"-loop-rotate"
+                           ,"-lcssa"]++
+                           (if unroll opts
+                            then ["-loop-unroll"]
+                            else []))
+                  ,progLipton opts
+                  ,return (llvmExec "opt" opts,
+                           ["-mem2reg"
+                           ,"-constprop"
+                           ,"-instsimplify"
+                           ,"-instcombine"
+                           ,"-correlated-propagation"
+                           ,"-die"
+                           ,"-simplifycfg"
+                           ,"-globaldce"
+                           ,"-instnamer"])
+                  ,progEncode
+                  ,progSimplify
+                  ,progPredicates opts
+                  ,progPretty]
+  ph <- execPipe inp outp pipe
   waitForProcess ph
   return ()
 performAction (ShowLLVM fn,opts) = do
@@ -120,7 +154,9 @@ progOptimize opt = return (llvmExec "opt" opt,
                            ,"-loops"
                            ,"-loop-simplify"
                            ,"-loop-rotate"
-                           ,"-lcssa"]++
+                           ,"-lcssa"
+                           ,"-instsimplify"
+                           ,"-instcombine"]++
                            (if unroll opt
                             then ["-loop-unroll"]
                             else [])++
@@ -156,3 +192,8 @@ progSimplify :: IO (FilePath,[String])
 progSimplify = do
   bin <- getBinDir
   return (bin </> "vvt-opt",[])
+
+progLipton :: Options -> IO (FilePath,[String])
+progLipton opts = case lipton opts of
+  Just cmd -> let bin:args = words cmd in return (bin,args)
+  Nothing -> return ("LiptonPass",[])
