@@ -13,6 +13,7 @@ import Data.Either
 import qualified Data.Dependent.Map as DMap
 import Data.GADT.Compare
 import Data.Functor.Identity
+import Data.List (nub)
 
 simplifyProgram :: LispProgram -> LispProgram
 simplifyProgram prog
@@ -60,6 +61,9 @@ simplifyExpr :: LispExpr t -> LispExpr t
 simplifyExpr (LispExpr (App fun args)) = optimizeFun fun nargs
   where
     nargs = runIdentity $ List.mapM (return.simplifyExpr) args
+simplifyExpr (LispRef (LispConstr (LispValue _ val)) idx)
+  = case Struct.elementIndex val idx of
+  Sized el -> simplifyExpr el
 simplifyExpr (LispExpr e) = LispExpr e
 simplifyExpr (LispRef var idx)
   = LispRef (simplifyVar var) idx
@@ -101,7 +105,7 @@ optimizeFun (ITE tp) args@(cond ::: lhs ::: rhs ::: Nil)
     _ -> LispExpr (App (ITE tp) args)
 optimizeFun (Logic XOr (Succ (Succ Zero))) (c ::: (asBoolConst -> Just True) ::: Nil)
   = LispExpr (App Not (c ::: Nil))
-optimizeFun (Logic And n) args = case optAnd (allEqToList n args) of
+optimizeFun (Logic And n) args = case fmap nub $ optAnd (allEqToList n args) of
   Just [] -> LispExpr (Const (BoolValue True))
   Just [c] -> c
   Just args' -> allEqFromList args' $
@@ -111,14 +115,26 @@ optimizeFun (Logic And n) args = case optAnd (allEqToList n args) of
     optAnd [] = Just []
     optAnd ((asBoolConst -> Just False):_) = Nothing
     optAnd ((asBoolConst -> Just True):xs) = optAnd xs
-    optAnd (LispExpr (App (Logic And n) x):xs) = fmap (allEqToList n x++) $ optAnd xs
-    optAnd (x:xs) = fmap (x:) $ optAnd xs
-optimizeFun (Logic Or n) args = case [ arg | arg <- allEqToList n args
-                                           , asBoolConst arg /= Just False ] of
-  [] -> LispExpr (Const (BoolValue False))
-  [c] -> c
-  args' -> allEqFromList args' $
-           \nn nargs -> LispExpr (App (Logic Or nn) nargs)
+    optAnd (LispExpr (App (Logic And n) x):xs)
+      = optAnd (allEqToList n x ++ xs)
+    optAnd (x:xs) = do
+      xs' <- optAnd xs
+      return (x:xs')
+optimizeFun (Logic Or n) args = case fmap nub $ optOr (allEqToList n args) of
+  Just [] -> LispExpr (Const (BoolValue False))
+  Just [c] -> c
+  Just args' -> allEqFromList args' $
+                \nn nargs -> LispExpr (App (Logic Or nn) nargs)
+  Nothing -> LispExpr (Const (BoolValue True))
+  where
+    optOr [] = Just []
+    optOr ((asBoolConst -> Just False):xs) = optOr xs
+    optOr ((asBoolConst -> Just True):xs) = Nothing
+    optOr (LispExpr (App (Logic Or n) x):xs)
+      = optOr (allEqToList n x++xs)
+    optOr (x:xs) = do
+      xs' <- optOr xs
+      return (x:xs')
 optimizeFun (Logic Implies (Succ (Succ Zero))) (_ ::: (asBoolConst -> Just True) ::: Nil)
   = LispExpr (Const (BoolValue True))
 optimizeFun Not ((asBoolConst -> Just c) ::: Nil) = LispExpr (Const (BoolValue (not c)))
