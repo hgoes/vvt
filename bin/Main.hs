@@ -80,29 +80,9 @@ performAction (Encode fn,opts) = do
                    ,progSimplify
                    ,progPredicates opts
                    ,progPretty]
-        Just _ -> [return (llvmExec "opt" opts,
-                           ["-mem2reg"
-                           ,"-internalize-public-api-list=main"
-                           ,"-internalize"
-                           ,"-inline"
-                           ,"-loops"
-                           ,"-loop-simplify"
-                           ,"-loop-rotate"
-                           ,"-lcssa"]++
-                           (if unroll opts
-                            then ["-loop-unroll"]
-                            else []))
+        Just _ -> [progOptimizePreLipton opts
                   ,progLipton opts
-                  ,return (llvmExec "opt" opts,
-                           ["-mem2reg"
-                           ,"-constprop"
-                           ,"-instsimplify"
-                           ,"-instcombine"
-                           ,"-correlated-propagation"
-                           ,"-die"
-                           ,"-simplifycfg"
-                           ,"-globaldce"
-                           ,"-instnamer"])
+                  ,progOptimizePostLipton opts
                   ,progEncode
                   ,progSimplify
                   ,progPredicates opts
@@ -112,7 +92,13 @@ performAction (Encode fn,opts) = do
   return ()
 performAction (ShowLLVM fn,opts) = do
   (inp,_) <- compile opts fn
-  ph <- execPipe inp stdout [progOptimize opts,progDisassemble opts]
+  let pipe = case lipton opts of
+        Nothing -> [progOptimize opts,progDisassemble opts]
+        Just _ -> [progOptimizePreLipton opts
+                  ,progLipton opts
+                  ,progOptimizePostLipton opts
+                  ,progDisassemble opts]
+  ph <- execPipe inp stdout pipe
   waitForProcess ph
   return ()
 
@@ -162,6 +148,34 @@ progOptimize opt = return (llvmExec "opt" opt,
                             else [])++
                            ["-instnamer"
                            ,"-","-o","-"])
+
+progOptimizePreLipton :: Options -> IO (FilePath,[String])
+progOptimizePreLipton opts
+  = return (llvmExec "opt" opts,
+            ["-mem2reg"
+            ,"-internalize-public-api-list=main"
+            ,"-internalize"
+            ,"-inline"
+            ,"-loops"
+            ,"-loop-simplify"
+            ,"-loop-rotate"
+            ,"-lcssa"]++
+            (if unroll opts
+             then ["-loop-unroll"]
+             else []))
+
+progOptimizePostLipton :: Options -> IO (FilePath,[String])
+progOptimizePostLipton opts
+  = return (llvmExec "opt" opts,
+            ["-mem2reg"
+            ,"-constprop"
+            ,"-instsimplify"
+            ,"-instcombine"
+            ,"-correlated-propagation"
+            ,"-die"
+            ,"-simplifycfg"
+            ,"-globaldce"
+            ,"-instnamer"])
 
 progDisassemble :: Options -> IO (FilePath,[String])
 progDisassemble opts = return (llvmExec "llvm-dis" opts,["-","-o","-"])
