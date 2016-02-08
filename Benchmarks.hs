@@ -98,11 +98,10 @@ benchmarks = [ "bound.c"
              , "simple_nest.c"
              , "pldi08.c"
              , "xy0.c"
-             , "up5.c"
              ]
 
 binDir :: FilePath
-binDir = ".stack-work/install/x86_64-linux/lts-2.22/7.8.4/bin/"
+binDir = ".stack-work/install/x86_64-linux/lts-3.19/7.10.3/bin/"
 
 progDir :: FilePath
 progDir = "test/"

@@ -105,3 +105,8 @@ executable vvt-svcomp
   Main-Is:              SVComp.hs
   Build-Depends:        base,containers,bindings-llvm
   Extensions:           ViewPatterns,ScopedTypeVariables
+
+executable bench
+  Main-Is:              bench/Main.hs
+  Build-Depends:        base, text, bytestring, turtle, yaml
+  GHC-Options:          -Wall
