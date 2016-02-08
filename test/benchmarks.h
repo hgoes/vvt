@@ -1,6 +1,6 @@
 #include <stdbool.h>
 
-#if defined(HCTIGAR)
+#if defined(VVT)
 void assert(bool);
 void assume(bool);
 int __nondet_int();
