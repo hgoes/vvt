@@ -95,5 +95,5 @@ Executable vvt-opt
 executable vvt
   Hs-Source-Dirs:       bin
   Main-Is:              Main.hs
-  Build-Depends:        base,process,filepath
+  Build-Depends:        base,process,filepath,directory,mtl
   GHC-Options:          -threaded

@@ -7,6 +7,10 @@ import System.IO
 import System.Environment
 import System.FilePath
 import System.Console.GetOpt
+import System.Directory
+import Data.Version
+import Text.ParserCombinators.ReadP
+import Control.Monad.Except
 
 data Action = Verify FilePath
             | Encode FilePath
@@ -68,7 +72,15 @@ getAction = do
               [] -> error "Please provide a C-file to compile."
               [file] -> return (ShowLLVM file)
             (x:_) -> error $ "Unknown action "++show x++"."
-    return (Just (act,opts))
+    let accept v = (v >= makeVersion [3,5]) && (v < makeVersion [3,6])
+        wanted = "3.5.*"
+    llvm <- case llvmDir opts of
+      Just dir -> return (Just dir)
+      Nothing -> guessLLVMDir accept ["llvm-config","llvm-config-3.5"]
+    res <- runExceptT (verifyLLVMDir wanted accept llvm)
+    case res of
+      Left err -> error err
+      Right () -> return (Just (act,opts { llvmDir = llvm }))
 
 performAction :: (Action,Options) -> IO ()
 performAction (Encode fn,opts) = do
@@ -211,3 +223,60 @@ progLipton :: Options -> IO (FilePath,[String])
 progLipton opts = case lipton opts of
   Just cmd -> let bin:args = words cmd in return (bin,args)
   Nothing -> return ("LiptonPass",[])
+
+verifyLLVMDir :: String -> (Version -> Bool) -> Maybe FilePath -> ExceptT String IO ()
+verifyLLVMDir wanted accept fp = do
+  check "clang"
+  check "opt"
+  check "llvm-as"
+  check "llvm-dis"
+  where
+    check :: String -> ExceptT String IO ()
+    check name = do
+      exec <- bin name
+      vers <- lift $ versionFromBinary exec
+      case vers of
+        Nothing -> throwError $ "Cannot determine version of "++show exec++" binary "++hint
+        Just vers' -> if accept vers'
+                      then return ()
+                      else throwError $ "Version "++showVersion vers'++" of "++show exec++" binary is not acceptable, "++wanted++" is required "++hint
+    bin :: String -> ExceptT String IO FilePath
+    bin name = case fp of
+      Nothing -> do
+        exec <- lift $ findExecutable name
+        case exec of
+          Nothing -> throwError $ "Binary "++show name++" not found "++hint
+          Just exec' -> return exec'
+      Just fp' -> return $ fp' </> name
+    hint = "(Use --with-llvm=... to specify the path where it can be found."
+      
+guessLLVMDir :: (Version -> Bool) -> [String] -> IO (Maybe FilePath)
+guessLLVMDir accept [] = return Nothing
+guessLLVMDir accept (name:names) = do
+  exec <- findExecutable name
+  case exec of
+    Nothing -> guessLLVMDir accept names
+    Just exec' -> do
+      vers <- versionFromBinary exec'
+      case vers of
+        Nothing -> guessLLVMDir accept names
+        Just v -> if accept v
+                  then do
+          dir <- readProcess exec' ["--bindir"] ""
+          case lines dir of
+            [dir'] -> return (Just dir')
+            _ -> guessLLVMDir accept names
+                  else guessLLVMDir accept names
+
+versionFromBinary :: FilePath -> IO (Maybe Version)
+versionFromBinary bin = do
+  exists <- doesFileExist bin
+  if exists
+    then do
+    outp <- readProcess bin ["--version"] ""
+    case [ vers | ln <- lines outp
+                , wrd <- words ln
+                , (vers,"") <- readP_to_S parseVersion wrd ] of
+      res:_ -> return (Just res)
+      [] -> return Nothing
+    else return Nothing
