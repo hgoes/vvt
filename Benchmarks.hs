@@ -98,6 +98,13 @@ benchmarks = [ "bound.c"
              , "simple_nest.c"
              , "pldi08.c"
              , "xy0.c"
+             , "dillig17.c"
+             , "dillig25.c"
+             , "mergesort.c"
+             , "sendmail-mime-fromqp.c"
+             , "lifo.c"
+             , "lifnat.c"
+             , "lifnatprime.c"
              ]
 
 binDir :: FilePath

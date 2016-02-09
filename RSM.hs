@@ -19,8 +19,10 @@ import Prelude hiding (mapM,sequence)
 import Data.Traversable (mapM,sequence)
 import Data.GADT.Show
 import Data.GADT.Compare
+import qualified Data.Text as T
 
 data RSMState loc var = RSMState { rsmLocations :: Map loc (RSMLoc var)
+                                 , rsmStates :: Map (Set T.Text) [[Either Bool Integer]]
                                  }
 
 data RSMLoc var = RSMLoc { rsmClasses :: Map (Set var) (Set (Map var Integer))
@@ -31,14 +33,15 @@ data Coeffs b var = Coeffs { coeffsVar :: Map var (Expr b IntType)
                            }
 
 emptyRSM :: RSMState loc var
-emptyRSM = RSMState Map.empty
+emptyRSM = RSMState Map.empty Map.empty
 
-addRSMState :: (Ord loc,Ord var) => loc -> Map var Integer
+addRSMState :: (Ord loc,Ord var) => loc -> Map var Integer -> (Set T.Text, [Either Bool Integer])
                -> RSMState loc var -> RSMState loc var
-addRSMState loc instrs st
+addRSMState loc instrs (pc, concr_state) st
   = st { rsmLocations = Map.insertWith joinLoc loc (RSMLoc { rsmClasses = Map.singleton (Map.keysSet instrs) (Set.singleton instrs)
                                                            })
                         (rsmLocations st)
+       , rsmStates = Map.insertWithKey (\_ old_val new_val -> ((head new_val) : old_val)) pc [concr_state] (rsmStates st)
        }
   where
     joinLoc :: Ord var => RSMLoc var -> RSMLoc var -> RSMLoc var
@@ -158,7 +161,7 @@ mineStates backend st
                                   (rsmClasses loc)
                           return $ RSMLoc ncls
                       ) (rsmLocations st)
-        return $ RSMState nlocs
+        return $ RSMState nlocs (rsmStates st)
     ) []
   where
     mineClass vars cls

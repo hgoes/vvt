@@ -31,7 +31,7 @@ defaultOptions = Options { optBackends = defaultBackendOptions
                          , optVerbosity = 0
                          , optStats = True
                          , optDumpDomain = Nothing
-                         , optPrintFixpoint = False
+                         , optPrintFixpoint = True
                          }
 
 allOpts :: [OptDescr (Options -> Options)]
