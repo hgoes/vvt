@@ -11,6 +11,7 @@ import System.Directory
 import Data.Version
 import Text.ParserCombinators.ReadP
 import Control.Monad.Except
+import Data.Char (isDigit)
 
 data Action = Verify FilePath
             | Encode FilePath
@@ -276,7 +277,7 @@ versionFromBinary bin = do
     outp <- readProcess bin ["--version"] ""
     case [ vers | ln <- lines outp
                 , wrd <- words ln
-                , (vers,"") <- readP_to_S parseVersion wrd ] of
+                , (vers,"") <- readP_to_S parseVersion (takeWhile (\c -> c=='.' || isDigit c) wrd) ] of
       res:_ -> return (Just res)
       [] -> return Nothing
     else return Nothing
