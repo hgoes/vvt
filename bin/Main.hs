@@ -24,7 +24,13 @@ data Options = Options { karrAnalysis :: Bool
                        , unroll :: Bool
                        , ineqPreds :: Bool
                        , lipton :: Maybe String
+                       , output :: OutputLocation
                        }
+
+data OutputLocation
+  = OutputFile FilePath
+  | OutputHandle Handle
+  | OutputDefault
 
 llvmExec :: String -> Options -> String
 llvmExec bin opts = case llvmDir opts of
@@ -38,7 +44,8 @@ defaultOptions = Options { karrAnalysis = False
                          , llvmDir = Nothing
                          , unroll = False
                          , ineqPreds = False
-                         , lipton = Nothing }
+                         , lipton = Nothing
+                         , output = OutputDefault }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Show this help"
@@ -49,7 +56,10 @@ optDescr = [Option ['h'] ["help"] (NoArg $ \opt -> opt { showHelp = True }) "Sho
            ,Option [] ["ineq"] (NoArg $ \opt -> opt { ineqPreds = True }) "Add inequality predicates"
            ,Option [] ["lipton"] (OptArg (\arg opt -> case arg of
                                              Nothing -> opt { lipton = Just "LiptonPass" }
-                                             Just bin -> opt { lipton = Just bin }) "path") "Use the lipton reduction tool to annotate parallel programs."]
+                                             Just bin -> opt { lipton = Just bin }) "path") "Use the lipton reduction tool to annotate parallel programs."
+           ,Option ['o'] ["output"] (ReqArg (\arg opt -> opt { output = case arg of
+                                                                 "-" -> OutputHandle stdout
+                                                                 _ -> OutputFile arg }) "file") "Output file location (Use \"-\" for stdout)."]
 
 getAction :: IO (Maybe (Action,Options))
 getAction = do
@@ -85,7 +95,10 @@ getAction = do
 
 performAction :: (Action,Options) -> IO ()
 performAction (Encode fn,opts) = do
-  outp <- openFile (replaceExtension fn "l") WriteMode
+  outp <- case output opts of
+    OutputDefault -> openFile (replaceExtension fn "l") WriteMode
+    OutputFile name -> openFile name WriteMode
+    OutputHandle h -> return h
   (inp,_) <- compile opts fn
   let pipe = case lipton opts of
         Nothing -> [progOptimize opts
@@ -111,7 +124,11 @@ performAction (ShowLLVM fn,opts) = do
                   ,progLipton opts
                   ,progOptimizePostLipton opts
                   ,progDisassemble opts]
-  ph <- execPipe inp stdout pipe
+  outh <- case output opts of
+    OutputDefault -> return stdout
+    OutputFile name -> openFile name WriteMode
+    OutputHandle h -> return h
+  ph <- execPipe inp outh pipe
   waitForProcess ph
   return ()
 
