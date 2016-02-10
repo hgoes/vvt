@@ -463,12 +463,12 @@ reverseInput threadNames desc = (DMap.unions [mp1,mp2,mp3],st)
           | (th,thName) <- Map.toList threadNames ]
     mp2 = DMap.fromList [ toLispType tp $
                           \tps -> (L.LispName Nil tps
-                                   (T.pack $ "main-"++showValue i ""))
+                                   (T.pack $ "input-main-"++showValue i ""))
                                   :=> (L.Annotation Map.empty)
                         | (i,tp) <- Map.toList (nondetTypes $ mainInputDesc desc)]
     mp3 = DMap.fromList [ toLispType tp $
                           \tps -> (L.LispName Nil tps
-                                   (T.pack $ tname++"-"++showValue i ""))
+                                   (T.pack $ "input-"++tname++"-"++showValue i ""))
                                   :=> (L.Annotation Map.empty)
                         | (th,thd) <- Map.toList $ threadInputDesc desc
                         , let Just tname = Map.lookup th threadNames
@@ -483,7 +483,7 @@ reverseInput threadNames desc = (DMap.unions [mp1,mp2,mp3],st)
                                        (\(tps::Struct Repr tps) rev
                                         -> let var :: L.LispVar L.LispExpr '( '[],tps)
                                                var = L.NamedVar (L.LispName Nil tps
-                                                                 (T.pack $ "main-"++
+                                                                 (T.pack $ "input-main-"++
                                                                   showValue i "")) L.Input
                                            in case rev of
                                            L.RevVar idx
@@ -506,7 +506,7 @@ reverseInput threadNames desc = (DMap.unions [mp1,mp2,mp3],st)
                                                          -> let var :: L.LispVar L.LispExpr '( '[],tps)
                                                                 var = L.NamedVar
                                                                       (L.LispName Nil tps
-                                                                       (T.pack $ tname++"-"++
+                                                                       (T.pack $ "input-"++tname++"-"++
                                                                         showValue i "")) L.Input
                                                             in case rev of
                                                             L.RevVar idx
