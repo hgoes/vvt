@@ -231,7 +231,7 @@ reverseNext threadNames inp st gts next
     mainBlks++thBlks++
     mainVals++thVals++
     thActs++thArgs++thRets++
-    globals
+    globals++mainLocals++thLocals
   where
     mainBlks = [ (mainBlkName blk)
                  :=> (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
@@ -289,6 +289,22 @@ reverseNext threadNames inp st gts next
                          in (globalName sz tps loc) :=>
                             (L.LispConstr rval)
               | (loc,val) <- Map.toList $ memory next ]
+    mainLocals = [ fromAllocVal' val $
+                   \val' -> let (sz,tps) = L.lispValueType val'
+                                rval = runIdentity $ foldExprs
+                                       (\_ -> return . translateLLVMExpr inp st gts) val'
+                            in (localName Nothing sz tps loc) :=>
+                               (L.LispConstr rval)
+                 | (loc,val) <- Map.toList $ threadGlobals $ mainState next ]
+    thLocals = [ fromAllocVal' val $
+                 \val' -> let (sz,tps) = L.lispValueType val'
+                              rval = runIdentity $ foldExprs
+                                     (\_ -> return . translateLLVMExpr inp st gts) val'
+                          in (localName (Just tname) sz tps loc) :=>
+                             (L.LispConstr rval)
+               | (th,(_,thD)) <- Map.toList $ threadState next
+               , let Just tname = Map.lookup th threadNames
+               , (loc,val) <- Map.toList $ threadGlobals thD ]
 
 reverseState :: Map (Ptr CallInst) String -> ProgramStateDesc
              -> (DMap L.LispName L.Annotation,ProgramState L.LispExpr)
