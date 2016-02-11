@@ -80,7 +80,10 @@ toLispProgram rel = trace ("Reverse state: "++show stateSt) $
       notAsserts <- mapM (\e -> let ne = translateLLVMExpr inpSt stateSt gtTrans e
                                 in not' ne
                          ) (llvmAssertions rel)
-      or' notAsserts
+      case notAsserts of
+        [] -> false
+        [x] -> return x
+        _ -> or' notAsserts
     threadNames = Map.fromList [ (th,"thread"++show n)
                                | (th,n) <- zip (Map.keys $ threadStateDesc $ llvmStateDesc rel)
                                            [1..] ]
