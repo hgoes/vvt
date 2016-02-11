@@ -6,8 +6,7 @@
 #include <assert.h>
 #include <vvt.h>
 
-#define MEMSIZE (2*320+1) //0 for "NULL"
-//#define MEMSIZE (10+1)
+#define MEMSIZE (2*960+1) //0 for "NULL"
 int memory[MEMSIZE];
 #define INDIR(cell,idx) memory[cell+idx]
 
@@ -17,13 +16,14 @@ int top;
 
 int index_malloc(){
   int curr_alloc_idx = -1;
+
   pthread_mutex_lock(&m);
   if(next_alloc_idx+2-1 > MEMSIZE){
     pthread_mutex_unlock(&m);
     curr_alloc_idx = 0;
   }else{
     curr_alloc_idx = next_alloc_idx;
-    next_alloc_idx = curr_alloc_idx + 2;
+    next_alloc_idx += 2;
     pthread_mutex_unlock(&m);
   }
   
@@ -31,7 +31,7 @@ int index_malloc(){
 }
 
 void EBStack_init(){
-  top = 0;
+	top = 0;
 }
 
 int isEmpty() {
@@ -42,29 +42,28 @@ int isEmpty() {
 }
 
 int push(int d) {
-  int oldTop = -1, newTop = -1;
+  int oldTop = -1, newTop = -1, casret = -1;
 
   newTop = index_malloc();
   if(newTop == 0){
     return 0;
   }else{
     INDIR(newTop,0) = d;
-    pthread_mutex_lock(&m);
-    oldTop = top;
-    INDIR(newTop,1) = oldTop;
-    top = newTop;
-    pthread_mutex_unlock(&m);
-    return 1;
+    while (1) {
+      oldTop = top;
+      INDIR(newTop,1) = oldTop;
+      if(__sync_bool_compare_and_swap(&top,oldTop,newTop)){
+	return 1;
+      }
+      
+    }
   }
 }
 
-void init(){
-  EBStack_init();
-}
-
-void __VERIFIER_atomic_assert(int r) {
+void __VERIFIER_atomic_assert(int r)
+{
   __atomic_begin();
-  assert(r && isEmpty());
+  assert(!(!r || !isEmpty()));
   __atomic_end();
 }
 
@@ -79,20 +78,22 @@ void push_loop(){
 
 pthread_mutex_t m2;
 int state = 0;
-
-void* thr1(void* arg) {
+void* thr1(void* arg)
+{
   pthread_mutex_lock(&m2);
-  switch(state)	{
-  case 0: 
-    EBStack_init();
-    state = 1;
-    //fall-through
-  case 1:
-    pthread_mutex_unlock(&m2);
-    push_loop();
-    break;
-  }
-
+  switch(state)
+    {
+    case 0: 
+      EBStack_init();
+      state = 1;
+      //fall-through
+    case 1: 
+      pthread_mutex_unlock(&m2);
+      
+      push_loop();
+      break;
+    }
+  
   return 0;
 }
 

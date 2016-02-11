@@ -51,11 +51,11 @@ void __VERIFIER_atomic_use_done(int myidx) {
   __atomic_end();
 }
 
-void __VERIFIER_atomic_take_snapshot(int readerstart1, int readerstart2) {
+void __VERIFIER_atomic_take_snapshot(int *readerstart1, int *readerstart2) {
   /* Snapshot reader state. */
   __atomic_begin();
-  readerstart1 = readerprogress1;
-  readerstart2 = readerprogress2;
+  *readerstart1 = readerprogress1;
+  *readerstart2 = readerprogress2;
   __atomic_end();
 }
 
@@ -76,7 +76,6 @@ void __VERIFIER_atomic_check_progress2(int readerstart2) {
     __error();
   }
   __atomic_end();
-  return;
 }
 
 void *qrcu_reader1(void* arg) {
@@ -125,9 +124,9 @@ void *qrcu_reader2(void* arg) {
 
 void* qrcu_updater(void* arg) {
   int i;
-  int readerstart1 = __nondet_int(), readerstart2 = __nondet_int();
+  int readerstart1, readerstart2;
   int sum;
-  __VERIFIER_atomic_take_snapshot(readerstart1, readerstart2);
+  __VERIFIER_atomic_take_snapshot(&readerstart1, &readerstart2);
   sum_unordered;
   if (sum <= 1) { sum_unordered; }
   else {}

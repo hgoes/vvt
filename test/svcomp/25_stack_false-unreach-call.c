@@ -6,8 +6,7 @@
 #include <assert.h>
 #include <vvt.h>
 
-#define MEMSIZE (2*320+1) //0 for "NULL"
-//#define MEMSIZE (10+1)
+#define MEMSIZE (2*32+1) //0 for "NULL"
 int memory[MEMSIZE];
 #define INDIR(cell,idx) memory[cell+idx]
 
