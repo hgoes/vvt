@@ -75,6 +75,7 @@ Executable vvt-bmc
   Main-Is:              BMC.hs
   Extensions:           RankNTypes,DataKinds,FlexibleContexts
   Build-Depends:        vvt,base,smtlib2,smtlib2-pipe,smtlib2-debug,mtl,time
+  GHC-Options:          -threaded
 
 Executable vvt-verify
   Hs-Source-Dirs:       bin
@@ -91,6 +92,7 @@ Executable vvt-opt
   Hs-Source-Dirs:       bin
   Main-Is:              Optimize.hs
   Build-Depends:        vvt,base,text,containers
+  GHC-Options:          -threaded
   
 executable vvt
   Hs-Source-Dirs:       bin
