@@ -97,3 +97,9 @@ executable vvt
   Main-Is:              Main.hs
   Build-Depends:        base,process,filepath,directory,mtl
   GHC-Options:          -threaded
+
+executable vvt-svcomp
+  Hs-Source-Dirs:       bin
+  Main-Is:              SVComp.hs
+  Build-Depends:        base,containers,bindings-llvm
+  Extensions:           ViewPatterns,ScopedTypeVariables
