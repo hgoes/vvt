@@ -124,6 +124,11 @@ main = do
                  timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
                  catch act' (\ex -> case ex of
                               ExitFailure _ -> return (Left False))
+             case startTime of
+               Just startTime' -> do
+                 endTime <- getCurrentTime
+                 putStrLn $ "Total runtime: "++show (diffUTCTime endTime startTime')
+               Nothing -> return ()
              case res of
               Left compl -> putStrLn $ "No bug found ("++
                             (if compl then "Complete" else "Incomplete")++")"
