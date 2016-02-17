@@ -109,7 +109,20 @@ toLispProgram rel = trace ("Reverse state: "++show stateSt) $
                   Nothing -> L.LispRef (L.NamedVar (stepName Nothing) L.Input) Nil
                   Just th' -> let Just tname = Map.lookup th' threadNames
                               in L.LispRef (L.NamedVar (stepName (Just tname)) L.Input) Nil
-          ]
+          ] ++
+          (case llvmInternalYields rel of
+              [] -> []
+              [_] -> []
+              _ -> [L.AtMostOne [ yieldAct
+                                | (th,blk,sblk) <- llvmInternalYields rel
+                                , let yieldAct = case th of
+                                        Nothing -> L.LispRef (L.NamedVar (mainBlkName (blk,sblk)) L.State) Nil
+                                        Just th' -> let Just tname = Map.lookup th' threadNames
+                                                    in L.LispRef (L.NamedVar (threadBlkName tname (blk,sblk)) L.State) Nil
+                                      step = case th of
+                                        Nothing -> L.LispRef (L.NamedVar (stepName Nothing) L.Input) Nil
+                                        Just th' -> let Just tname = Map.lookup th' threadNames
+                                                    in L.LispRef (L.NamedVar (stepName (Just tname)) L.Input) Nil ]])
           
 
 -- Naming conventions
