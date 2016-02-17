@@ -157,6 +157,14 @@ optimizeFun (Eq tp (Succ (Succ Zero)))
   ((LispExpr (Const x)) :::
    (LispExpr (Const y)) :::
     Nil) = LispExpr (Const (BoolValue (defaultEq x y)))
+optimizeFun (Ord NumInt op)
+  ((LispExpr (Const (IntValue x))) :::
+   (LispExpr (Const (IntValue y))) ::: Nil)
+  = LispExpr (Const (BoolValue (case op of
+                                   Ge -> x>=y
+                                   Gt -> x>y
+                                   Le -> x<=y
+                                   Lt -> x<y)))
 optimizeFun f arg = LispExpr (App f arg)
 
 asBoolConst :: LispExpr tp -> Maybe Bool
