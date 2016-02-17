@@ -245,11 +245,14 @@ usedType val = do
           (castDown -> Just bitcast) -> do
             tp' <- getType (bitcast :: Ptr BitCastInst)
             case castDown tp' of
-              Just ptp -> do
-                rtp <- sequentialTypeGetElementType (ptp :: Ptr PointerType)
-                if Left rtp==tp
-                  then getUses' tp cur end
-                  else error "Pointer is bitcast to multiple different types."
+              Just ptp -> case tp of
+                Left tp' -> do
+                  rtp <- sequentialTypeGetElementType (ptp :: Ptr PointerType)
+                  unification <- unifyBitcast rtp tp'
+                  case unification of
+                    Nothing -> error "Pointer is bitcast to multiple different types."
+                    Just ntp -> getUses' (Left ntp) cur end
+                Right _ -> error "Pointer is used as integer and object."
               Nothing -> error "Bitcast is not a pointer."
           (castDown -> Just p2i) -> do
             tp' <- getType (p2i::Ptr PtrToIntInst)
@@ -258,7 +261,22 @@ usedType val = do
                           then getUses' tp cur end
                           else error "Pointer is bitcast to multiple different types."
           _ -> getUses' tp cur end
-
+    unifyBitcast :: Ptr Type -> Ptr Type -> IO (Maybe (Ptr Type))
+    unifyBitcast tp1 tp2
+      | tp1==tp2 = return (Just tp1)
+    unifyBitcast (castDown -> Just ctp1) tp2 = do
+      stp1 <- compositeTypeGetTypeAtIndex (ctp1::Ptr CompositeType) 0
+      res <- unifyBitcast stp1 tp2
+      case res of
+        Just _ -> return (Just (castUp ctp1))
+        Nothing -> return Nothing
+    unifyBitcast tp1 (castDown -> Just ctp2) = do
+      stp2 <- compositeTypeGetTypeAtIndex (ctp2::Ptr CompositeType) 0
+      res <- unifyBitcast tp1 stp2
+      case res of
+        Just _ -> return (Just (castUp ctp2))
+        Nothing -> return Nothing
+    unifyBitcast _ _ = return Nothing
 simpleTypeByteSize :: Ptr Type -> IO Integer
 simpleTypeByteSize (castDown -> Just itp) = do
   sz <- getBitWidth itp
