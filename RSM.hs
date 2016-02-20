@@ -1,4 +1,4 @@
-{-# LANGUAGE PackageImports,FlexibleContexts #-}
+{-# LANGUAGE PackageImports,FlexibleContexts, DeriveGeneric #-}
 module RSM where
 
 import Args
@@ -21,8 +21,18 @@ import Data.GADT.Show
 import Data.GADT.Compare
 import qualified Data.Text as T
 
+import GHC.Generics as G
+import Data.Aeson as A
+
+newtype CollectedStates =
+    CollectedStates
+    { unpackCollectedStates :: Map T.Text [[Either Bool Integer]] }
+    deriving G.Generic
+
+instance A.ToJSON CollectedStates
+
 data RSMState loc var = RSMState { rsmLocations :: Map loc (RSMLoc var)
-                                 , rsmStates :: Map (Set T.Text) [[Either Bool Integer]]
+                                 , rsmStates :: CollectedStates
                                  }
 
 data RSMLoc var = RSMLoc { rsmClasses :: Map (Set var) (Set (Map var Integer))
@@ -33,15 +43,22 @@ data Coeffs b var = Coeffs { coeffsVar :: Map var (Expr b IntType)
                            }
 
 emptyRSM :: RSMState loc var
-emptyRSM = RSMState Map.empty Map.empty
+emptyRSM = RSMState Map.empty (CollectedStates Map.empty)
 
 addRSMState :: (Ord loc,Ord var) => loc -> Map var Integer -> (Set T.Text, [Either Bool Integer])
                -> RSMState loc var -> RSMState loc var
 addRSMState loc instrs (pc, concr_state) st
-  = st { rsmLocations = Map.insertWith joinLoc loc (RSMLoc { rsmClasses = Map.singleton (Map.keysSet instrs) (Set.singleton instrs)
-                                                           })
+  = st { rsmLocations = Map.insertWith
+                        joinLoc
+                        loc
+                        (RSMLoc { rsmClasses = Map.singleton (Map.keysSet instrs) (Set.singleton instrs)})
                         (rsmLocations st)
-       , rsmStates = Map.insertWithKey (\_ old_val new_val -> ((head new_val) : old_val)) pc [concr_state] (rsmStates st)
+       , rsmStates = CollectedStates $
+                     Map.insertWithKey
+                     (\_ new_val old_val -> ((head new_val) : old_val))
+                     (head (Set.toList pc))
+                     [concr_state]
+                     (unpackCollectedStates $ rsmStates st)
        }
   where
     joinLoc :: Ord var => RSMLoc var -> RSMLoc var -> RSMLoc var
@@ -71,7 +88,7 @@ createLine :: (Backend b,Ord var) => Coeffs b var -> Map var Integer -> SMT b (E
 createLine coeffs vars = do
   lhs <- case Map.elems $ Map.intersectionWith (\c i -> do
                                                    i' <- constant (IntValueC i)
-                                                   embed $ c :*: i'
+                                                   embed $ c I.:*: i'
                                                ) (coeffsVar coeffs) vars of
          [x] -> x
          xs -> do

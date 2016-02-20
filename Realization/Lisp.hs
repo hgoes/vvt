@@ -17,6 +17,8 @@ import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface as I
 import qualified Language.SMTLib2.Internals.Expression as E
+import qualified Data.Aeson as A
+import qualified Data.ByteString as BS
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
 import Data.Dependent.Sum
@@ -31,7 +33,7 @@ import Data.Typeable
 import qualified Data.AttoLisp as L
 import qualified Data.Attoparsec.Number as L
 import System.IO (Handle)
-import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
 import Data.Attoparsec
 import Control.Exception
 import Control.Monad.Trans.Except
@@ -855,7 +857,9 @@ instance TransitionRelation LispProgram where
       | expr <- programPredicates prog ]
   defaultPredicateExtractor _ = return emptyRSM
   extractPredicates prog rsm (LispConcr full) (LispPart part) = liftIO $ do
-    putStrLn $ "\n **all states so far:" ++ (show (rsmStates rsm)) ++"\n"
+    BSL.writeFile  "./states.json" $ A.encode (unpackCollectedStates $ rsmStates rsm)
+    --putStrLn $ "\n **all states so far:" ++ (show (rsmStates rsm)) ++"\n"
+    putStrLn $ "partial State in addRSM: " ++ (show part)
     (rsm2,lines) <- mineStates (createPipe "z3" ["-smt2","-in"]) rsm1
     return (rsm2,concat $ fmap (\ln -> [mkLine E.Ge ln
                                        ,mkLine E.Gt ln]) lines)

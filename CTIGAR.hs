@@ -242,7 +242,7 @@ k = do
   return $ frontier cons
 
 ic3Debug :: Int -> String -> IC3 mdl ()
-ic3Debug lvl txt = ic3DebugAct lvl (liftIO $ hPutStrLn stderr txt)
+ic3Debug lvl txt = ic3DebugAct lvl (liftIO $ hPutStrLn stdout txt)
 
 ic3DebugAct :: Int -> IC3 mdl () -> IC3 mdl ()
 ic3DebugAct lvl act = do
@@ -1190,6 +1190,7 @@ elimSpuriousTrans st level = do
   updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
                                , numAddPreds = (numAddPreds stats)+(length props) })
   interp <- interpolateState level (stateLifted rst) (stateLiftedInputs rst)
+  ic3Debug 3 $ "computed interpolant: " ++ (show interp)
   domain <- gets ic3Domain
   order <- gets ic3LitOrder
   (ndomain,norder) <- foldlM (\(cdomain,corder) trm

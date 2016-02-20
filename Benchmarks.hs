@@ -4,10 +4,12 @@
 module Benchmarks where
 
 import Control.Monad(foldM)
+import Data.Maybe(catMaybes)
+import Filesystem.Path(addExtension)
+import GHC.Generics
 import Numeric
 import Prelude hiding (FilePath)
 import Turtle
-import GHC.Generics
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Yaml as Y
@@ -92,20 +94,12 @@ emptyIC3MrsStats =
 
 type BenchConf = [FilePath]
 
-benchmarks :: BenchConf
-benchmarks = [ "bound.c"
-             , "barbrprime.c"
-             , "simple_nest.c"
-             , "pldi08.c"
-             , "xy0.c"
-             , "dillig17.c"
-             , "dillig25.c"
-             , "mergesort.c"
-             , "sendmail-mime-fromqp.c"
-             , "lifo.c"
-             , "lifnat.c"
-             , "lifnatprime.c"
-             ]
+benchmarks_hard :: BenchConf
+benchmarks_hard = [ "seq2.c_hard"
+                  , "split.c_hard"
+                  , "up5.c_hard"
+                  , "substring1.c_hard"
+                  ]
 
 binDir :: FilePath
 binDir = ".stack-work/install/x86_64-linux/lts-3.19/7.10.3/bin/"
@@ -121,8 +115,20 @@ benchResults = "bench.log"
 
 runBench :: IO ()
 runBench = do
-  dir <- pwd
-  putStrLn $ show dir
+  benchmarks <- liftIO $ Turtle.fold
+                         (Turtle.ls progDir)
+                         (Fold
+                          (\benchs newFP ->
+                               case extension newFP of
+                                 Just "c" -> newFP : benchs
+                                 _ -> benchs
+                          )
+                          []
+                          id
+                         )
+  let parentDir = commonPrefix benchmarks
+      benchmarksStripped = catMaybes $ map (stripPrefix parentDir) benchmarks
+  putStrLn (show benchmarksStripped)
   mapM_ (\prog -> do
            trExists <- testfile (trDir </> (dropExtension prog))
            case trExists of
@@ -136,21 +142,26 @@ runBench = do
                              ["encode", progAsTxt]
                              Turtle.empty
                return ()
-        ) benchmarks
+        ) benchmarks_hard
   benchFileExists <- testfile "bench.log"
   case benchFileExists of
     True -> rm "bench.log"
     False -> return ()
   (accumStats, _) <-
       foldM (\(accumulatedStats, n) prog-> do
-               transitionRelation <- safeToText $ trDir </> (dropExtension prog)
+               let transitionRelation = trDir </> (dropExtension prog)
+               trAsText <- safeToText transitionRelation
                verifyBinary <- safeToText (binDir </> "vvt-verify")
-               putStrLn $ T.unpack $ verifyBinary <> (" < " <> transitionRelation)
-               _ <- sh $ inshell (verifyBinary <> " < " <> (T.pack $ show $ transitionRelation)) Turtle.empty
+               putStrLn $ T.unpack $ verifyBinary <> (" < " <> trAsText)
+               logFile <- safeToText (addExtension ("log" </> (dropExtension prog)) "log")
+               _ <- sh $ inshell (verifyBinary
+                                 <> " < " <> (T.pack $ show $ trAsText)
+                                 <> " > " <> logFile
+                                 ) Turtle.empty
                mStats <- (return . Y.decode =<< BS.readFile "stats.yaml") :: IO (Maybe BenchMarkStats)
                case mStats of
                  Just stats -> do
-                   append benchResults $ select $ fmap T.pack [ ("benchmark " ++ (show n))
+                   append benchResults $ select $ fmap T.pack [ ("benchmark " ++ (show n) ++ ": " ++ (show prog))
                                                               , (show stats)
                                                               ]
                    let addToAccumStats field = (field stats) + (field accumulatedStats)
@@ -179,7 +190,7 @@ runBench = do
                            }
                           , n+1 )
                  Nothing -> fail "could not parse stats.yaml file"
-            ) (emptyIC3MrsStats, 1) benchmarks :: IO (BenchMarkStats, Int)
+            ) (emptyIC3MrsStats, 1) benchmarks_hard :: IO (BenchMarkStats, Int)
   let calcMean field = (field accumStats) / (fromIntegral (length benchmarks)) :: Float
       meanVals =
           BenchMarkStats
