@@ -1,0 +1,44 @@
+all: results
+
+load-balance-1.l: load-balance.c
+	$(VVT) encode $(OPTS) --lipton="$(LIPTON) " -DN=1 load-balance.c -o load-balance-1.l
+
+result-1.output: load-balance-1.l
+	$(VVT_VERIFY) --stats --timeout=$(TIMEOUT) < load-balance-1.l > result-1.output
+
+load-balance-n-1.l: load-balance.c
+	$(VVT) encode $(OPTS) --lipton="$(LIPTON) -n" -DN=1 load-balance.c -o load-balance-n-1.l
+
+result-n-1.output: load-balance-n-1.l
+	$(VVT_VERIFY) --stats --timeout=$(TIMEOUT) < load-balance-n-1.l > result-n-1.output
+
+load-balance-2.l: load-balance.c
+	$(VVT) encode $(OPTS) --lipton="$(LIPTON) " -DN=2 load-balance.c -o load-balance-2.l
+
+result-2.output: load-balance-2.l
+	$(VVT_VERIFY) --stats --timeout=$(TIMEOUT) < load-balance-2.l > result-2.output
+
+load-balance-n-2.l: load-balance.c
+	$(VVT) encode $(OPTS) --lipton="$(LIPTON) -n" -DN=2 load-balance.c -o load-balance-n-2.l
+
+result-n-2.output: load-balance-n-2.l
+	$(VVT_VERIFY) --stats --timeout=$(TIMEOUT) < load-balance-n-2.l > result-n-2.output
+
+load-balance-3.l: load-balance.c
+	$(VVT) encode $(OPTS) --lipton="$(LIPTON) " -DN=3 load-balance.c -o load-balance-3.l
+
+result-3.output: load-balance-3.l
+	$(VVT_VERIFY) --stats --timeout=$(TIMEOUT) < load-balance-3.l > result-3.output
+
+load-balance-n-3.l: load-balance.c
+	$(VVT) encode $(OPTS) --lipton="$(LIPTON) -n" -DN=3 load-balance.c -o load-balance-n-3.l
+
+result-n-3.output: load-balance-n-3.l
+	$(VVT_VERIFY) --stats --timeout=$(TIMEOUT) < load-balance-n-3.l > result-n-3.output
+
+lfiles: load-balance-1.l load-balance-n-1.l load-balance-2.l load-balance-n-2.l load-balance-3.l load-balance-n-3.l
+
+results: result-1.output result-n-1.output result-2.output result-n-2.output result-3.output result-n-3.output
+
+clean:
+	rm -f load-balance-1.l result-1.output load-balance-n-1.l result-n-1.output load-balance-2.l result-2.output load-balance-n-2.l result-n-2.output load-balance-3.l result-3.output load-balance-n-3.l result-n-3.output

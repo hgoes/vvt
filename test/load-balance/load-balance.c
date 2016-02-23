@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <pthread.h>
 
-#define VARS(n) int* p##n;\
+#define VARS(n) int* p##n = 0;\
   int x##n = 0;\
   void* worker##n(void* arg) {\
     int limit = (int)arg;\
@@ -76,8 +76,17 @@ void distribute(void) {
   pthread_t t##n;				\
   pthread_create(&t##n,0,worker##n,l);
 #define JOIN(n,l)				\
-  pthread_join(t##n,0);				\
-  assert(*p##n==l);
+  pthread_join(t##n,0);
+
+void check(int limit) {
+  #if N==1
+  assert(x1==limit);
+  #elif N==2
+  assert(x1==limit && x2==limit);
+  #elif N==3
+  assert(x1==limit && x2==limit && x3==limit);
+  #endif
+}
 
 void run(int limit) {
   #if N>0
@@ -95,9 +104,14 @@ void run(int limit) {
 }
 
 int main() {
+  #ifdef LIMIT
+  int limit = LIMIT;
+  #else
   int limit = __nondet_int();
+  #endif
   assume(limit>0);
   distribute();
   run(limit);
+  check(limit);
   return 0;
 }
