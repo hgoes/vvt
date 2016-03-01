@@ -3,10 +3,13 @@
 
 module Benchmarks where
 
+-- Local --
+import Stats
+
+-- StandardLib --
 import Control.Monad(foldM)
 import Data.Maybe(catMaybes)
 import Filesystem.Path(addExtension)
-import GHC.Generics
 import Numeric
 import Prelude hiding (FilePath)
 import Turtle
@@ -14,91 +17,14 @@ import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Yaml as Y
 
-data BenchMarkStats =
-    BenchMarkStats
-    { mrs_consecutionTime :: Float
-    , mrs_consecutionNum :: Float
-    , mrs_domainTime :: Float
-    , mrs_domainNum :: Float
-    , mrs_interpolationTime :: Float
-    , mrs_interpolationNum :: Float
-    , mrs_liftingTime :: Float
-    , mrs_liftingNum :: Float
-    , mrs_initiationTime :: Float
-    , mrs_initiationNum :: Float
-    , mrs_numErased :: Float
-    , mrs_numCTI :: Float
-    , mrs_numUnliftedErased :: Float
-    , mrs_numCTG :: Float
-    , mrs_numMIC :: Float
-    , mrs_numCoreReduced :: Float
-    , mrs_numAbortJoin :: Float
-    , mrs_numAbortMic :: Float
-    , mrs_numRefinements :: Float
-    , mrs_numAddPreds :: Float
-    , mrs_numPreds :: Float
-    } deriving Generic
-
-instance Y.FromJSON BenchMarkStats
-
-instance Show BenchMarkStats where
-    show bms =
-        ("consecutionTime: " ++ ((showFFloat Nothing (mrs_consecutionTime bms)) "") ++ "\n")
-        ++ ("consecutionNum: " ++ ((showFFloat Nothing (mrs_consecutionNum bms)) "") ++ "\n")
-        ++ ("domainTime:" ++ ((showFFloat Nothing (mrs_domainTime bms)) "") ++ "\n")
-        ++ ("domainNum:" ++ ((showFFloat Nothing (mrs_domainNum bms)) "") ++ "\n")
-        ++ ("interpolationTime:" ++ ((showFFloat Nothing (mrs_interpolationTime bms)) "") ++ "\n")
-        ++ ("interpolationNum:" ++ ((showFFloat Nothing (mrs_interpolationNum bms)) "") ++ "\n")
-        ++ ("liftingTime:" ++ ((showFFloat Nothing (mrs_liftingTime bms)) "") ++ "\n")
-        ++ ("liftingNum:" ++ ((showFFloat Nothing (mrs_liftingNum bms)) "") ++ "\n")
-        ++ ("initiationTime:" ++ ((showFFloat Nothing (mrs_initiationTime bms)) "") ++ "\n")
-        ++ ("initiationNum:" ++ ((showFFloat Nothing (mrs_initiationNum bms)) "") ++ "\n")
-        ++ ("numErased:" ++ ((showFFloat Nothing (mrs_numErased bms)) "") ++ "\n")
-        ++ ("numCTI:" ++ ((showFFloat Nothing (mrs_numCTI bms)) "") ++ "\n")
-        ++ ("numUnliftedErased:" ++ ((showFFloat Nothing (mrs_numUnliftedErased bms)) "") ++ "\n")
-        ++ ("numCTG:" ++ ((showFFloat Nothing (mrs_numCTG bms)) "") ++ "\n")
-        ++ ("numMIC:" ++ ((showFFloat Nothing (mrs_numMIC bms)) "") ++ "\n")
-        ++ ("numCoreReduced:" ++ ((showFFloat Nothing (mrs_numCoreReduced bms)) "") ++ "\n")
-        ++ ("numAbortJoin:" ++ ((showFFloat Nothing (mrs_numAbortJoin bms)) "") ++ "\n")
-        ++ ("numAbortMic:" ++ ((showFFloat Nothing (mrs_numAbortMic bms)) "") ++ "\n")
-        ++ ("numRefinements:" ++ ((showFFloat Nothing (mrs_numRefinements bms)) "") ++ "\n")
-        ++ ("numAddPreds:" ++ ((showFFloat Nothing (mrs_numAddPreds bms)) "") ++ "\n")
-        ++ ("numPreds:" ++ ((showFFloat Nothing (mrs_numPreds bms)) "") ++ "\n")
-
-emptyIC3MrsStats :: BenchMarkStats
-emptyIC3MrsStats =
-    BenchMarkStats
-    { mrs_consecutionTime = 0
-    , mrs_consecutionNum = 0
-    , mrs_domainTime = 0
-    , mrs_domainNum = 0
-    , mrs_interpolationTime = 0
-    , mrs_interpolationNum = 0
-    , mrs_liftingTime = 0
-    , mrs_liftingNum = 0
-    , mrs_initiationTime = 0
-    , mrs_initiationNum = 0
-    , mrs_numErased = 0
-    , mrs_numCTI = 0
-    , mrs_numUnliftedErased = 0
-    , mrs_numCTG = 0
-    , mrs_numMIC = 0
-    , mrs_numCoreReduced = 0
-    , mrs_numAbortJoin = 0
-    , mrs_numAbortMic = 0
-    , mrs_numRefinements = 0
-    , mrs_numAddPreds = 0
-    , mrs_numPreds = 0
-    }
-
 
 type BenchConf = [FilePath]
 
 benchmarks_hard :: BenchConf
-benchmarks_hard = [ "seq2.c_hard"
-                  , "split.c_hard"
-                  , "up5.c_hard"
-                  , "substring1.c_hard"
+benchmarks_hard = [ "svd4.c"
+                  , "cars.c"
+                  , "mergesort.c"
+                  , "simple_nest.c"
                   ]
 
 getAllBenchmarks :: IO BenchConf
@@ -147,12 +73,18 @@ trDir = "trcache/"
 benchResults :: FilePath
 benchResults = "bench.log"
 
+_onlyHardBenchmarks_ :: Bool
+_onlyHardBenchmarks_ = False
+
+_dontCreateTransitionRelations_ :: Bool
+_dontCreateTransitionRelations_ = True
+
 runBench :: IO ()
 runBench = do
   benchmarks <-
       case _onlyHardBenchmarks_ of
         True -> return benchmarks_hard
-        False -> getSVCompPrecompiledBenchmarks--getAllBenchmarks
+        False -> getAllBenchmarks
   case _dontCreateTransitionRelations_ of
     True -> return ()
     False ->
@@ -185,15 +117,16 @@ runBench = do
                                  <> " < " <> (T.pack $ show $ trAsText)
                                  <> " > " <> logFile
                                  ) Turtle.empty
-               mStats <- (return . Y.decode =<< BS.readFile "stats.yaml") :: IO (Maybe BenchMarkStats)
+               mStats <- (return . Y.decode =<< BS.readFile "stats.yaml") :: IO (Maybe IC3MachineReadableStats)
                case mStats of
                  Just stats -> do
                    append benchResults $ select $ fmap T.pack [ ("benchmark " ++ (show n) ++ ": " ++ (show prog))
                                                               , (show stats)
                                                               ]
                    let addToAccumStats field = (field stats) + (field accumulatedStats)
-                   return (BenchMarkStats
-                           { mrs_consecutionTime = addToAccumStats mrs_consecutionTime
+                   return (IC3MachineReadableStats
+                           { mrs_totalTime = addToAccumStats mrs_totalTime
+                           , mrs_consecutionTime = addToAccumStats mrs_consecutionTime
                            , mrs_consecutionNum = addToAccumStats mrs_consecutionNum
                            , mrs_domainTime = addToAccumStats mrs_domainTime
                            , mrs_domainNum = addToAccumStats mrs_domainNum
@@ -217,34 +150,33 @@ runBench = do
                            }
                           , n+1 )
                  Nothing -> fail "could not parse stats.yaml file"
-            ) (emptyIC3MrsStats, 1) benchmarks_hard :: IO (BenchMarkStats, Int)
+            ) (emptyIC3MRStats, 1) benchmarks :: IO (IC3MachineReadableStats, Int)
   let calcMean field = (field accumStats) / (fromIntegral (length benchmarks)) :: Float
-      meanVals =
-          BenchMarkStats
-          { mrs_consecutionTime = calcMean mrs_consecutionTime
-          , mrs_consecutionNum = calcMean mrs_consecutionNum
-          , mrs_domainTime = calcMean mrs_domainTime
-          , mrs_domainNum = calcMean mrs_domainNum
-          , mrs_interpolationTime = calcMean mrs_interpolationTime
-          , mrs_interpolationNum = calcMean mrs_interpolationNum
-          , mrs_liftingTime = calcMean mrs_liftingTime
-          , mrs_liftingNum = calcMean mrs_liftingNum
-          , mrs_initiationTime = calcMean mrs_initiationTime
-          , mrs_initiationNum = calcMean mrs_initiationNum
-          , mrs_numErased = calcMean mrs_numErased
-          , mrs_numCTI = calcMean mrs_numCTI
-          , mrs_numUnliftedErased = calcMean mrs_numUnliftedErased
-          , mrs_numCTG = calcMean mrs_numCTG
-          , mrs_numMIC = calcMean mrs_numMIC
-          , mrs_numCoreReduced = calcMean mrs_numCoreReduced
-          , mrs_numAbortJoin = calcMean mrs_numAbortJoin
-          , mrs_numAbortMic = calcMean mrs_numAbortMic
-          , mrs_numRefinements = calcMean mrs_numRefinements
-          , mrs_numAddPreds = calcMean mrs_numAddPreds
-          , mrs_numPreds = calcMean mrs_numPreds
-          }
+      meanValsPrettyString =
+          (("totalTime: " ++((showFFloat Nothing (calcMean mrs_totalTime)) "") ++ "\n")
+        ++ ("consecutionTime: " ++ ((showFFloat Nothing (calcMean mrs_consecutionTime)) "") ++ "\n"))
+        ++ ("consecutionNum: " ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_consecutionNum))) "") ++ "\n")
+        ++ ("domainTime:" ++ ((showFFloat Nothing (calcMean mrs_domainTime)) "") ++ "\n")
+        ++ ("domainNum:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_domainNum))) "") ++ "\n")
+        ++ ("interpolationTime:" ++ ((showFFloat Nothing (calcMean mrs_interpolationTime)) "") ++ "\n")
+        ++ ("interpolationNum:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_interpolationNum))) "") ++ "\n")
+        ++ ("liftingTime:" ++ ((showFFloat Nothing (calcMean mrs_liftingTime)) "") ++ "\n")
+        ++ ("liftingNum:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_liftingNum))) "") ++ "\n")
+        ++ ("initiationTime:" ++ ((showFFloat Nothing (calcMean mrs_initiationTime)) "") ++ "\n")
+        ++ ("initiationNum:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_initiationNum))) "") ++ "\n")
+        ++ ("numErased:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numErased))) "") ++ "\n")
+        ++ ("numCTI:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numCTI))) "") ++ "\n")
+        ++ ("numUnliftedErased:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numUnliftedErased))) "") ++ "\n")
+        ++ ("numCTG:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numCTG))) "") ++ "\n")
+        ++ ("numMIC:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numMIC))) "") ++ "\n")
+        ++ ("numCoreReduced:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numCoreReduced))) "") ++ "\n")
+        ++ ("numAbortJoin:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numAbortJoin))) "") ++ "\n")
+        ++ ("numAbortMic:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numAbortMic))) "") ++ "\n")
+        ++ ("numRefinements:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numRefinements))) "") ++ "\n")
+        ++ ("numAddPreds:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numAddPreds))) "") ++ "\n")
+        ++ ("numPreds:" ++ ((showFFloat Nothing (calcMean (fromIntegral . mrs_numPreds))) "") ++ "\n")
 
-  append benchResults $ select $ fmap T.pack ["mean values over all benchmarks:", (show meanVals)]
+  append benchResults $ select $ fmap T.pack ["mean values over all benchmarks:", meanValsPrettyString]
 
 
 
