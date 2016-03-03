@@ -101,6 +101,40 @@ benchmarks_hard = [ "seq2.c_hard"
                   , "substring1.c_hard"
                   ]
 
+getAllBenchmarks :: IO BenchConf
+getAllBenchmarks = do
+  benchmarks <- liftIO $ Turtle.fold
+                         (Turtle.ls progDir)
+                         (Fold
+                          (\benchs newFP ->
+                               case extension newFP of
+                                 Just "c" -> newFP : benchs
+                                 _ -> benchs
+                          )
+                          []
+                          id
+                         )
+  let parentDir = commonPrefix benchmarks
+      benchmarksStripped = catMaybes $ map (stripPrefix parentDir) benchmarks
+  return benchmarksStripped
+
+getSVCompPrecompiledBenchmarks :: IO BenchConf
+getSVCompPrecompiledBenchmarks = do
+  benchmarks <- liftIO $ Turtle.fold
+                         (Turtle.ls trDir)
+                         (Fold
+                          (\benchs newFP ->
+                               case extension newFP of
+                                 Just "l" -> (addExtension newFP "c" ) : benchs
+                                 _ -> benchs
+                          )
+                          []
+                          id
+                         )
+  let parentDir = commonPrefix benchmarks
+      benchmarksStripped = catMaybes $ map (stripPrefix parentDir) benchmarks
+  return benchmarksStripped
+
 binDir :: FilePath
 binDir = ".stack-work/install/x86_64-linux/lts-3.19/7.10.3/bin/"
 
@@ -115,34 +149,27 @@ benchResults = "bench.log"
 
 runBench :: IO ()
 runBench = do
-  benchmarks <- liftIO $ Turtle.fold
-                         (Turtle.ls progDir)
-                         (Fold
-                          (\benchs newFP ->
-                               case extension newFP of
-                                 Just "c" -> newFP : benchs
-                                 _ -> benchs
-                          )
-                          []
-                          id
-                         )
-  let parentDir = commonPrefix benchmarks
-      benchmarksStripped = catMaybes $ map (stripPrefix parentDir) benchmarks
-  putStrLn (show benchmarksStripped)
-  mapM_ (\prog -> do
-           trExists <- testfile (trDir </> (dropExtension prog))
-           case trExists of
-             True -> return ()
-             False -> do
-               progAsTxt <- safeToText (progDir </> prog)
-               vvtBinary <- safeToText (binDir </> "vvt")
-               let dest = trDir </> (dropExtension prog)
-               output dest $ Turtle.inproc
-                             vvtBinary
-                             ["encode", progAsTxt]
-                             Turtle.empty
-               return ()
-        ) benchmarks_hard
+  benchmarks <-
+      case _onlyHardBenchmarks_ of
+        True -> return benchmarks_hard
+        False -> getSVCompPrecompiledBenchmarks--getAllBenchmarks
+  case _dontCreateTransitionRelations_ of
+    True -> return ()
+    False ->
+        mapM_ (\prog -> do
+                 trExists <- testfile (trDir </> (dropExtension prog))
+                 case trExists of
+                   True -> return ()
+                   False -> do
+                     progAsTxt <- safeToText (progDir </> prog)
+                     vvtBinary <- safeToText (binDir </> "vvt")
+                     let dest = trDir </> (dropExtension prog)
+                     output dest $ Turtle.inproc
+                            vvtBinary
+                            ["encode", progAsTxt]
+                            Turtle.empty
+                     return ()
+              ) benchmarks
   benchFileExists <- testfile "bench.log"
   case benchFileExists of
     True -> rm "bench.log"
