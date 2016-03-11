@@ -1163,14 +1163,13 @@ elimSpuriousTrans st level = do
   mdl <- asks ic3Model
   rst <- liftIO $ readIORef st
   backend <- asks ic3BaseBackend
-  env <- get
-  (nextr,props) <- TR.extractPredicates mdl
-                   (ic3PredicateExtractor env)
+  extr <- gets ic3PredicateExtractor
+  (nextr,props) <- TR.extractPredicates mdl extr
                    (stateFull rst)
                    (stateLifted rst)
+  modify $ \env -> env { ic3PredicateExtractor = nextr }
   updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
                                , numAddPreds = (numAddPreds stats)+(length props) })
-  put $ env { ic3PredicateExtractor = nextr }
   interp <- interpolateState level (stateLifted rst) (stateLiftedInputs rst)
   domain <- gets ic3Domain
   order <- gets ic3LitOrder

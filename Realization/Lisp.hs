@@ -671,7 +671,7 @@ parseLispExpr state inps gates srt expr f
     parser = LispParser { parseFunction = \_ _ _ _ _ _ -> throwE $ "Invalid function"
                         , parseDatatype = \_ _ -> throwE $ "Invalid datatype"
                         , parseVar = \_ _ _ _ _ _ -> throwE $ "Invalid variable"
-                        , parseRecursive = parseLispExpr state inps gates
+                        , parseRecursive = \_ -> parseLispExpr state inps gates
                         , registerQVar = \_ _ -> (NoRef,parser)
                         , registerLetVar = \_ _ -> (NoRef,parser) }
 
