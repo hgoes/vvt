@@ -212,18 +212,20 @@ domainAddUniqueUnsafe pred dom = do
                     })
 
 -- | Add a new predicate to the domain.
---   Returns the node representing the new predicate.
+--   Returns the node representing the new predicate, a boolean indicating if
+--   the predicate was already present in the domain (True = predicate is new,
+--   False = predicate was already present) and the resulting new domain.
 domainAdd :: Composite a => CompositeExpr a BoolType -- ^ The predicate.
           -> Domain a -- ^ The domain to which to add the predicate
-          -> IO (Node,Domain a)
+          -> IO (Node,Bool,Domain a)
 domainAdd pred dom = case Map.lookup npred (domainNodesRev dom) of
-  Just nd -> return (nd,dom)
+  Just nd -> return (nd,False,dom)
   Nothing -> do
     Just parents <- findParents domainTop
     Just childs <- findChildren domainBot
     let intersection = Set.intersection parents childs
     case Set.toList intersection of -- Is the term redundant?
-     [equiv] -> return (equiv,dom)
+     [equiv] -> return (equiv,False,dom)
      [] -> do
        if domainVerbosity dom >= 2
          then (do
@@ -244,11 +246,11 @@ domainAdd pred dom = case Map.lookup npred (domainNodesRev dom) of
                                pred'' = ((),newNd):pred'
                            in (pred'',child,cterm,succs) & cgr'
                        ) gr1 childs
-       return (newNd,dom { domainGraph = gr2
-                         , domainNextNode = succ newNd
-                         , domainNodesRev = Map.insert npred newNd
-                                            (domainNodesRev dom)
-                         })
+       return (newNd,True,dom { domainGraph = gr2
+                              , domainNextNode = succ newNd
+                              , domainNodesRev = Map.insert npred newNd
+                                (domainNodesRev dom)
+                              })
   where
     vars = collectRevVars DMap.empty npred
     poseQuery :: Composite a => Domain a

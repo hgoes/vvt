@@ -392,7 +392,7 @@ runIC3 cfg act = do
   dom <- case domainBackend of
     AnyBackend cr -> Dom.initialDomain (ic3DebugLevel cfg) cr
                      (TR.stateAnnotation mdl)
-  (initNode,dom') <- Dom.domainAdd (mkCompExpr (TR.initialState mdl) (TR.stateAnnotation mdl)) dom
+  (initNode,_,dom') <- Dom.domainAdd (mkCompExpr (TR.initialState mdl) (TR.stateAnnotation mdl)) dom
   extractor <- TR.defaultPredicateExtractor mdl
   ref <- newIORef (IC3Env { ic3Domain = dom'
                           , ic3InitialProperty = initNode
@@ -1175,8 +1175,10 @@ elimSpuriousTrans st level = do
   order <- gets ic3LitOrder
   (ndomain,norder) <- foldlM (\(cdomain,corder) trm
                               -> do
-                                (nd,ndom) <- liftIO $ Dom.domainAdd trm cdomain
-                                let nord = addOrderElement nd corder
+                                (nd,isNew,ndom) <- liftIO $ Dom.domainAdd trm cdomain
+                                let nord = if isNew
+                                           then addOrderElement nd corder
+                                           else corder
                                 return (ndom,nord)
                              ) (domain,order) (interp++props)
   --liftIO $ domainDump ndomain >>= putStrLn
@@ -1467,11 +1469,14 @@ addSuggestedPredicates :: TR.TransitionRelation mdl => IC3 mdl ()
 addSuggestedPredicates = do
   mdl <- asks ic3Model
   domain <- gets ic3Domain
-  ndomain <- foldlM (\cdomain (unique,trm) -> do
-                        (_,ndom) <- if unique
-                                    then liftIO $ Dom.domainAddUniqueUnsafe trm cdomain
-                                    else liftIO $ Dom.domainAdd trm cdomain
-                        return ndom
+  ndomain <- foldlM (\cdomain (unique,trm)
+                     -> if unique
+                        then do
+                          (_,ndom) <- liftIO $ Dom.domainAddUniqueUnsafe trm cdomain
+                          return ndom
+                        else do
+                          (_,_,ndom) <- liftIO $ Dom.domainAdd trm cdomain
+                          return ndom
                     ) domain (TR.suggestedPredicates mdl)
   modify $ \env -> env { ic3Domain = ndomain }
 
