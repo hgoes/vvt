@@ -22,7 +22,7 @@ pthread_mutex_t mutex; // used to serialize updaters' slowpaths
 
 /* sums the pair of counters forcing weak memory ordering */
 #define sum_unordered				\
-  if (__nondet_int()) {				\
+  if (__nondet_bool()) {			\
     sum = ctr1;					\
     sum = sum + ctr2;				\
   } else {					\
@@ -39,7 +39,7 @@ void __VERIFIER_atomic_use1(int myidx) {
 
 void __VERIFIER_atomic_use2(int myidx) {
   __atomic_begin();
-  __VERIFIER_assume(myidx >= 1 && ctr2>0);
+  assume(myidx >= 1 && ctr2>0);
   ctr2++;
   __atomic_end();
 }
@@ -62,18 +62,18 @@ void __VERIFIER_atomic_take_snapshot(int readerstart1, int readerstart2) {
 void __VERIFIER_atomic_check_progress1(int readerstart1) {
   /* Verify reader progress. */
   __atomic_begin();
-  if (__nondet_int()) {
+  if (__nondet_bool()) {
     assume(readerstart1 == 1 && readerprogress1 == 1);
-    assert(0);
+    __error();
   }
   __atomic_end();
 }
 
 void __VERIFIER_atomic_check_progress2(int readerstart2) {
   __atomic_begin();
-  if (__nondet_int()) {
+  if (__nondet_bool()) {
     assume(readerstart2 == 1 && readerprogress2 == 1);
-    assert(0);
+    __error();
   }
   __atomic_end();
   return;
@@ -84,11 +84,11 @@ void *qrcu_reader1(void* arg) {
   /* rcu_read_lock */
   while (1) {
     myidx = idx;
-    if (__nondet_int()) {
+    if (__nondet_bool()) {
       __VERIFIER_atomic_use1(myidx);
       break;
     } else {
-      if (__nondet_int()) {
+      if (__nondet_bool()) {
 	__VERIFIER_atomic_use2(myidx);
 	break;
       } else {}
@@ -106,11 +106,11 @@ void *qrcu_reader2(void* arg) {
   /* rcu_read_lock */
   while (1) {
     myidx = idx;
-    if (__nondet_int()) {
+    if (__nondet_bool()) {
       __VERIFIER_atomic_use1(myidx);
       break;
     } else {
-      if (__nondet_int()) {
+      if (__nondet_bool()) {
 	__VERIFIER_atomic_use2(myidx);
 	break;
       } else {}
@@ -125,7 +125,7 @@ void *qrcu_reader2(void* arg) {
 
 void* qrcu_updater(void* arg) {
   int i;
-  int readerstart1, readerstart2;
+  int readerstart1 = __nondet_int(), readerstart2 = __nondet_int();
   int sum;
   __VERIFIER_atomic_take_snapshot(readerstart1, readerstart2);
   sum_unordered;

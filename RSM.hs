@@ -1,15 +1,24 @@
 {-# LANGUAGE PackageImports,FlexibleContexts #-}
 module RSM where
 
+import Args
+
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Language.SMTLib2
+import Language.SMTLib2.Internals.Backend (SMTMonad)
+import Language.SMTLib2.Internals.Type
+import Language.SMTLib2.Internals.Interface hiding (constant)
+import qualified Language.SMTLib2.Internals.Interface as I
+import Language.SMTLib2.Internals.Embed
 import "mtl" Control.Monad.State (runStateT,modify)
-import "mtl" Control.Monad.Trans (lift,liftIO,MonadIO)
+import "mtl" Control.Monad.Trans (lift)
 import Prelude hiding (mapM,sequence)
 import Data.Traversable (mapM,sequence)
+import Data.GADT.Show
+import Data.GADT.Compare
 
 data RSMState loc var = RSMState { rsmLocations :: Map loc (RSMLoc var)
                                  }
@@ -17,9 +26,9 @@ data RSMState loc var = RSMState { rsmLocations :: Map loc (RSMLoc var)
 data RSMLoc var = RSMLoc { rsmClasses :: Map (Set var) (Set (Map var Integer))
                          }
 
-data Coeffs var = Coeffs { coeffsVar :: Map var (SMTExpr Integer)
-                         , coeffsConst :: SMTExpr Integer
-                         }
+data Coeffs b var = Coeffs { coeffsVar :: Map var (Expr b IntType)
+                           , coeffsConst :: Expr b IntType
+                           }
 
 emptyRSM :: RSMState loc var
 emptyRSM = RSMState Map.empty
@@ -36,60 +45,103 @@ addRSMState loc instrs st
     joinLoc l1 l2 = RSMLoc { rsmClasses = Map.unionWith Set.union (rsmClasses l1) (rsmClasses l2)
                            }
 
-createCoeffs :: (Monad m,Ord var) => Set var -> SMT' m (Coeffs var)
+createCoeffs :: (Backend b,Ord var) => Set var -> SMT b (Coeffs b var)
 createCoeffs instrs = do
   coeffs <- mapM (\instr -> do
-                     c <- varNamed "coeff"
+                     c <- declareVar int
                      return (instr,c)
                  ) (Set.toAscList instrs)
-  c <- varNamed "c"
+  c <- declareVar int
   return $ Coeffs { coeffsVar = Map.fromAscList coeffs
                   , coeffsConst = c
                   }
 
-notAllZero :: Coeffs var -> SMTExpr Bool
-notAllZero coeffs = app or' [ not' (c .==. 0) | c <- Map.elems (coeffsVar coeffs) ]
+notAllZero :: Backend b => Coeffs b var -> SMT b (Expr b BoolType)
+notAllZero coeffs = do
+  args <- sequence [ I.constant (0::Integer) >>=
+                     embed.(c :==:) >>=
+                     embed.Not
+                   | c <- Map.elems (coeffsVar coeffs) ]
+  embed $ OrLst args
 
-createLine :: Ord var => Coeffs var -> Map var Integer -> SMTExpr Bool
-createLine coeffs vars
-  = (case Map.elems $ Map.intersectionWith (\c i -> c * (constant i)) (coeffsVar coeffs) vars of
-      [x] -> x
-      xs -> app plus xs)
-    .==.
-    (coeffsConst coeffs)
+createLine :: (Backend b,Ord var) => Coeffs b var -> Map var Integer -> SMT b (Expr b BoolType)
+createLine coeffs vars = do
+  lhs <- case Map.elems $ Map.intersectionWith (\c i -> do
+                                                   i' <- constant (IntValueC i)
+                                                   embed $ c :*: i'
+                                               ) (coeffsVar coeffs) vars of
+         [x] -> x
+         xs -> do
+           rxs <- sequence xs
+           embed $ PlusLst rxs
+  let rhs = coeffsConst coeffs
+  embed $ lhs :==: rhs
 
-createLines :: (Monad m,Ord var) => Coeffs var -> Set (Map var Integer)
-               -> SMT' m (Map ClauseId (Map var Integer))
+createLines :: (Backend b,Ord var) => Coeffs b var -> Set (Map var Integer)
+               -> SMT b (Map (ClauseId b) (Map var Integer))
 createLines coeffs points = do
   res <- mapM (\point -> do
-                  cid <- assertId (createLine coeffs point)
+                  cid <- createLine coeffs point >>= assertId
                   return (cid,point)
               ) (Set.toList points)
   return $ Map.fromList res
 
-extractLine :: (Monad m,Ord var) => Coeffs var -> SMT' m [(var -> SMTExpr Integer) -> SMTExpr Bool]
+newtype RSMVars var e = RSMVars (Map var (e IntType))
+
+data RSMVar :: * -> Type -> * where
+  RSMVar :: var -> RSMVar var IntType
+
+deriving instance Show var => Show (RSMVar var tp)
+
+instance Show var => GShow (RSMVar var) where
+  gshowsPrec = showsPrec
+
+instance Eq var => GEq (RSMVar var) where
+  geq (RSMVar v1) (RSMVar v2) = if v1==v2
+                                then Just Refl
+                                else Nothing
+
+instance Ord var => GCompare (RSMVar var) where
+  gcompare (RSMVar v1) (RSMVar v2) = case compare v1 v2 of
+    EQ -> GEQ
+    LT -> GLT
+    GT -> GGT
+
+instance (Show var,Ord var) => Composite (RSMVars var) where
+  type CompDescr (RSMVars var) = Map var ()
+  type RevComp (RSMVars var) = RSMVar var
+  compositeType mp = RSMVars (fmap (const IntRepr) mp)
+  foldExprs f (RSMVars mp) = do
+    mp' <- sequence $ Map.mapWithKey
+           (\var -> f (RSMVar var)) mp
+    return (RSMVars mp')
+  createComposite f mp = do
+    mp' <- sequence $ Map.mapWithKey (\instr _ -> f IntRepr (RSMVar instr)) mp
+    return (RSMVars mp')
+  accessComposite (RSMVar instr) (RSMVars mp) = mp Map.! instr
+  eqComposite (RSMVars mp1) (RSMVars mp2) = do
+    res <- sequence $ Map.elems $ Map.intersectionWith
+           (\e1 e2 -> embed $ e1 :==: e2) mp1 mp2
+    case res of
+      [] -> embedConst (BoolValueC True)
+      [e] -> return e
+      _ -> embed $ AndLst res
+  revType _ _ (RSMVar _) = IntRepr
+
+instance GetType (RSMVar v) where
+  getType (RSMVar _) = IntRepr
+
+extractLine :: (Backend b,Ord var) => Coeffs b var
+            -> SMT b (Integer,[(var,Integer)])
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
-  let rcoeffs' = Map.mapMaybe (\c -> if c==0
-                                     then Nothing
-                                     else Just c
-                              ) rcoeffs
-      lhs vals = case Map.elems (Map.mapWithKey
-                                 (\instr co -> case co of
-                                   1 -> vals instr
-                                   -1 -> -(vals instr)
-                                   _ -> (constant co)*(vals instr)
-                                 ) rcoeffs') of
-                  [x] -> x
-                  xs -> app plus xs
-  rconst <- getValue (coeffsConst coeffs)
-  return [\vals -> (lhs vals)
-                   .<=. (constant rconst)
-         ,\vals -> (lhs vals)
-                   .<. (constant rconst)]
+  IntValueC rconst <- getValue (coeffsConst coeffs)
+  return (rconst,[ (var,val)
+                 | (var,IntValueC val) <- Map.toList rcoeffs
+                 , val/=0 ])
 
-mineStates :: (MonadIO m,SMTBackend b IO,Ord var) => IO b -> RSMState loc var
-              -> m (RSMState loc var,[(var -> SMTExpr Integer) -> SMTExpr Bool])
+mineStates :: (Backend b,SMTMonad b ~ IO,Ord var) => IO b -> RSMState loc var
+              -> IO (RSMState loc var,[(Integer,[(var,Integer)])])
 mineStates backend st
   = runStateT
     (do
@@ -113,25 +165,24 @@ mineStates backend st
       | Set.size cls <= 2 = return Nothing
       | Set.size cls > 6 = return $ Just (Set.empty,[])
     mineClass vars cls = do
-      b <- liftIO backend
-      res <- liftIO $ withSMTBackendExitCleanly b $ do
+      res <- withBackendExitCleanly backend $ do
         setOption (ProduceUnsatCores True)
         setOption (ProduceModels True)
         coeffs <- createCoeffs vars
-        assert $ notAllZero coeffs
+        notAllZero coeffs >>= assert
         revMp <- createLines coeffs cls
         res <- checkSat
-        if res
-          then (do
+        case res of
+          Sat -> do
                    lines <- extractLine coeffs
-                   return $ Right lines)
-          else (do
-                   core <- getUnsatCore
-                   let coreMp = Map.fromList [ (cid,()) | cid <- core ]
-                       coreLines = Set.fromList $ Map.elems $ Map.intersection revMp coreMp
-                   return $ Left coreLines)
+                   return $ Right lines
+          Unsat -> do
+                     core <- getUnsatCore
+                     let coreMp = Map.fromList [ (cid,()) | cid <- core ]
+                         coreLines = Set.fromList $ Map.elems $ Map.intersection revMp coreMp
+                     return $ Left coreLines
       case res of
-        Right lines -> return (Just (Set.empty,lines))
+        Right lines -> return (Just (Set.empty,[lines]))
         Left coreLines -> do
           let noCoreLines = Set.difference cls coreLines
               Just (coreLine1,coreLines1) = Set.minView coreLines
@@ -145,13 +196,3 @@ mineStates backend st
                 Just (ncls,lines) -> return (Just (Set.insert coreLine1 $
                                                    Set.union coreLines2 ncls,lines))
                 Nothing -> return Nothing
-{-
-extractBlock :: Map (Ptr BasicBlock) Bool -> Ptr BasicBlock
-extractBlock mp = case blks of
-  [x] -> x
-  [] -> error "No basic block is active in state."
-  _ -> error "More than one basic block is active in state."
-  where
-    blks = [ blk | (blk,act) <- Map.toList mp
-                 , act ]
--}

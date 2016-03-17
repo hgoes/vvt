@@ -1,9 +1,12 @@
 VVT_INCLUDE=/home/eq/ic3/include
 LIPTON=/home/eq/repos/lipton/LiptonPass
-CLANG=clang-3.4
+CLANG=clang-3.5
+AS=llvm-as-3.5
+DIS=llvm-dis-3.5
+OPT=opt-3.5
 CLANG_OPTS=-mem2reg -internalize-public-api-list=main -internalize -inline -loops -loop-simplify -loop-rotate -lcssa -loop-unroll
 LIPTON_OPT=-mem2reg -constprop -instsimplify -correlated-propagation -die -simplifycfg -globaldce -instnamer
-VVT_OPT=value-set=5 inline simplify
+VVT_OPT=value-set=5 inline simplify slice
 TIMEOUT=15m
 
 BENCHMARKS=$(shell grep -v ^\# benchmarks )
@@ -30,22 +33,22 @@ llvm_files: $(LLVM_FILES)
 
 $(LLVM_FILES): %.ll: %.c
 	$(CLANG) -O0 -I${VVT_INCLUDE} -emit-llvm -c $< $(CLANG_ARGS) -o - |\
-	opt $(CLANG_OPTS) - -o -\
-	| llvm-dis -o $@ -
+	$(OPT) $(CLANG_OPTS) - -o -\
+	| $(DIS) -o $@ -
 
 lipton_files: $(LIPTON_FILES) $(LIPTON_Y_FILES) $(LIPTON_N_FILES) $(LIPTON_S_FILES)
 
 $(LIPTON_FILES): %.lipton.ll: %.ll
-	llvm-as $< -o - | $(LIPTON) | opt $(LIPTON_OPT) - -o - | llvm-dis -o $@ -
+	$(AS) $< -o - | $(LIPTON) | $(OPT) $(LIPTON_OPT) - -o - | $(DIS) -o $@ -
 
 $(LIPTON_Y_FILES): %.lipton-y.ll: %.ll
-	llvm-as $< -o - | $(LIPTON) -y | opt $(LIPTON_OPT) - -o - | llvm-dis -o $@ -
+	$(AS) $< -o - | $(LIPTON) -y | $(OPT) $(LIPTON_OPT) - -o - | $(DIS) -o $@ -
 
 $(LIPTON_N_FILES): %.lipton-n.ll: %.ll
-	llvm-as $< -o - | $(LIPTON) -n | opt $(LIPTON_OPT) - -o - | llvm-dis -o $@ -
+	$(AS) $< -o - | $(LIPTON) -n | $(OPT) $(LIPTON_OPT) - -o - | $(DIS) -o $@ -
 
 $(LIPTON_S_FILES): %.lipton-s.ll: %.ll
-	llvm-as $< -o - | $(LIPTON) -s | opt $(LIPTON_OPT) - -o - | llvm-dis -o $@ -
+	$(AS) $< -o - | $(LIPTON) -s | $(OPT) $(LIPTON_OPT) - -o - | $(DIS) -o $@ -
 
 vvt_files: $(VVT_FILES) $(VVT_Y_FILES) $(VVT_N_FILES) $(VVT_S_FILES)
 

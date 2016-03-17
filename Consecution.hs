@@ -3,44 +3,50 @@ module Consecution where
 
 import SMTPool
 import Domain
+import Args
 
 import Language.SMTLib2
+import Language.SMTLib2.Internals.Backend (SMTMonad)
+import Language.SMTLib2.Internals.Interface
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
 import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 
-data Consecution inp st = Consecution { consecutionPool :: SMTPool ConsecutionInstance (ConsecutionVars inp st)
-                                      , consecutionFrames :: Vector IntSet
-                                      , consecutionFrameHash :: Int
-                                      , consecutionCubes :: Vector (AbstractState st)
-                                      , consecutionInitial :: st -> SMTExpr Bool
-                                      }
+data Consecution inp st
+  = Consecution { consecutionPool :: SMTPool (ConsecutionInstance inp st)
+                , consecutionFrames :: Vector IntSet
+                , consecutionFrameHash :: Int
+                , consecutionCubes :: Vector (AbstractState st)
+                , consecutionInitial :: CompositeExpr st BoolType
+                }
 
-data ConsecutionInstance
-  = ConsecutionInstance { framesLoaded :: Vector (IntSet,SMTExpr Bool)
+data ConsecutionInstance inp st b
+  = ConsecutionInstance { consecutionVars :: ConsecutionVars inp st (Expr b)
+                        , framesLoaded :: Vector (IntSet,Expr b BoolType)
                         , frameHash :: Int
                         }
 
-data ConsecutionVars inp st
-  = ConsecutionVars { consecutionInput :: inp
-                    , consecutionNxtInput :: inp
-                    , consecutionState :: st
-                    , consecutionNxtState :: st
-                    , consecutionNxtAsserts :: [SMTExpr Bool]
+data ConsecutionVars inp st e
+  = ConsecutionVars { consecutionInput :: inp e
+                    , consecutionNxtInput :: inp e
+                    , consecutionState :: st e
+                    , consecutionNxtState :: st e
+                    , consecutionNxtAsserts :: [e BoolType]
                     }
 
-consecutionNew :: SMTBackend b IO => IO b
-                  -> SMT (ConsecutionVars inp st) -- ^ How to allocate the transition relation
-                  -> (st -> SMTExpr Bool) -- ^ The initial condition
-                  -> IO (Consecution inp st)
+consecutionNew :: (Backend b,SMTMonad b ~ IO) => IO b
+               -> SMT b (ConsecutionVars inp st (Expr b)) -- ^ How to allocate the transition relation
+               -> CompositeExpr st BoolType  -- ^ The initial condition
+               -> IO (Consecution inp st)
 consecutionNew backend alloc init = do
-  pool <- createSMTPool' backend
-          (ConsecutionInstance { framesLoaded = Vec.empty
-                               , frameHash = 0 }) $ do
-            setOption (ProduceModels True)
-            setOption (ProduceUnsatCores True)
-            alloc
+  pool <- createSMTPool backend $ do
+    setOption (ProduceModels True)
+    setOption (ProduceUnsatCores True)
+    vars <- alloc
+    return ConsecutionInstance { consecutionVars = vars
+                               , framesLoaded = Vec.empty
+                               , frameHash = 0 }
   return $ Consecution { consecutionPool = pool
                        , consecutionFrames = Vec.empty
                        , consecutionFrameHash = 0
@@ -53,43 +59,61 @@ extendFrames cons = cons { consecutionFrames = Vec.snoc (consecutionFrames cons)
 frontier :: Consecution inp st -> Int
 frontier cons = Vec.length (consecutionFrames cons) - 2
 
-consecutionPerform :: Domain st -> Consecution inp st -> Int -> (ConsecutionVars inp st -> SMT a) -> IO a
+consecutionPerform :: Composite st
+                   => Domain st
+                   -> Consecution inp st -> Int
+                   -> (forall b. Backend b => ConsecutionVars inp st (Expr b) -> SMT b a)
+                   -> IO a
 consecutionPerform dom cons lvl act = do
-  Right res <- withSMTPool' (consecutionPool cons) $
-               \inst vars -> do
-                 ninst <- updateInstance vars inst
-                 res <- stack $ do
-                   Vec.mapM_ (\(_,act) -> assert act) (Vec.drop lvl $ framesLoaded ninst)
-                   act vars
-                 return $ Right (res,ninst)
+  Right res <- case cons of
+    Consecution { consecutionPool = pool }
+      -> withSMTPool' pool $
+         \inst -> do
+           ninst <- updateInstance cons dom inst
+           res <- stack $ do
+             Vec.mapM_ (\(_,act) -> assert act) (Vec.drop lvl $ framesLoaded ninst)
+             act (consecutionVars ninst)
+           return $ Right (res,ninst)
   return res
   where
-    updateInstance vars inst = do
-      let numFrames = Vec.length (consecutionFrames cons)
+    updateInstance :: (Backend b,Composite st)
+                   => Consecution inp st
+                   -> Domain st
+                   -> ConsecutionInstance inp st b
+                   -> SMT b (ConsecutionInstance inp st b)
+    updateInstance cons dom inst = do
+      let vars = consecutionVars inst
+          numFrames = Vec.length (consecutionFrames cons)
           numLoaded = Vec.length (framesLoaded inst)
       loaded <- if numFrames > numLoaded
                 then (do
                          nloaded <- Vec.generateM (numFrames-numLoaded) $
                                     \i -> do
-                                      act <- varNamed ("frameAct"++show (numLoaded+i))
+                                      actVar <- declareVarNamed bool ("frameAct"++show (numLoaded+i))
                                       if numLoaded+i==0
-                                        then assert $ act .=>. (consecutionInitial cons (consecutionState vars))
+                                        then do
+                                        init <- concretizeExpr
+                                                (consecutionState vars)
+                                                (consecutionInitial cons)
+                                        impl <- actVar .=>. init
+                                        assert impl
+                                        --assert $ act .=>. (consecutionInitial cons (consecutionState vars))
                                         else return ()
-                                      return (IntSet.empty,act)
+                                      return (IntSet.empty,actVar)
                          return $ (framesLoaded inst) Vec.++ nloaded)
                 else return $ framesLoaded inst
       loaded2 <- if frameHash inst < consecutionFrameHash cons
                  then Vec.zipWithM
                       (\cubes (loaded,act) -> do
-                          mapM_ (\i -> assert $ act .=>.
-                                       (not' $ toDomainTerm ((consecutionCubes cons) Vec.! i) dom
-                                        (consecutionState vars))
+                          mapM_ (\i -> do
+                                    trm <- toDomainTerm ((consecutionCubes cons) Vec.! i) dom (consecutionState vars)
+                                    act .=>. (not' trm) >>= assert
                                 ) (IntSet.toList $ IntSet.difference cubes loaded)
                           return (cubes,act)
                       ) (consecutionFrames cons) loaded
                  else return loaded
-      return $ ConsecutionInstance { framesLoaded = loaded2
-                                   , frameHash = consecutionFrameHash cons }
+      return inst { framesLoaded = loaded2
+                  , frameHash = consecutionFrameHash cons }
 
 getCubeId :: AbstractState st -> Consecution inp st -> (Int,Consecution inp st)
 getCubeId st cons = case Vec.findIndex (==st) (consecutionCubes cons) of

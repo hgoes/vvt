@@ -1,835 +1,848 @@
 {-# LANGUAGE OverloadedStrings,ScopedTypeVariables,ViewPatterns #-}
 module Realization.Threaded.Translation where
 
-import Gates
+import Args
 import Realization.Threaded
 import Realization.Threaded.State
-import Realization.Threaded.Value
-import Realization.Threaded.Options
+import Realization.Threaded.Value hiding (Struct(..))
+import qualified Realization.Threaded.Value as Th
 import qualified Realization.Lisp.Value as L
 import qualified Realization.Lisp as L
+import qualified Realization.Lisp.Array as L
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
-import LLVM.FFI
+import Language.SMTLib2.Internals.Interface
+import Language.SMTLib2.Internals.Type
+import qualified Language.SMTLib2.Internals.Type.List as List
+import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
+import qualified Language.SMTLib2.Internals.Expression as E
 
-import Data.Fix
+import LLVM.FFI hiding (GetType,getType,And)
+
 import qualified Data.AttoLisp as L
 import Data.Map (Map)
 import qualified Data.Map as Map
-import qualified Data.List as List
-import Control.Monad.State (evalStateT,get,put)
+import Data.Dependent.Map (DMap,DSum(..))
+import qualified Data.Dependent.Map as DMap
+import Control.Monad.State (get,put,execState)
 import Data.Traversable
 import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
-import Data.Foldable
 import qualified Data.Text as T
 import Foreign.Ptr (Ptr)
-import Data.Typeable
-import System.IO.Unsafe
+import Data.Functor.Identity
+import Data.GADT.Compare
 
-toLispProgram :: TranslationOptions
-              -> Realization (ProgramState,ProgramInput)
-              -> IO L.LispProgram
-toLispProgram opts real' = do
-  threadNames <- evalStateT (mapM (\_ -> do
-                                      n <- get
-                                      put (n+1)
-                                      return $ "thread"++show n
-                                  ) (threadStateDesc $ stateAnnotation real')) 1
-  input <- makeProgramInput opts threadNames real'
-  let (mem,lmem,real) = outputMem real' input
-      st0 = if dedicatedErrorState opts
-            then Map.singleton "error" (L.boolType,Map.singleton "pc" (L.Symbol "true"))
-            else Map.empty
-  st1 <- foldlM (\mp blk -> do
-                    name <- blockName blk
-                    return $ Map.insert (T.append "main-" name) (L.boolType,Map.singleton "pc" (L.Symbol "true")) mp
-                ) st0 (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
-  st2 <- foldlM (\mp (thread,thSt) -> do
-                    let Just tName = Map.lookup thread threadNames
-                    foldlM (\mp blk -> do
-                               name <- blockName blk
-                               return $ Map.insert (T.append (T.pack $ tName++"-") name)
-                                 (L.boolType,Map.singleton "pc" (L.Symbol "true")) mp
-                           ) mp (Map.keys $ latchBlockDesc thSt)
-                ) st1 (Map.toList $ threadStateDesc $ stateAnnotation real)
-  st3 <- foldlM (\mp (instr,tp) -> do
-                    name <- instrName instr
-                    return $ Map.insert (T.append "main-" name)
-                      (toLispType $ Singleton tp) mp
-                ) st2 (Map.toList $ latchValueDesc $ mainStateDesc $ stateAnnotation real)
-  st4 <- foldlM (\mp (glob,tp) -> do
-                    name <- instrName glob
-                    return $ Map.insert (T.append "main-" name)
-                      (toLispAllocType tp) mp
-                ) st3 (Map.toList $ threadGlobalDesc $ mainStateDesc $ stateAnnotation real)
-  st5 <- foldlM (\mp (thread,thSt) -> do
-                    let Just tName = Map.lookup thread threadNames
-                    mp1 <- foldlM (\mp (instr,tp) -> do
-                                      name <- instrName instr
-                                      let name1 = T.append (T.pack $ tName++"-") name
-                                      return $ Map.insert name1 (toLispType $ Singleton tp) mp
-                                  ) mp (Map.toList $ latchValueDesc thSt)
-                    mp2 <- case threadArgumentDesc thSt of
-                      Nothing -> return mp1
-                      Just (val,tp) -> do
-                        name <- instrName val
-                        let name1 = T.append (T.pack $ tName++"-") name
-                        return $ Map.insert name1 (toLispType $ Singleton tp) mp1
-                    mp3 <- foldlM (\mp (glob,tp) -> do
-                                      name <- instrName glob
-                                      let name1 = T.append (T.pack $ tName++"-") name
-                                      return $ Map.insert name1 (toLispAllocType tp) mp
-                                  ) mp2 (Map.toList $ threadGlobalDesc thSt)
-                    mp4 <- case threadReturnDesc thSt of
-                      Nothing -> return mp3
-                      Just tp -> do
-                        let name = T.pack $ "return-"++tName
-                        return $ Map.insert name (toLispType $ Singleton tp) mp3
-                    return mp4
-                ) st4 (Map.toList $ threadStateDesc $ stateAnnotation real)
-  let dontStep = Map.null threadNames
-      inp1 = if dontStep
-             then Map.empty
-             else foldl (\mp thName
-                         -> Map.insert (T.pack $ "step-"++thName) (L.boolType,Map.empty) mp
-                        ) (Map.singleton "step-main" (L.boolType,Map.empty)) threadNames
-  st6 <- foldlM (\mp (loc,tp) -> do
-                    name <- memLocName loc
-                    return $ Map.insert name (toLispAllocType tp) mp
-                ) st5 (Map.toList $ memoryDesc $ stateAnnotation real)
-  st7 <- foldlM (\mp thread -> do
-                    let Just tName = Map.lookup thread threadNames
-                    return $ Map.insert (T.pack $ "run-"++tName) (L.boolType,Map.empty) mp
-                ) st6 (Map.keys $ threadStateDesc $ stateAnnotation real)
-  inp2 <- foldlM (\mp (instr,tp) -> do
-                     name <- instrName instr
-                     let name1 = T.append "main-inp-" name
-                     return $ Map.insert name1 (toLispType $ Singleton tp) mp
-                 ) inp1 (Map.toList $ nondetTypes $ mainInputDesc $ inputAnnotation real)
-  inp3 <- foldlM (\mp (thread,thInp) -> do
-                     let Just tName = Map.lookup thread threadNames
-                     foldlM (\mp (instr,tp) -> do
-                               name <- instrName instr
-                               let name1 = T.append (T.pack $ tName++"-inp-") name
-                               return $ Map.insert name1 (toLispType $ Singleton tp) mp
-                           ) mp (Map.toList $ nondetTypes thInp)
-                 ) inp2 (Map.toList $ threadInputDesc $ inputAnnotation real)
-  let gateTrans = Map.foldlWithKey
-                  (\gts tp (_,AnyGateArray arr)
-                   -> Map.foldlWithKey
-                      (\gts (GateExpr n) gate
-                       -> translateGate n gate gts
-                      ) gts arr
-                  ) (GateTranslation Map.empty Map.empty Map.empty) (gateMp real)
-      gates :: Map T.Text (L.LispType,L.LispVar)
-      gates = Map.foldlWithKey
-              (\gts tp (_,AnyGateArray arr)
-               -> Map.foldlWithKey
-                  (\gts (GateExpr n) (gate::Gate (ProgramState,ProgramInput) outp)
-                   -> let expr = gateTransfer gate input
-                          sort = getSort (undefined::outp) (gateAnnotation gate)
-                      in L.withIndexableSort (undefined::SMTExpr Integer) sort $
-                         \(_::t) -> case cast $ toLispExpr gateTrans expr of
-                         Just expr' -> case Map.lookup (tp,n) (nameMapping gateTrans) of
-                           Just p -> Map.insert p
-                                     (L.LispType 0 (L.Singleton sort),
-                                      L.LispConstr $ L.LispValue (L.Size [])
-                                        (L.Singleton (L.Val (expr'::SMTExpr t)))) gts
-                  ) gts arr
-              ) Map.empty (gateMp real)
-  gates1 <- if safeSteps opts && not dontStep
-            then do
-              let threads = (Nothing,"main"):[ (Just th,name)
-                                             | (th,name) <- Map.toList threadNames ]
-              intYields <- mapM (\(th,blk,sblk) -> do
-                                   name <- blockName (blk,sblk)
-                                   return (th,name)
-                                ) (Map.keys (internalYieldEdges real))
-              let nxt = makeSafeStepNext threads intYields
-              return $ foldl (\gts (name,inp,acts,negs)
-                              -> Map.insert name
-                                  (L.boolType,
-                                   case (acts,negs) of
-                                     ([],[]) -> inp
-                                     _ -> L.LispConstr $ L.LispValue (L.Size []) $
-                                          L.Singleton $ L.Val $
-                                          app or' $ [ InternalObj (L.LispVarAccess act [] []) ()
-                                                    | act <- acts ]++
-                                            [ app and' $ [not' $ InternalObj
-                                                          (L.LispVarAccess act [] []) ()
-                                                         | act <- negs ]++
-                                                [InternalObj (L.LispVarAccess inp [] []) ()]])
-                                  gts) gates nxt
-            else return gates
-  let step Nothing = if safeSteps opts then L.NamedVar "rstep-main" L.Gate L.boolType
-                     else L.NamedVar "step-main" L.Input L.boolType
-      step (Just th) = let Just thName = Map.lookup th threadNames
-                       in if safeSteps opts then L.NamedVar (T.pack $ "rstep-"++thName) L.Gate L.boolType
-                          else L.NamedVar (T.pack $ "step-"++thName) L.Input L.boolType
-      asserts = fmap (\cond -> toLispExpr gateTrans (cond input)) (assertions real)
-      nxt0 = if dedicatedErrorState opts
-             then Map.singleton "error" (L.LispConstr $
-                                         L.LispValue (L.Size []) $
-                                         L.Singleton $
-                                         L.Val (case asserts of
-                                                  [] -> constant False
-                                                  [x] -> not' x
-                                                  xs -> app or' (fmap not' xs)))
-             else Map.empty
-  nxt1 <- foldlM (\mp blk -> do
-                     name <- blockName blk
-                     let name1 = T.append "main-" name
-                     cond0 <- if snd blk==0
-                              then return []
-                              else case Map.lookup (Nothing,fst blk,snd blk) (yieldEdges real) of
-                                    Just edge -> return [ toLispExpr gateTrans $
-                                                          edgeActivation cond input
-                                                        | cond <- edgeConditions edge ]
-                                    Nothing -> case Map.lookup (Nothing,fst blk,snd blk) (internalYieldEdges real) of
-                                      Just edge -> return [ toLispExpr gateTrans $
-                                                            edgeActivation cond input
-                                                          | cond <- edgeConditions edge ]
-                     let cond1 = case Map.lookup (Nothing,fst blk,snd blk) (edges real) of
-                           Nothing -> []
-                           Just edge -> [ toLispExpr gateTrans $
-                                          edgeActivation cond input
-                                        | cond <- edgeConditions edge ]
-                         step' = InternalObj (L.LispVarAccess (step Nothing) [] []) ()
-                         old = InternalObj (L.LispVarAccess
-                                            (L.NamedVar name1 L.State L.boolType)
-                                            [] []) ()
-                     return $ Map.insert name1 (L.LispConstr $
-                                                L.LispValue (L.Size []) $
-                                                L.Singleton $
-                                                L.Val $ case cond0++cond1 of
-                                                 [] -> if dontStep
-                                                       then constant False
-                                                       else (not' step') .&&. old
-                                                 [x] -> if dontStep
-                                                        then x
-                                                        else ite step' x old
-                                                 xs -> if dontStep
-                                                       then app or' xs
-                                                       else ite step' (app or' xs) old) mp
-                 ) nxt0 (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
-  nxt2 <- foldlM (\mp (thread,thSt) -> do
-                     let Just tName = Map.lookup thread threadNames
-                     foldlM (\mp blk -> do
-                               name <- blockName blk
-                               let name1 = T.append (T.pack $ tName++"-") name
-                               cond0 <- if snd blk==0
-                                        then return []
-                                        else case Map.lookup (Just thread,fst blk,snd blk) (yieldEdges real) of
-                                              Just edge -> return [ toLispExpr gateTrans $
-                                                                    edgeActivation cond input
-                                                                  | cond <- edgeConditions edge ]
-                                              Nothing -> case Map.lookup (Just thread,fst blk,snd blk) (internalYieldEdges real) of
-                                                Just edge -> return [ toLispExpr gateTrans $
-                                                                      edgeActivation cond input
-                                                                    | cond <- edgeConditions edge ]
-                               let cond1 = case Map.lookup (Just thread,fst blk,snd blk) (edges real) of
-                                     Nothing -> []
-                                     Just edge -> [ toLispExpr gateTrans $
-                                                    edgeActivation cond input
-                                                  | cond <- edgeConditions edge ]
-                                   step' = InternalObj (L.LispVarAccess (step (Just thread)) [] []) ()
-                                   old = InternalObj (L.LispVarAccess
-                                                      (L.NamedVar name1 L.State L.boolType)
-                                                      [] []) ()
-                               return $ Map.insert name1
-                                 (L.LispConstr $
-                                  L.LispValue (L.Size []) $
-                                  L.Singleton $
-                                  L.Val $ case cond0++cond1 of
-                                   [] -> if dontStep
-                                         then constant False
-                                         else (not' step') .&&. old
-                                   [x] -> if dontStep
-                                          then x
-                                          else ite step' x old
-                                   xs -> if dontStep
-                                         then app or' xs
-                                         else ite step' (app or' xs) old) mp
-                           ) mp (Map.keys $ latchBlockDesc thSt)
-                 ) nxt1 (Map.toList $ threadStateDesc $ stateAnnotation real)
-  let outValues = outputValues real
-  nxt3 <- foldlM (\mp ((th,instr),(_,val)) -> do
-                     name <- instrName instr
-                     let tName = case th of
-                           Nothing -> "main-"
-                           Just th' -> case Map.lookup th' threadNames of
-                             Just th'' -> T.pack $ th''++"-"
-                         name1 = T.append tName name
-                         expr = val input
-                         tDesc = case th of
-                           Nothing -> mainStateDesc $ stateAnnotation real
-                           Just th -> case Map.lookup th (threadStateDesc $ stateAnnotation real) of
-                             Just thState -> thState
-                         Just tp = Map.lookup instr (latchValueDesc tDesc)
-                     return $ Map.insert name1 (toLispExprs gateTrans (Singleton tp) (Singleton expr)) mp
-                 ) nxt2 (Map.toList outValues)
-  nxt4 <- foldlM (\mp (loc,val) -> do
-                     let Just tp = Map.lookup loc (memoryDesc $ stateAnnotation real)
-                     name <- memLocName loc
-                     return $ Map.insert name (L.LispConstr $ toLispAllocExpr gateTrans tp val) mp
-                 ) nxt3 (Map.toList mem)
-  nxt5 <- foldlM (\mp (th,vals) -> do
-                     let tName = case th of
-                           Nothing -> "main-"
-                           Just th' -> case Map.lookup th' threadNames of
-                             Just n -> T.pack $ n++"-"
-                         thd = getThreadStateDesc th (stateAnnotation real)
-                     foldlM (\mp (glob,val) -> do
-                                let Just tp = Map.lookup glob (threadGlobalDesc $ thd)
-                                name <- instrName glob
-                                return $ Map.insert (T.append tName name)
-                                         (L.LispConstr $ toLispAllocExpr gateTrans tp val) mp
-                            ) mp (Map.toList vals)
-                 ) nxt4 (Map.toList lmem)
-  nxt6 <- foldlM (\mp th -> do
-                     let Just name = Map.lookup th threadNames
-                         conds = case Map.lookup th (spawnEvents real) of
-                           Nothing -> []
-                           Just xs -> [ x input | (x,_) <- xs ]
-                         old = InternalObj (L.LispVarAccess
-                                            (L.NamedVar (T.pack $ "run-"++name)
-                                             L.State L.boolType) [] []) ()
-                         act = case conds of
-                           [] -> old
-                           [x] -> x .||. old
-                           xs -> (app and' xs) .||. old
-                         Just thD = Map.lookup th (threadStateDesc $ stateAnnotation real)
-                         thRet = case threadReturnDesc thD of
-                           Just rd -> rd
-                           Nothing -> error $ "Thread "++name++" has no return type."
-                         mkRet [(_,v)] = symbolicValue v input
-                         mkRet ((c,v):vs) = symITE (c input) (symbolicValue v input) (mkRet vs)
-                         (term,ret) = case Map.lookup th (termEvents real) of
-                           Nothing -> (act,Nothing)
-                           Just xs -> case [ (x,v) | (x,Just v) <- xs ] of
-                             [] -> (act,Nothing)
-                             [(x,v)] -> (act .&&. (not' (x input)),Just (symbolicValue v input))
-                             xs' -> (act .&&. (not' $ mkAnd [ x input | (x,_) <- xs]),
-                                     Just $ mkRet xs')
-                     return $ Map.insert (T.pack $ "run-"++name)
-                       (L.LispConstr $
-                        L.LispValue (L.Size []) $
-                        L.Singleton $
-                        L.Val $ toLispExpr gateTrans term)
-                       (case ret of
-                         Nothing -> mp
-                         Just ret' -> Map.insert (T.pack $ "return-"++name)
-                                      (toLispExprs gateTrans (Singleton thRet) (Singleton ret'))
-                                      mp)
-                 ) nxt5 (Map.keys $ threadStateDesc $ stateAnnotation real)
-  nxt7 <- foldlM (\mp (th,thD) -> case threadArgumentDesc thD of
-                   Nothing -> return mp
-                   Just (arg,tp) -> do
-                     iName <- instrName arg
-                     let Just thName = Map.lookup th threadNames
-                         name = T.append (T.pack $ thName++"-") iName
-                         old = L.NamedVar name L.State (fst $ toLispType (Singleton tp))
-                         acts = case Map.lookup th (spawnEvents real) of
-                           Just l -> l
-                           Nothing -> []
-                     return $ Map.insert name
-                       (foldl (\cur (act,Just instrV)
-                                -> L.LispITE (toLispExpr gateTrans (act input))
-                                   (toLispExprs gateTrans (Singleton tp)
-                                    (Singleton $ symbolicValue instrV input)) cur
-                              ) old acts) mp
-                 ) nxt6 (Map.toList $ threadStateDesc $ stateAnnotation real)
-  let init0' = if dedicatedErrorState opts
-               then [("error",L.LispValue (L.Size [])
-                               (L.Singleton (L.Val (constant False))))]
-               else []
-  init1' <- mapM (\(glob,val) -> do
-                    isLocal <- globalVariableIsThreadLocal glob
-                    name <- getNameString glob
-                    return $
-                      if isLocal
-                      then [ (T.pack $ thName++"-"++name,var1)
-                           | (th,thName,thd) <- (Nothing,"main",mainStateDesc $ stateAnnotation real)
-                                                :[(Just th,case Map.lookup th threadNames of
-                                                             Just n -> n,thd)
-                                                 | (th,thd) <- Map.toList $
-                                                               threadStateDesc $
-                                                               stateAnnotation real]
-                           , let Just tp = Map.lookup glob (threadGlobalDesc thd)
-                                 var1 = toLispAllocExpr gateTrans tp val ]
-                      else let Just tp = Map.lookup (Right glob) (memoryDesc (stateAnnotation real))
-                               var1 = toLispAllocExpr gateTrans tp val
-                           in [(T.pack name,var1)]
-                 ) (Map.toList $ memoryInit real)
-  init2' <- mapM (\th -> do
-                     let Just name = Map.lookup th threadNames
-                     return (T.pack $ "run-"++name,
-                             L.LispValue (L.Size [])
-                              (L.Singleton (L.Val (constant False))))
-                 ) (Map.keys $ threadStateDesc $ stateAnnotation real)
-  init3' <- mapM (\blk -> do
-                     name <- blockName blk
-                     return (T.append "main-" name,
-                             L.LispValue (L.Size [])
-                              (L.Singleton (L.Val (constant $ blk==(mainBlock real,0)))))
-                 ) (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
-  init4' <- mapM (\(th,blk) -> do
-                     let Just tName = Map.lookup th threadNames
-                     mapM (\blk' -> do
-                              name <- blockName blk'
-                              return (T.append (T.pack $ tName++"-") name,
-                                      L.LispValue (L.Size [])
-                                       (L.Singleton (L.Val (constant $ blk'==(blk,0)))))
-                          ) (Map.keys $ latchBlockDesc $
-                             case Map.lookup th (threadStateDesc $ stateAnnotation real) of
-                               Just r -> r)
-                ) (Map.toList $ threadBlocks real)
-  init5' <- if defaultInit opts
-            then mapM (\((th,instr),(tp,_)) -> do
-                          name <- instrName instr
-                          let tName = case th of
-                                Nothing -> "main-"
-                                Just th' -> case Map.lookup th' threadNames of
-                                  Just th'' -> T.pack $ th''++"-"
-                              name1 = T.append tName name
-                          return (name1,toLispValue gateTrans (Singleton tp)
-                                        (Singleton (defaultValue tp)))
-                      ) (Map.toList outValues)
-            else return []
-  inv1 <- do
-    blks <- mapM (\blk -> do
-                     name <- blockName blk
-                     return $ InternalObj (L.LispVarAccess
-                                           (L.NamedVar (T.append "main-" name)
-                                            L.State L.boolType) [] []) ()
-                 ) (Map.keys $ latchBlockDesc $ mainStateDesc $ stateAnnotation real)
-    return $ case blks of
-      [] -> constant True
-      [_] -> constant True
-      _ -> app L.atMostOne blks
-  inv2 <- mapM (\(th,thSt) -> do
-                   let Just tName = Map.lookup th threadNames
-                   blks <- mapM (\blk -> do
-                                    name <- blockName blk
-                                    return $ InternalObj
-                                      (L.LispVarAccess
-                                       (L.NamedVar (T.append (T.pack $ tName++"-") name)
-                                        L.State L.boolType) [] []) ()
-                                ) (Map.keys $ latchBlockDesc thSt)
-                   return $ case blks of
-                     [] -> constant True
-                     [_] -> constant True
-                     _ -> app L.atMostOne blks
-               ) (Map.toList $ threadStateDesc $ stateAnnotation real)
-  let inv3 = if dontStep || safeSteps opts
-             then []
-             else [app L.exactlyOne $
-                   (InternalObj (L.LispVarAccess
-                                 (step Nothing) [] []) ()):
-                   fmap (\th -> InternalObj (L.LispVarAccess
-                                             (step (Just th)) [] []) ()
-                        ) (Map.keys $ threadStateDesc $ stateAnnotation real)]
-  inv4 <- if dontStep || safeSteps opts
-          then return []
-          else mapM (\(th,blk,sblk) -> do
-                         blkName <- blockName (blk,sblk)
-                         let tName = case th of
-                               Just th' -> case Map.lookup th' threadNames of
-                                 Just name -> name
-                               Nothing -> "main"
-                             step' = InternalObj (L.LispVarAccess
-                                                  (step th) [] []) ()
-                             yieldAct = InternalObj (L.LispVarAccess
-                                                     (L.NamedVar (T.append (T.pack $ tName++"-") blkName) L.Input L.boolType) [] []) ()
-                         return $ yieldAct .=>. step'
-                    ) (Map.keys $ internalYieldEdges real)
-  return $ L.LispProgram { L.programAnnotation = Map.empty
-                         , L.programDataTypes = emptyDataTypeInfo
-                         , L.programState = st7
-                         , L.programInput = inp3
-                         , L.programGates = gates1
-                         , L.programNext = nxt7
-                         , L.programProperty = if dedicatedErrorState opts
-                                               then [not' $ InternalObj
-                                                     (L.LispVarAccess
-                                                      (L.NamedVar "error" L.State L.boolType) [] []) ()]
-                                               else asserts
-                         , L.programInit = Map.fromList (init0'++concat init1'++init2'++init3'++
-                                                         concat init4'++init5')
-                         , L.programInvariant = inv1:inv2++inv3++inv4
-                         , L.programAssumption = []
-                         , L.programPredicates = [] }
+import Debug.Trace
 
-makeSafeStepNext :: [(Maybe (Ptr CallInst),String)]
-                 -> [(Maybe (Ptr CallInst),T.Text)]
-                 -> [(T.Text,L.LispVar,[L.LispVar],[L.LispVar])]
-makeSafeStepNext ((th,name):threads) intYields
-  = (varName,inpVar,acts,negs):rest'
+newtype TransGate tp = TransGate (L.LispName '( '[],Leaf tp))
+
+toLispProgram :: LLVMTransRel -> L.LispProgram
+toLispProgram rel = trace ("Reverse state: "++show stateSt) $
+                    L.LispProgram { L.programAnnotation = Map.empty
+                                  , L.programState = DMap.insert errorName
+                                                     (L.Annotation (Map.singleton "pc"
+                                                                    (L.Symbol "true"))
+                                                     ) state
+                                  , L.programInput = inps
+                                  , L.programGates = gts
+                                  , L.programNext = DMap.insert errorName nextError next
+                                  , L.programProperty = [L.LispExpr
+                                                         (E.App E.Not ((L.LispRef
+                                                                        (L.NamedVar errorName
+                                                                         L.State) Nil
+                                                                       ) ::: Nil))]
+                                  , L.programInit = DMap.insert errorName
+                                                    (L.LispInit $ L.LispValue (L.Size Nil Nil) $
+                                                     Singleton $ L.Sized $ L.LispExpr
+                                                     (E.Const $ BoolValue False))
+                                                    init
+                                  , L.programInvariant = inv
+                                  , L.programAssumption = []
+                                  , L.programPredicates = []
+                                  }
   where
-    (relevantYields,intYields')
-      = List.partition (\(th',_) -> th'==th) intYields
-    varName = T.pack $ "rstep-"++name
-    var = L.NamedVar varName L.Gate L.boolType
-    inpVar = L.NamedVar (T.pack ("step-"++name)) L.Input L.boolType
-    rest = makeSafeStepNext threads intYields'
-    rest' = fmap (\(th',inp,acts,negs) -> (th',inp,acts,var:negs)) rest
-    acts = fmap (\(_,blkName)
-                 -> L.NamedVar (T.append (T.pack $ name++"-") blkName) L.State L.boolType
-                ) relevantYields
-    negs = [ L.NamedVar (T.append (T.pack $ tname++"-") blkName) L.State L.boolType
-           | (th',blkName) <- intYields'
-           , (th,tname) <- threads
-           , th==th' ]
-makeSafeStepNext [] _ = []
-    
+    init = reverseInit threadNames (llvmInit rel)
+    (inps,inpSt) = reverseInput threadNames (llvmInputDesc rel)
+    (state,stateSt) = reverseState threadNames (llvmStateDesc rel)
+    gtTrans = DMap.fromList
+              [ defE :=> (TransGate
+                          (L.LispName Nil (Singleton tp) (T.pack $ "gate-"++defName def)))
+              | defE@(DefExpr n tp) :=> def <- DMap.toList (llvmDefinitions rel) ]
+    gts = DMap.fromList
+          [ (L.LispName Nil (Singleton tp) (T.pack $ "gate-"++defName def))
+            :=> (L.LispGate (L.LispConstr $ L.LispValue (L.Size Nil Nil)
+                             (Singleton (L.Sized $ translateLLVMExpr inpSt stateSt gtTrans (defExpr def))))
+                 (L.Annotation Map.empty))
+          | defE@(DefExpr n tp) :=> def <- DMap.toList (llvmDefinitions rel) ]
+    next = reverseNext threadNames inpSt stateSt gtTrans (llvmNext rel)
+    nextError = L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                Singleton $ L.Sized $ runIdentity $ do
+      notAsserts <- mapM (\e -> let ne = translateLLVMExpr inpSt stateSt gtTrans e
+                                in not' ne
+                         ) (llvmAssertions rel)
+      case notAsserts of
+        [] -> false
+        [x] -> return x
+        _ -> or' notAsserts
+    threadNames = Map.fromList [ (th,"thread"++show n)
+                               | (th,n) <- zip (Map.keys $ threadStateDesc $ llvmStateDesc rel)
+                                           [1..] ]
+    inv = [L.AtMostOne [ L.LispRef (L.NamedVar (mainBlkName blk) L.State) Nil
+                       | blk <- Map.keys $ latchBlockDesc $
+                                mainStateDesc $ llvmStateDesc rel ]]++
+          [L.AtMostOne [ L.LispRef (L.NamedVar (threadBlkName tname blk) L.State) Nil
+                       | blk <- Map.keys $ latchBlockDesc thd ]
+          | (th,thd) <- Map.toList $ threadStateDesc $ llvmStateDesc rel
+          , let Just tname = Map.lookup th threadNames ]++
+          [L.ExactlyOne $ [ L.LispRef (L.NamedVar (stepName Nothing) L.Input) Nil ] ++
+           [ L.LispRef (L.NamedVar (stepName (Just tname)) L.Input) Nil
+           | th <- Map.keys $ threadStateDesc $ llvmStateDesc rel
+           , let Just tname = Map.lookup th threadNames ]] ++
+          [ L.LispExpr (E.App (E.Logic E.Implies (Succ (Succ Zero)))
+                        (List.list2 yieldAct step))
+          | (th,blk,sblk) <- llvmInternalYields rel
+          , let yieldAct = case th of
+                  Nothing -> L.LispRef (L.NamedVar (mainBlkName (blk,sblk)) L.State) Nil
+                  Just th' -> let Just tname = Map.lookup th' threadNames
+                              in L.LispRef (L.NamedVar (threadBlkName tname (blk,sblk)) L.State) Nil
+                step = case th of
+                  Nothing -> L.LispRef (L.NamedVar (stepName Nothing) L.Input) Nil
+                  Just th' -> let Just tname = Map.lookup th' threadNames
+                              in L.LispRef (L.NamedVar (stepName (Just tname)) L.Input) Nil
+          ] ++
+          (case llvmInternalYields rel of
+              [] -> []
+              [_] -> []
+              _ -> [L.AtMostOne [ yieldAct
+                                | (th,blk,sblk) <- llvmInternalYields rel
+                                , let yieldAct = case th of
+                                        Nothing -> L.LispRef (L.NamedVar (mainBlkName (blk,sblk)) L.State) Nil
+                                        Just th' -> let Just tname = Map.lookup th' threadNames
+                                                    in L.LispRef (L.NamedVar (threadBlkName tname (blk,sblk)) L.State) Nil
+                                      step = case th of
+                                        Nothing -> L.LispRef (L.NamedVar (stepName Nothing) L.Input) Nil
+                                        Just th' -> let Just tname = Map.lookup th' threadNames
+                                                    in L.LispRef (L.NamedVar (stepName (Just tname)) L.Input) Nil ]])
+          
 
-toLispType :: Struct SymType -> (L.LispType,L.Annotation)
-toLispType tp = (L.LispType 0 (toLispType' tp),Map.empty)
+-- Naming conventions
+errorName :: L.LispName '( '[],Leaf BoolType)
+errorName = L.LispName Nil (Singleton bool) (T.pack "error")
 
-toLispType' :: Struct SymType -> L.LispStruct Sort
-toLispType' (Singleton TpBool) = L.Singleton (Fix BoolSort)
-toLispType' (Singleton TpInt) = L.Singleton (Fix IntSort)
-toLispType' (Singleton (TpPtr dest _))
-  = L.Struct [ L.Struct $
-               L.Singleton (Fix BoolSort):
-               [ L.Singleton (Fix IntSort)
-               | DynamicAccess <- offsetPattern dest ]
-             | dest <- Map.keys dest ]
-toLispType' (Singleton (TpThreadId ths)) = L.Struct [ L.Singleton (Fix BoolSort)
-                                                    | th <- Map.keys ths ]
-toLispType' (Singleton (TpCondition ths)) = L.Struct [ L.Singleton (Fix BoolSort)
-                                                     | th <- Map.keys ths ]
-toLispType' (Singleton (TpVector tps)) = L.Struct (fmap (toLispType'.Singleton) tps)
-toLispType' (Struct tps) = L.Struct $ fmap toLispType' tps
+mainBlkName :: (Ptr BasicBlock,Int) -> L.LispName '( '[],Leaf BoolType)
+mainBlkName blk = L.LispName Nil (Singleton bool) (T.pack $ "main-"++showBlock blk "")
 
-toLispAllocType :: AllocType -> (L.LispType,L.Annotation)
-toLispAllocType (TpStatic num tp) = (L.LispType 0 (L.Struct [ toLispType' tp
-                                                            | n <- [0..num-1]]),Map.empty)
-toLispAllocType (TpDynamic tp) = (L.LispType 1 (toLispType' tp),Map.empty)
+threadBlkName :: String -> (Ptr BasicBlock,Int) -> L.LispName '( '[],Leaf BoolType)
+threadBlkName tname blk = L.LispName Nil (Singleton bool) (T.pack $ tname++"-"++showBlock blk "")
 
-blockName :: (Ptr BasicBlock,Int) -> IO T.Text
-blockName (blk,sblk) = do
-  blkName <- getNameString blk
-  if sblk==0
-    then return $ T.pack blkName
-    else return $ T.pack (blkName++"."++show sblk)
+runningName :: String -> L.LispName '( '[],Leaf BoolType)
+runningName tname = L.LispName Nil (Singleton bool) (T.pack $ "running-"++tname)
 
-threadName :: Ptr CallInst -> IO T.Text
-threadName call = do
-  thFun <- getOperand call 2
-  name <- getNameString thFun
-  return $ T.pack name
+mainInstrName :: Ptr Instruction -> Struct Repr tps -> L.LispName '( '[],tps)
+mainInstrName instr tp = L.LispName Nil tp (T.pack $ "main-"++showValue instr "")
 
-instrName :: ValueC v => Ptr v -> IO T.Text
-instrName instr = do
-  name <- getNameString instr
-  return $ T.pack name
+threadInstrName :: String -> Ptr Instruction -> Struct Repr tps -> L.LispName '( '[],tps)
+threadInstrName tname instr tp = L.LispName Nil tp (T.pack $ tname ++ "-" ++ showValue instr "")
 
-memLocName :: MemoryLoc -> IO T.Text
-memLocName (Left alloc) = do
-  name <- getNameString alloc
-  fun <- instructionGetParent alloc >>= basicBlockGetParent >>= getNameString
-  return $ T.pack $ "alloc-"++fun++"-"++name
-memLocName (Right glob) = do
-  name <- getNameString glob
-  return $ T.pack name
+argName :: String -> Struct Repr tps -> L.LispName '( '[],tps)
+argName tname tp = L.LispName Nil tp (T.pack $ "arg-"++tname)
 
-memTrgName :: MemoryTrg -> IO T.Text
-memTrgName (AllocTrg alloc) = do
-  name <- getNameString alloc
-  fun <- instructionGetParent alloc >>= basicBlockGetParent >>= getNameString
-  return $ T.pack $ "alloc-"++fun++"-"++name
-memTrgName (GlobalTrg glob) = do
-  name <- getNameString glob
-  return $ T.pack name
-memTrgName (LocalTrg glob) = do
-  name <- getNameString glob
-  return $ T.pack name
+returnName :: String -> Struct Repr tps -> L.LispName '( '[],tps)
+returnName tname tp = L.LispName Nil tp (T.pack $ "return-"++tname)
 
-data GateTranslation = GateTranslation { nameMapping :: Map (TypeRep,Int) T.Text
-                                       , reverseNameMapping :: Map T.Text (TypeRep,Int)
-                                       , nameUsage :: Map String Int }
+globalName :: List Repr sz -> Struct Repr tps -> MemoryLoc -> L.LispName '(sz,tps)
+globalName sz tps loc = L.LispName sz tps (T.pack $ case loc of
+                                            Left alloc -> "alloc-"++showValue alloc ""
+                                            Right glob -> "global-"++showValue glob "")
 
-translateGate :: Typeable outp => Int -> Gate inp outp -> GateTranslation -> GateTranslation
-translateGate gtN (gt::Gate inp outp) trans
-  = trans { nameMapping = Map.insert (tp,gtN) tName
-                          (nameMapping trans)
-          , reverseNameMapping = Map.insert tName (tp,gtN)
-                                 (reverseNameMapping trans)
-          , nameUsage = Map.insert name (usage+1)
-                        (nameUsage trans)
-          }
+localName :: Maybe String -> List Repr sz -> Struct Repr tps -> Ptr GlobalVariable -> L.LispName '(sz,tps)
+localName tname sz tps g = L.LispName sz tps
+                           (case tname of
+                             Nothing -> T.pack $ "local-"++showValue g ""
+                             Just name -> T.pack $ name++"-local-"++showValue g "")
+                           
+stepName :: Maybe String -> L.LispName '( '[],Leaf BoolType)
+stepName th = L.LispName Nil (Singleton bool)
+              (case th of
+                Nothing -> "step"
+                Just th' -> T.pack $ "step-"++th')
+
+                           
+reverseInit :: Map (Ptr CallInst) String
+            -> ProgramState LLVMInit
+            -> DMap L.LispName L.LispInit
+reverseInit threadNames init
+  = DMap.fromList $
+    mainBlks++thBlks++
+    mainVals++thVals++
+    thActs++
+    globals
   where
-    name = case gateName gt of
-      Nothing -> "gt"
-      Just n -> n
-    rname = "gt-"++if usage==0
-                   then name
-                   else name++"$"++show usage
-    tName = T.pack rname
-    tp = typeOf (undefined::outp)
-    usage = case Map.lookup name (nameUsage trans) of
-      Nothing -> 0
-      Just n -> n
+    mainBlks = [ (mainBlkName blk)
+                 :=> (L.LispInit $ L.LispValue (L.Size Nil Nil) $
+                      Singleton $ L.Sized $ translate def)
+               | (blk,Init def) <- Map.toList $ latchBlocks $ mainState init ]
+    thBlks = [ (threadBlkName tname blk)
+               :=> (L.LispInit $ L.LispValue (L.Size Nil Nil) $
+                    Singleton $ L.Sized $ translate def)
+             | (th,(_,thd)) <- Map.toList $ threadState init
+             , let Just tname = Map.lookup th threadNames
+             , (blk,Init def) <- Map.toList $ latchBlocks thd ]
+    mainVals = [ fromSymVal def $
+                 \tp val -> (mainInstrName i tp)
+                            :=> (L.LispInit $ L.LispValue (L.Size Nil Nil) $
+                                 runIdentity $ Struct.mapM
+                                 (\(Init val') -> return $ L.Sized $ translate val') val)
+               | (i,def) <- Map.toList $ latchValues $ mainState init
+               , allInit def == Just True ]
+    thVals = [ fromSymVal def $
+               \tp val -> (threadInstrName tname i tp)
+                          :=> (L.LispInit $ L.LispValue (L.Size Nil Nil) $
+                               runIdentity $ Struct.mapM
+                               (\(Init val') -> return $ L.Sized $ translate val') val)
+             | (th,(_,thS)) <- Map.toList $ threadState init
+             , let Just tname = Map.lookup th threadNames
+             , (i,def) <- Map.toList $ latchValues thS
+             , allInit def == Just True ]
+    thActs = [ (runningName tname) :=>
+               (L.LispInit $ L.LispValue (L.Size Nil Nil) $
+                Singleton $ L.Sized $ translate act)
+             | (th,(Init act,_)) <- Map.toList $ threadState init
+             , let Just tname = Map.lookup th threadNames]
+    globals = [ fromAllocVal' def $
+                \val' -> let (sz,tps) = L.lispValueType val'
+                             rval = runIdentity $ foldExprs
+                                    (\_ (Init v) -> return $ translate v) val'
+                         in (globalName sz tps loc) :=>
+                            (L.LispInit rval)
+              | (loc,def) <- Map.toList $ memory init
+              , allInit def == Just True ]
+    translate = translateLLVMExpr
+                (error "Init expression references input variables")
+                (error "Init expression references state variables")
+                (error "Init expression references gate variables")
+    allInit :: Composite a => a LLVMInit -> Maybe Bool
+    allInit arg = execState (foldExprs (\_ e -> do
+                                           cur <- get
+                                           case e of
+                                             Init _ -> case cur of
+                                               Just False -> error $ "Internal error: LLVM value is non-uniformly initialized."
+                                               _ -> put (Just True)
+                                             NoInit _ -> case cur of
+                                               Just True -> error $ "Internal error: LLVM value is non-uniformly initialized."
+                                               _ -> put (Just False)
+                                           return e) arg) Nothing
 
-toLispExpr :: GateTranslation -> SMTExpr a -> SMTExpr a
-toLispExpr trans (InternalObj (cast -> Just (GateExpr n)) ann::SMTExpr a)
-  = case Map.lookup (typeOf (undefined::a),n) (nameMapping trans) of
-  Just r -> InternalObj (L.LispVarAccess (L.NamedVar r L.Gate
-                                          (L.LispType 0 (L.Singleton (getSort (undefined::a) ann)))) [] []) ann
-toLispExpr trans (App fun arg)
-  = App fun (snd $ foldExprsId (\_ expr _ -> ((),toLispExpr trans expr)
-                               ) () arg (extractArgAnnotation arg))
-toLispExpr _ e = e
-
-makeProgramInput :: TranslationOptions
-                 -> Map (Ptr CallInst) String -> Realization (ProgramState,ProgramInput)
-                 -> IO (ProgramState,ProgramInput)
-makeProgramInput opts threadNames real = do
-  let dontStep = Map.null threadNames
-  mainBlocks <- sequence $ Map.mapWithKey
-                (\blk _ -> do
-                    name <- blockName blk
-                    return $ InternalObj (L.LispVarAccess
-                                          (L.NamedVar (T.append "main-" name) L.State L.boolType)
-                                          [] []
-                                         ) ()
-                ) (latchBlockDesc $ mainStateDesc $ stateAnnotation real)
-  mainInstrs <- sequence $ Map.mapWithKey
-                (\instr tp -> do
-                    name <- instrName instr
-                    return $ makeVar (L.NamedVar (T.append "main-" name) L.State
-                                      (L.LispType 0 (toLispType' (Singleton tp)))) tp
-                ) (latchValueDesc $ mainStateDesc $ stateAnnotation real)
-  mainGlobals <- sequence $ Map.mapWithKey
-                 (\glob tp -> do
-                    name <- instrName glob
-                    return $ makeAllocVar (T.append "main-" name) L.State tp
-                 ) (threadGlobalDesc $ mainStateDesc $ stateAnnotation real)
-  threads <- sequence $ Map.mapWithKey
-             (\th thd -> do
-                 let Just thName = Map.lookup th threadNames
-                     run = InternalObj (L.LispVarAccess
-                                        (L.NamedVar (T.pack $ "run-"++thName) L.State L.boolType)
-                                        [] []) ()
-                 blocks <- sequence $ Map.mapWithKey
-                           (\blk _ -> do
-                               name <- blockName blk
-                               let name' = T.append (T.pack $ thName++"-") name
-                               return $ InternalObj (L.LispVarAccess
-                                                     (L.NamedVar name' L.State L.boolType)
-                                                     [] []) ()
-                           ) (latchBlockDesc thd)
-                 instrs <- sequence $ Map.mapWithKey
-                           (\instr tp -> do
-                               name <- instrName instr
-                               let name' = T.append (T.pack $ thName++"-") name
-                               return $ makeVar (L.NamedVar name' L.State
-                                                 (L.LispType 0
-                                                  (toLispType' (Singleton tp)))) tp
-                           ) (latchValueDesc thd)
-                 arg <- case threadArgumentDesc thd of
-                   Nothing -> return Nothing
-                   Just (val,tp) -> do
-                     name <- instrName val
-                     let name' = T.append (T.pack $ thName++"-") name
-                     return (Just (val,makeVar (L.NamedVar name' L.State
-                                                (L.LispType 0 (toLispType'
-                                                               (Singleton tp)))) tp))
-                 globs <- sequence $ Map.mapWithKey
-                          (\glob tp -> do
-                             name <- instrName glob
-                             return $ makeAllocVar (T.append (T.pack $ thName++"-") name) L.State tp
-                          ) (threadGlobalDesc thd)
-                 ret <- case threadReturnDesc thd of
-                   Nothing -> return Nothing
-                   Just tp -> do
-                     let name' = T.pack $ "return-"++thName
-                     return (Just $ makeVar (L.NamedVar name' L.State
-                                             (L.LispType 0 (toLispType'
-                                                            (Singleton tp)))) tp)
-                 return (run,ThreadState { latchBlocks = blocks
-                                         , latchValues = instrs
-                                         , threadArgument = arg
-                                         , threadGlobals = globs
-                                         , threadReturn = ret })
-             ) (threadStateDesc $ stateAnnotation real)
-  mem <- sequence $ Map.mapWithKey
-         (\loc tp -> do
-             name <- memLocName loc
-             return $ makeAllocVar name L.State tp
-         ) (memoryDesc $ stateAnnotation real)
-  mainNondet <- sequence $ Map.mapWithKey
-                (\instr tp -> do
-                    name <- instrName instr
-                    return $ makeVar (L.NamedVar (T.append "main-inp-" name) L.Input
-                                      (L.LispType 0 (toLispType' (Singleton tp)))) tp
-                ) (nondetTypes $ mainInputDesc $ inputAnnotation real)
-  thInps <- sequence $ Map.mapWithKey
-            (\th thd -> do
-                let Just thName = Map.lookup th threadNames
-                nondet <- sequence $ Map.mapWithKey
-                          (\instr tp -> do
-                              name <- instrName instr
-                              return $ makeVar
-                                (L.NamedVar (T.append (T.pack $ thName++"-inp-") name) L.Input
-                                 (L.LispType 0 (toLispType' (Singleton tp)))) tp
-                          ) (nondetTypes thd)
-                return ThreadInput { step = InternalObj (L.LispVarAccess
-                                                         (if safeSteps opts
-                                                          then L.NamedVar
-                                                               (T.pack $ "rstep-"++thName)
-                                                               L.Gate L.boolType
-                                                          else L.NamedVar
-                                                               (T.pack $ "step-"++thName)
-                                                               L.Input L.boolType)
-                                                         [] []) ()
-                                   , nondets = nondet }
-            ) (threadInputDesc $ inputAnnotation real)
-  return (ProgramState { mainState = ThreadState { latchBlocks = mainBlocks
-                                                 , latchValues = mainInstrs
-                                                 , threadArgument = Nothing
-                                                 , threadGlobals = mainGlobals
-                                                 , threadReturn = Nothing }
-                       , threadState = threads
-                       , memory = mem },
-          ProgramInput { mainInput = ThreadInput { step = if dontStep
-                                                          then constant True
-                                                          else InternalObj
-                                                               (L.LispVarAccess
-                                                                (if safeSteps opts
-                                                                 then L.NamedVar "rstep-main" L.Gate L.boolType
-                                                                 else L.NamedVar "step-main" L.Input L.boolType)
-                                                                [] []) ()
-                                                 , nondets = mainNondet }
-                       , threadInput = thInps })
-
-makeVar :: L.LispVar -> SymType -> SymVal
-makeVar = makeVar' []
-
-makeVar' :: [Integer] -> L.LispVar -> SymType -> SymVal
-makeVar' idx var TpBool
-  = ValBool $ InternalObj (L.LispVarAccess var idx []) ()
-makeVar' idx var TpInt
-  = ValInt $ InternalObj (L.LispVarAccess var idx []) ()
-makeVar' idx var (TpPtr locs ptp)
-  = ValPtr (snd $ Map.mapAccumWithKey
-            (\i loc () -> (i+1,
-                           (InternalObj (L.LispVarAccess
-                                         var
-                                         (idx++[i,0]) []) (),
-                            [InternalObj (L.LispVarAccess
-                                          var
-                                          (idx++[i,j]) []) ()
-                            | (j,_) <- zip [1..] [ () | DynamicAccess <- offsetPattern loc ] ]))
-            ) 0 locs) ptp
-makeVar' idx var (TpThreadId ths)
-  = ValThreadId $ snd $ Map.mapAccum
-    (\i () -> (i+1,InternalObj (L.LispVarAccess
-                                var
-                                (idx++[i]) []) ())) 0 ths
-makeVar' idx var (TpCondition ths)
-  = ValCondition $ snd $ Map.mapAccum
-    (\i () -> (i+1,InternalObj (L.LispVarAccess
-                                var
-                                (idx++[i]) []) ())) 0 ths
-makeVar' idx var (TpVector tps)
-  = ValVector $ zipWith (\tp i -> makeVar' (idx++[i]) var tp) tps [0..]
-
-makeAllocVar :: T.Text -> L.LispVarCat -> AllocType -> AllocVal
-makeAllocVar name cat tp@(TpStatic n tps)
-  = ValStatic [ makeStruct [i] tps | i <- [0..n-1] ]
+reverseNext :: Map (Ptr CallInst) String
+            -> ProgramInput L.LispExpr
+            -> ProgramState L.LispExpr
+            -> DMap DefExpr TransGate
+            -> ProgramState (RExpr ProgramInput ProgramState)
+            -> DMap L.LispName (L.LispVar L.LispExpr)
+reverseNext threadNames inp st gts next
+  = DMap.fromList $
+    mainBlks++thBlks++
+    mainVals++thVals++
+    thActs++thArgs++thRets++
+    globals++mainLocals++thLocals
   where
-    var = L.NamedVar name cat (fst $ toLispAllocType tp)
-    makeStruct idx (Singleton tp) = Singleton (makeVar' idx var tp)
-    makeStruct idx (Struct tps) = Struct [ makeStruct (idx++[i]) tp
-                                         | (i,tp) <- zip [0..] tps ]
-makeAllocVar name cat rtp@(TpDynamic tp)
-  = ValDynamic (makeStruct [] tp) (InternalObj (L.LispSizeAccess
-                                                var
-                                                []) ())
+    mainBlks = [ (mainBlkName blk)
+                 :=> (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                      Singleton $ L.Sized $ translateLLVMExpr inp st gts def)
+               | (blk,def) <- Map.toList $ latchBlocks $ mainState next ]
+    thBlks = [ (threadBlkName tname blk)
+               :=> (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                    Singleton $ L.Sized $ translateLLVMExpr inp st gts def)
+             | (th,(_,thd)) <- Map.toList $ threadState next
+             , let Just tname = Map.lookup th threadNames
+             , (blk,def) <- Map.toList $ latchBlocks thd ]
+    mainVals = [ fromSymVal def $
+                 \tp val -> (mainInstrName i tp)
+                            :=> (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                                 runIdentity $ Struct.mapM
+                                 (return . L.Sized . translateLLVMExpr inp st gts) val)
+               | (i,def) <- Map.toList $ latchValues $ mainState next ]
+    thVals = [ fromSymVal def $
+               \tp val -> (threadInstrName tname i tp)
+                          :=> (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                               runIdentity $ Struct.mapM
+                               (return . L.Sized . translateLLVMExpr inp st gts) val)
+             | (th,(_,thS)) <- Map.toList $ threadState next
+             , let Just tname = Map.lookup th threadNames
+             , (i,def) <- Map.toList $ latchValues thS ]
+    thActs = [ (runningName tname) :=>
+               (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                Singleton $ L.Sized $ translateLLVMExpr inp st gts act)
+             | (th,(act,_)) <- Map.toList $ threadState next
+             , let Just tname = Map.lookup th threadNames]
+    thArgs = [ fromSymVal def $
+               \tp val -> (argName tname tp)
+                          :=> (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                               runIdentity $ Struct.mapM
+                               (return . L.Sized . translateLLVMExpr inp st gts) val)
+             | (th,(_,thS)) <- Map.toList $ threadState next
+             , let Just tname = Map.lookup th threadNames
+             , (arg,def) <- case threadArgument thS of
+               Just x -> [x]
+               Nothing -> [] ]
+    thRets = [ fromSymVal def $
+               \tp val -> (returnName tname tp)
+                          :=> (L.LispConstr $ L.LispValue (L.Size Nil Nil) $
+                               runIdentity $ Struct.mapM
+                               (return . L.Sized . translateLLVMExpr inp st gts) val)
+             | (th,(_,thS)) <- Map.toList $ threadState next
+             , let Just tname = Map.lookup th threadNames
+             , def <- case threadReturn thS of
+               Just x -> [x]
+               Nothing -> [] ]
+    globals = [ fromAllocVal' val $
+                \val' -> let (sz,tps) = L.lispValueType val'
+                             rval = runIdentity $ foldExprs
+                                    (\_ -> return . translateLLVMExpr inp st gts) val'
+                         in (globalName sz tps loc) :=>
+                            (L.LispConstr rval)
+              | (loc,val) <- Map.toList $ memory next ]
+    mainLocals = [ fromAllocVal' val $
+                   \val' -> let (sz,tps) = L.lispValueType val'
+                                rval = runIdentity $ foldExprs
+                                       (\_ -> return . translateLLVMExpr inp st gts) val'
+                            in (localName Nothing sz tps loc) :=>
+                               (L.LispConstr rval)
+                 | (loc,val) <- Map.toList $ threadGlobals $ mainState next ]
+    thLocals = [ fromAllocVal' val $
+                 \val' -> let (sz,tps) = L.lispValueType val'
+                              rval = runIdentity $ foldExprs
+                                     (\_ -> return . translateLLVMExpr inp st gts) val'
+                          in (localName (Just tname) sz tps loc) :=>
+                             (L.LispConstr rval)
+               | (th,(_,thD)) <- Map.toList $ threadState next
+               , let Just tname = Map.lookup th threadNames
+               , (loc,val) <- Map.toList $ threadGlobals thD ]
+
+reverseState :: Map (Ptr CallInst) String -> ProgramStateDesc
+             -> (DMap L.LispName L.Annotation,ProgramState L.LispExpr)
+reverseState threadNames desc = (DMap.fromList $
+                                 mainBlks++thBlks ++
+                                 mainVals++thVals ++
+                                 thArgs++thRets ++
+                                 mainLocals++thLocals++
+                                 thRun++
+                                 globals,st)
   where
-    var = L.NamedVar name cat (fst $ toLispAllocType rtp)
-    makeStruct idx (Singleton TpBool)
-      = Singleton $ ArrBool (InternalObj (L.LispVarAccess
-                                          var
-                                          idx []) ((),()))
-    makeStruct idx (Singleton TpInt)
-      = Singleton $ ArrInt (InternalObj (L.LispVarAccess
-                                         var
-                                         idx []) ((),()))
-    makeStruct idx (Struct tps)
-      = Struct [ makeStruct (idx++[i]) tp
-               | (i,tp) <- zip [0..] tps ]
-    makeStruct idx str = error $ "Make struct for dynamic type "++show tp++" with "++show idx++" "++show str
+    mainDesc = mainStateDesc desc
+    mainBlks = [ (mainBlkName blk)
+                 :=> (L.Annotation (Map.singleton "pc" (L.Symbol "true")))
+               | (blk,_) <- Map.toList $ latchBlockDesc mainDesc ]
+    thBlks = [ (threadBlkName tname blk)
+               :=> (L.Annotation (Map.singleton "pc" (L.Symbol "true")))
+             | (th,desc) <- Map.toList $ threadStateDesc desc
+             , let Just tname = Map.lookup th threadNames
+             , blk <- Map.keys $ latchBlockDesc desc ]
+    mainVals = [ toLispType tp $
+                 \tp' -> (mainInstrName instr tp')
+                         :=> (L.Annotation Map.empty)
+               | (instr,tp) <- Map.toList $ latchValueDesc mainDesc ]
+    thVals = [ toLispType tp $
+               \tp' -> (threadInstrName tname instr tp')
+                       :=> (L.Annotation Map.empty)
+             | (th,desc) <- Map.toList $ threadStateDesc desc
+             , let Just tname = Map.lookup th threadNames
+             , (instr,tp) <- Map.toList $ latchValueDesc desc ]
+    thArgs = [ toLispType tp $
+               \tp' -> (argName tname tp') :=> (L.Annotation Map.empty)
+             | (th,desc) <- Map.toList $ threadStateDesc desc
+             , let Just tname = Map.lookup th threadNames
+             , tp <- case threadArgumentDesc desc of
+               Nothing -> []
+               Just (_,t) -> [t] ]
+    thRets = [ toLispType tp $
+               \tp' -> (L.LispName Nil tp' (T.pack $ "return-"++tname))
+                       :=> (L.Annotation Map.empty)
+             | (th,desc) <- Map.toList $ threadStateDesc desc
+             , let Just tname = Map.lookup th threadNames
+             , tp <- case threadReturnDesc desc of
+               Nothing -> []
+               Just t -> [t] ]
+    mainLocals = [ toLispAllocType tp $
+                   \sz tps -> (localName Nothing sz tps glob)
+                              :=> (L.Annotation Map.empty)
+                 | (glob,tp) <- Map.toList $ threadGlobalDesc mainDesc ]
+    thRun = [ (runningName tname)
+              :=> (L.Annotation Map.empty)
+            | (th,desc) <- Map.toList $ threadStateDesc desc
+            , let Just tname = Map.lookup th threadNames ]
+    thLocals = [ toLispAllocType tp $
+                 \sz tps -> (localName (Just tname) sz tps glob)
+                            :=> (L.Annotation Map.empty)
+               | (th,desc) <- Map.toList $ threadStateDesc desc
+               , let Just tname = Map.lookup th threadNames
+               , (glob,tp) <- Map.toList $ threadGlobalDesc desc ]
+    globals = [ toLispAllocType tp $
+                \sz tps -> (globalName sz tps loc)
+                           :=> (L.Annotation Map.empty)
+              | (loc,tp) <- Map.toList $ memoryDesc desc ]
+    st = ProgramState
+         { mainState = ThreadState
+                       { latchBlocks = Map.mapWithKey
+                                       (\blk _
+                                        -> L.LispRef (L.NamedVar
+                                                      (mainBlkName blk)
+                                                      L.State) Nil
+                                       ) (latchBlockDesc mainDesc)
+                       , latchValues = Map.mapWithKey
+                                       (\i tp
+                                        -> reverseValue
+                                              (\tps rev
+                                               -> let name = mainInstrName i tps
+                                                  in case rev of
+                                                  L.RevVar idx
+                                                    -> L.LispRef (L.NamedVar name L.State) idx
+                                                  L.RevSize idx
+                                                    -> L.LispSize (L.NamedVar name L.State) idx
+                                              ) tp
+                                       ) (latchValueDesc mainDesc)
+                       , threadReturn = Nothing
+                       , threadArgument = Nothing
+                       , threadGlobals = Map.mapWithKey
+                                         (\g tp
+                                          -> reverseAlloc
+                                             (\sz tps rev
+                                              -> let name = localName Nothing sz tps g
+                                                 in case rev of
+                                                 L.RevVar idx
+                                                   -> L.LispRef (L.NamedVar name L.State) idx
+                                                 L.RevSize idx
+                                                   -> L.LispSize (L.NamedVar name L.State) idx
+                                             ) tp
+                                         ) (threadGlobalDesc mainDesc)
+                       }
+         , threadState = Map.mapWithKey
+                         (\th thd
+                          -> let Just tname = Map.lookup th threadNames
+                             in (L.LispRef (L.NamedVar (runningName tname) L.State) Nil,
+                                 ThreadState
+                                 { latchBlocks = Map.mapWithKey
+                                                 (\blk _
+                                                  -> L.LispRef (L.NamedVar
+                                                                (threadBlkName tname blk)
+                                                                L.State) Nil
+                                                 ) (latchBlockDesc thd)
+                                 , latchValues = Map.mapWithKey
+                                                 (\i tp
+                                                  -> reverseValue
+                                                     (\tps rev
+                                                      -> let name = threadInstrName tname i tps
+                                                         in case rev of
+                                                         L.RevVar idx
+                                                           -> L.LispRef (L.NamedVar name L.State) idx
+                                                         L.RevSize idx
+                                                           -> L.LispSize (L.NamedVar name L.State) idx
+                                                     ) tp
+                                                 ) (latchValueDesc thd)
+                                 , threadReturn = case threadReturnDesc thd of
+                                   Nothing -> Nothing
+                                   Just tp -> Just $ reverseValue
+                                              (\tps rev -> let name = returnName tname tps
+                                                           in case rev of
+                                                           L.RevVar idx
+                                                             -> L.LispRef (L.NamedVar name L.State) idx
+                                                           L.RevSize idx
+                                                             -> L.LispSize (L.NamedVar name L.State) idx
+                                              ) tp
+                                 , threadArgument = case threadArgumentDesc thd of
+                                   Nothing -> Nothing
+                                   Just (arg,tp)
+                                     -> Just (arg,reverseValue
+                                                  (\tps rev -> let name = argName tname tps
+                                                               in case rev of
+                                                               L.RevVar idx
+                                                                 -> L.LispRef (L.NamedVar name L.State) idx
+                                                               L.RevSize idx
+                                                                 -> L.LispSize (L.NamedVar name L.State) idx
+                                                  ) tp)
+                                 , threadGlobals = Map.mapWithKey
+                                                   (\g tp
+                                                    -> reverseAlloc
+                                                       (\sz tps rev
+                                                        -> let name = localName (Just tname) sz tps g
+                                                           in case rev of
+                                                           L.RevVar idx
+                                                             -> L.LispRef (L.NamedVar name L.State) idx
+                                                           L.RevSize idx
+                                                             -> L.LispSize (L.NamedVar name L.State) idx
+                                                       ) tp
+                                                   ) (threadGlobalDesc thd)
+                                 })) (threadStateDesc desc)
+         , memory = Map.mapWithKey
+                    (\loc tp
+                     -> reverseAlloc (\sz tps rev
+                                      -> let name = globalName sz tps loc
+                                         in case rev of
+                                         L.RevVar idx -> L.LispRef (L.NamedVar name L.State) idx
+                                         L.RevSize idx
+                                           -> L.LispSize (L.NamedVar name L.State) idx
+                                     ) tp
+                    ) (memoryDesc desc)
+         }
 
-toLispExprs :: GateTranslation -> Struct SymType -> Struct SymVal -> L.LispVar
-toLispExprs trans tp val = L.LispConstr $ toLispValue trans tp val
-
-toLispValue :: GateTranslation -> Struct SymType -> Struct SymVal -> L.LispValue
-toLispValue trans tp val = L.LispValue (L.Size []) (toLispExprs' trans tp val)
-
-toLispExprs' :: GateTranslation -> Struct SymType -> Struct SymVal -> L.LispStruct L.LispVal
-toLispExprs' trans (Singleton TpBool) (Singleton (ValBool x))
-  = L.Singleton (L.Val $ toLispExpr trans x)
-toLispExprs' trans (Singleton TpInt) (Singleton (ValInt x))
-  = L.Singleton (L.Val $ toLispExpr trans x)
-toLispExprs' trans (Singleton (TpPtr locs _)) (Singleton (ValPtr trgs _))
-  = {-if Map.null diff
-    then-} L.Struct [ L.Struct (L.Singleton (L.Val $ toLispExpr trans cond):
-                              [ L.Singleton (L.Val $ toLispExpr trans i) | i <- idx ])
-                  | (trg,pat) <- Map.toList locs
-                  , let (cond,idx) = case Map.lookup trg trgs of
-                          Just r -> r
-                          Nothing -> (constant False,[ constant 0
-                                                     | DynamicAccess <- offsetPattern trg ]) ]
-    {-else unsafePerformIO $ do
-      allowed <- mapM (\ptr -> do
-                          name <- memTrgName (memoryLoc ptr)
-                          return $ "\n"++(T.unpack name)++" "++show (offsetPattern ptr)
-                      ) (Map.keys locs)
-      forbidden <- mapM (\ptr -> do
-                            name <- memTrgName (memoryLoc ptr)
-                            return $ "\n"++(T.unpack name)++" "++show (offsetPattern ptr)
-                        ) (Map.keys diff)
-      error $ "Incomplete: Pointer pointing to unexpected location:\nAllowed:"++concat allowed++"\nForbidden:"++concat forbidden-}
+reverseInput :: Map (Ptr CallInst) String -> ProgramInputDesc
+             -> (DMap L.LispName L.Annotation,ProgramInput L.LispExpr)
+reverseInput threadNames desc = (DMap.unions [mp1,mp2,mp3],st)
   where
-    diff = Map.difference trgs locs
-toLispExprs' trans (Singleton (TpThreadId trgs)) (Singleton (ValThreadId ths))
-  = L.Struct [ L.Singleton (L.Val $ toLispExpr trans cond)
-             | trg <- Map.keys trgs
-             , let cond = case Map.lookup trg ths of
-                     Just c -> c
-                     Nothing -> constant False ]
-toLispExprs' trans (Singleton (TpCondition trgs)) (Singleton (ValCondition ths))
-  = L.Struct [ L.Singleton (L.Val $ toLispExpr trans cond)
-             | trg <- Map.keys trgs
-             , let cond = case Map.lookup trg ths of
-                     Just c -> c
-                     Nothing -> constant False ]
-toLispExprs' trans (Singleton (TpVector tps)) (Singleton (ValVector vals))
-  = L.Struct $ zipWith (\tp val -> toLispExprs' trans (Singleton tp) (Singleton val)) tps vals
-toLispExprs' trans (Struct tps) (Struct fs)
-  = L.Struct (zipWith (toLispExprs' trans) tps fs)
-toLispExprs' _ tp val = error $ "toLispExprs': Cannot translate value "++show val++" of type "++show tp
+    mp1 = DMap.fromList $
+          ((stepName Nothing) :=> (L.Annotation Map.empty)):
+          [ (stepName (Just thName)) :=> (L.Annotation Map.empty)
+          | (th,thName) <- Map.toList threadNames ]
+    mp2 = DMap.fromList [ toLispType tp $
+                          \tps -> (L.LispName Nil tps
+                                   (T.pack $ "input-main-"++showValue i ""))
+                                  :=> (L.Annotation Map.empty)
+                        | (i,tp) <- Map.toList (nondetTypes $ mainInputDesc desc)]
+    mp3 = DMap.fromList [ toLispType tp $
+                          \tps -> (L.LispName Nil tps
+                                   (T.pack $ "input-"++tname++"-"++showValue i ""))
+                                  :=> (L.Annotation Map.empty)
+                        | (th,thd) <- Map.toList $ threadInputDesc desc
+                        , let Just tname = Map.lookup th threadNames
+                        , (i,tp) <- Map.toList (nondetTypes thd) ]
+    ctrue = L.LispExpr (E.Const $ BoolValue True)
+    st = ProgramInput
+         { mainInput = ThreadInput
+                       { step = L.LispRef (L.NamedVar (stepName Nothing) L.Input) Nil
+                       , nondets = Map.mapWithKey
+                                   (\i tp
+                                    -> reverseValue
+                                       (\(tps::Struct Repr tps) rev
+                                        -> let var :: L.LispVar L.LispExpr '( '[],tps)
+                                               var = L.NamedVar (L.LispName Nil tps
+                                                                 (T.pack $ "input-main-"++
+                                                                  showValue i "")) L.Input
+                                           in case rev of
+                                           L.RevVar idx
+                                             -> L.LispRef var idx
+                                           L.RevSize idx
+                                             -> L.LispSize var idx
+                                       ) tp
+                                   ) (nondetTypes $ mainInputDesc desc)
+                       }
+         , threadInput = Map.mapWithKey
+                         (\th thd -> let Just tname = Map.lookup th threadNames
+                                     in ThreadInput
+                                        { step = L.LispRef (L.NamedVar
+                                                            (stepName (Just tname)) L.Input)
+                                                 Nil
+                                        , nondets = Map.mapWithKey
+                                                    (\i tp
+                                                     -> reverseValue
+                                                        (\(tps::Struct Repr tps) rev
+                                                         -> let var :: L.LispVar L.LispExpr '( '[],tps)
+                                                                var = L.NamedVar
+                                                                      (L.LispName Nil tps
+                                                                       (T.pack $ "input-"++tname++"-"++
+                                                                        showValue i "")) L.Input
+                                                            in case rev of
+                                                            L.RevVar idx
+                                                              -> L.LispRef var idx
+                                                            L.RevSize idx
+                                                              -> L.LispSize var idx
+                                                        ) tp
+                                                    ) (nondetTypes thd) }
+                         ) (threadInputDesc desc)
+         }
 
-toLispAllocExpr :: GateTranslation -> AllocType -> AllocVal -> L.LispValue
-toLispAllocExpr trans (TpStatic n tp) (ValStatic vals)
-  = L.LispValue (L.Size [])
-    (L.Struct $ fmap (toLispExprs' trans tp) vals)
-toLispAllocExpr trans (TpDynamic tp) (ValDynamic vals sz)
-  = L.LispValue (L.Size [L.SizeElement $ toLispExpr trans sz])
-    (toLispArray vals)
+translateLLVMExpr :: ProgramInput L.LispExpr
+                  -> ProgramState L.LispExpr
+                  -> DMap DefExpr TransGate
+                  -> LLVMExpr tp
+                  -> L.LispExpr tp
+translateLLVMExpr inp st gt
+  = runIdentity . translateExpr
+    (\irev -> return $ accessComposite irev inp)
+    (\srev -> return $ accessComposite srev st)
+    (\def -> case DMap.lookup def gt of
+      Just (TransGate name) -> return $ L.LispRef (L.NamedVar name L.Gate) Nil)
+
+translateExpr :: Monad m
+              => (forall tp. RevComp inp tp -> m (L.LispExpr tp))
+              -> (forall tp. RevComp st tp -> m (L.LispExpr tp))
+              -> (forall tp. DefExpr tp -> m (L.LispExpr tp))
+              -> RExpr inp st tp
+              -> m (L.LispExpr tp)
+translateExpr f g h (RExpr e) = do
+  ne <- E.mapExpr undefined undefined undefined undefined undefined undefined undefined
+        (translateExpr f g h) e
+  return $ L.LispExpr ne
+translateExpr f g h (RInput rev) = f rev
+translateExpr f g h (RState rev) = g rev
+translateExpr f g h (RRef def) = h def
+
+reverseAlloc :: forall e. (GetType e)
+             => (forall sz tps tp. List Repr sz -> Struct Repr tps
+                 -> L.RevValue '(sz,tps) tp -> e tp)
+             -> AllocType
+             -> AllocVal e
+reverseAlloc f tp
+  = toLispAllocType tp $
+    \(sz :: List Repr sz) (tp' :: Struct Repr tps)
+    -> let revLisp :: L.LispValue '(sz,tps) e
+           revLisp = runIdentity $ createComposite
+                     (\_ rev -> return $ f sz tp' rev) (sz,tp')
+       in case revLisp of
+       L.LispValue sz' val' -> toAllocVal tp sz' val'
+
+reverseValue :: forall e. (GetType e)
+             => (forall tps tp. Struct Repr tps -> L.RevValue '( '[],tps) tp -> e tp)
+             -> SymType
+             -> SymVal e
+reverseValue f tp
+  = toLispType tp
+    (\(tp' :: Struct Repr tps)
+     -> let revLisp :: L.LispValue '( '[],tps) e
+            revLisp = runIdentity $ createComposite
+                      (\_ rev -> return $ f tp' rev) (Nil,tp')
+        in case revLisp of
+        L.LispValue _ val -> toSymVal tp $
+                             runIdentity $ Struct.mapM
+                             (\(L.Sized e) -> return e) val)
+
+toAllocVal :: forall e sz tps. GetType e
+           => AllocType -> L.Size e sz -> Struct (L.Sized e sz) tps
+           -> AllocVal e
+toAllocVal (TpStatic 1 tp) (L.Size Nil Nil) x = ValStatic [toStructVal tp nx]
   where
-    toLispArray (Singleton (ArrBool arr)) = L.Singleton $ L.Val (toLispExpr trans arr)
-    toLispArray (Singleton (ArrInt arr)) = L.Singleton $ L.Val (toLispExpr trans arr)
-    toLispArray (Singleton (ArrPtr arrs _))
-      = L.Struct [ L.Struct (L.Singleton (L.Val $ toLispExpr trans elArr):
-                             [ L.Singleton (L.Val $ toLispExpr trans idxArr)
-                             | idxArr <- idxArrs ])
-                 | (elArr,idxArrs) <- Map.elems arrs ]
-    toLispArray (Singleton (ArrThreadId arrs))
-      = L.Struct [ L.Singleton (L.Val $ toLispExpr trans arr)
-                 | arr <- Map.elems arrs ]
-    toLispArray (Struct xs) = L.Struct (fmap toLispArray xs)
+    nx = runIdentity (Struct.mapM (\(L.Sized e) -> return e) x)
+toAllocVal (TpStatic len tp) (L.Size Nil Nil) (Struct xs)
+  = ValStatic (toStatic' len xs)
+  where
+    toStatic' :: Int -> List (Struct (L.Sized e sz)) tps' -> [Th.Struct (SymVal e)]
+    toStatic' 0 Nil = []
+    toStatic' n (x ::: xs) = (toStructVal tp nx):(toStatic' (n-1) xs)
+      where
+        nx = runIdentity (Struct.mapM (\(L.Sized e) -> return e) x)
+toAllocVal (TpDynamic tp) (L.Size (IntRepr ::: Nil) (e ::: Nil)) x
+  = case getType e of
+  IntRepr -> ValDynamic (toStructArray tp x) e
+
+toStructArray :: forall tps e. GetType e => Th.Struct SymType -> Struct (L.Sized e '[IntType]) tps
+              -> Th.Struct (SymArray e)
+toStructArray (Th.Singleton tp) x = Th.Singleton (toSymArray tp x)
+toStructArray (Th.Struct tps) (Struct xs) = Th.Struct (toStructArr' tps xs)
+  where
+    toStructArr' :: forall tps'. [Th.Struct SymType] -> List (Struct (L.Sized e '[IntType])) tps'
+                 -> [Th.Struct (SymArray e)]
+    toStructArr' [] Nil = []
+    toStructArr' (x:xs) (tp ::: tps) = (toStructArray x tp):(toStructArr' xs tps)
+
+toStructVal :: forall tps e. GetType e => Th.Struct SymType -> Struct e tps
+            -> Th.Struct (SymVal e)
+toStructVal (Th.Singleton tp) x = Th.Singleton (toSymVal tp x)
+toStructVal (Th.Struct tps) (Struct xs) = Th.Struct (toStructVal' tps xs)
+  where
+    toStructVal' :: forall tps'. [Th.Struct SymType] -> List (Struct e) tps'
+                 -> [Th.Struct (SymVal e)]
+    toStructVal' [] Nil = []
+    toStructVal' (x:xs) (tp ::: tps) = (toStructVal x tp):(toStructVal' xs tps)
+
+fromSymVal :: GetType e => SymVal e -> (forall tps. Struct Repr tps -> Struct e tps -> a) -> a
+fromSymVal val f = fromSymVal' val
+                   (\e -> f (runIdentity $ Struct.mapM (return.getType) e) e)
+
+fromSymVal' :: SymVal e -> (forall tps. Struct e tps -> a) -> a
+fromSymVal' (ValBool e) f = f (Singleton e)
+fromSymVal' (ValInt e) f = f (Singleton e)
+fromSymVal' (ValBounded e) f = f (Singleton e)
+fromSymVal' (ValPtr trgs tp) f
+  = List.reifyList
+    (\(cond,idx) g -> case idx of
+      [] -> g (Singleton cond)
+      _ -> reifyList
+           (\el h -> h (Singleton el))
+           idx
+           (\idx' -> g (Struct ((Singleton cond) ::: idx')))
+    ) (Map.elems trgs)
+    (\xs -> f (Struct xs))
+fromSymVal' (ValThreadId trgs) f
+  = List.reifyList
+    (\c g -> g (Singleton c)) (Map.elems trgs) $
+    \xs -> f (Struct xs)
+fromSymVal' (ValCondition trgs) f
+  = List.reifyList
+    (\c g -> g (Singleton c)) (Map.elems trgs) $
+    \xs -> f (Struct xs)
+fromSymVal' (ValVector vals) f
+  = List.reifyList fromSymVal' vals $
+    \xs -> f (Struct xs)
+
+fromSymArray' :: SymArray e -> (forall tps. Struct (L.Sized e '[IntType]) tps -> a) -> a
+fromSymArray' (ArrBool e) f = f (Singleton (L.Sized e))
+fromSymArray' (ArrInt e) f = f (Singleton (L.Sized e))
+fromSymArray' (ArrPtr trgs tp) f
+  = List.reifyList
+    (\(cond,idx) g -> case idx of
+      [] -> g (Singleton (L.Sized cond))
+      _ -> reifyList
+           (\el h -> h (Singleton (L.Sized el)))
+           idx
+           (\idx' -> g (Struct idx'))
+    ) (Map.elems trgs)
+    (\xs -> f (Struct xs))
+fromSymArray' (ArrThreadId trgs) f
+  = List.reifyList
+    (\c g -> g (Singleton (L.Sized c))) (Map.elems trgs) $
+    \xs -> f (Struct xs)
+fromSymArray' (ArrCondition trgs) f
+  = List.reifyList
+    (\c g -> g (Singleton (L.Sized c))) (Map.elems trgs) $
+    \xs -> f (Struct xs)
+fromSymArray' (ArrVector vals) f
+  = List.reifyList fromSymArray' vals $
+    \xs -> f (Struct xs)
+
+fromSymStruct' :: Th.Struct (SymVal e) -> (forall tps. Struct e tps -> a) -> a
+fromSymStruct' (Th.Singleton v) f = fromSymVal' v f
+fromSymStruct' (Th.Struct xs) f
+  = List.reifyList fromSymStruct' xs $ f . Struct
+
+fromSymStructArray' :: Th.Struct (SymArray e)
+                    -> (forall tps. Struct (L.Sized e '[IntType]) tps -> a) -> a
+fromSymStructArray' (Th.Singleton x) f = fromSymArray' x f
+fromSymStructArray' (Th.Struct xs) f
+  = List.reifyList fromSymStructArray' xs $ f . Struct
+
+fromAllocVal' :: AllocVal e
+              -> (forall sz tps. L.LispValue '(sz,tps) e -> a) -> a
+fromAllocVal' (ValStatic [x]) f
+  = fromSymStruct' x $
+    \val -> f $ L.LispValue (L.Size Nil Nil) (runIdentity $ Struct.mapM (return . L.Sized) val)
+fromAllocVal' (ValStatic xs) f
+  = List.reifyList
+    (\x g -> fromSymStruct' x $
+             \val -> g (runIdentity $ Struct.mapM (return . L.Sized) val)) xs $
+    \vals -> f $ L.LispValue (L.Size Nil Nil) (Struct vals)
+fromAllocVal' (ValDynamic arr sz) f
+  = fromSymStructArray' arr $
+    \arr' -> f $ L.LispValue (L.Size (List.list1 int) (List.list1 sz)) arr'
+
+toSymVal :: forall e tps. GetType e => SymType -> Struct e tps -> SymVal e
+toSymVal TpBool (Singleton e) = case getType e of
+  BoolRepr -> ValBool e
+toSymVal TpInt (Singleton e) = case getType e of
+  IntRepr -> ValInt e
+toSymVal (TpBounded bw1) (Singleton e) = case getType e of
+  BitVecRepr bw2 -> case geq bw1 bw2 of
+    Just Refl -> ValBounded e
+toSymVal (TpPtr trgs tp) (Struct lst)
+  = ValPtr (Map.fromList $ zip
+            (Map.keys trgs)
+            (runIdentity $ List.toList
+             (\e -> case e of
+               Singleton c -> case getType c of
+                 BoolRepr -> return (c,[])
+               Struct ((Singleton c) ::: idx) -> case getType c of
+                 BoolRepr -> do
+                   idx' <- List.toList (\i -> case i of
+                                         Singleton i' -> case getType i' of
+                                           IntRepr -> return i') idx
+                   return (c,idx')) lst)
+            ) tp
+toSymVal (TpThreadId trgs) (Struct lst)
+  = ValThreadId $ Map.fromList $ zip
+    (Map.keys trgs)
+    (runIdentity $ List.toList
+     (\e -> case e of
+       Singleton c -> case getType c of
+         BoolRepr -> return c) lst)
+toSymVal (TpCondition trgs) (Struct lst)
+  = ValCondition $ Map.fromList $ zip
+    (Map.keys trgs)
+    (runIdentity $ List.toList
+     (\e -> case e of
+       Singleton c -> case getType c of
+         BoolRepr -> return c) lst)
+toSymVal (TpVector tps) (Struct lst)
+  = ValVector $ toVector tps lst
+  where
+    toVector :: forall tps. [SymType] -> List (Struct e) tps -> [SymVal e]
+    toVector [] Nil = []
+    toVector (tp:tps) (e ::: es) = (toSymVal tp e):toVector tps es
+
+toSymArray :: forall e tps. GetType e => SymType -> Struct (L.Sized e '[IntType]) tps
+           -> SymArray e
+toSymArray TpBool (Singleton (L.Sized e)) = case getType e of
+  ArrayRepr (IntRepr ::: Nil) BoolRepr -> ArrBool e
+toSymArray TpInt (Singleton (L.Sized e)) = case getType e of
+  ArrayRepr (IntRepr ::: Nil) IntRepr -> ArrInt e
+toSymArray (TpPtr trgs tp) (Struct lst)
+  = ArrPtr (Map.fromList $ zip
+            (Map.keys trgs)
+            (runIdentity $ List.toList
+             (\e -> case e of
+               Singleton (L.Sized c) -> case getType c of
+                 ArrayRepr (IntRepr ::: Nil) BoolRepr -> return (c,[])
+               Struct ((Singleton (L.Sized c)) ::: idx) -> case getType c of
+                 ArrayRepr (IntRepr ::: Nil) BoolRepr -> do
+                   idx' <- List.toList (\i -> case i of
+                                         Singleton (L.Sized i') -> case getType i' of
+                                           ArrayRepr (IntRepr ::: Nil) IntRepr
+                                             -> return i') idx
+                   return (c,idx')) lst)
+            ) tp
+toSymArray (TpThreadId trgs) (Struct lst)
+  = ArrThreadId $ Map.fromList $ zip
+    (Map.keys trgs)
+    (runIdentity $ List.toList
+     (\e -> case e of
+       Singleton (L.Sized c) -> case getType c of
+         ArrayRepr (IntRepr ::: Nil) BoolRepr -> return c) lst)
+toSymArray (TpCondition trgs) (Struct lst)
+  = ArrCondition $ Map.fromList $ zip
+    (Map.keys trgs)
+    (runIdentity $ List.toList
+     (\e -> case e of
+       Singleton (L.Sized c) -> case getType c of
+         ArrayRepr (IntRepr ::: Nil) BoolRepr -> return c) lst)
+toSymArray (TpVector tps) (Struct lst)
+  = ArrVector $ toVector tps lst
+  where
+    toVector :: forall tps. [SymType] -> List (Struct (L.Sized e '[IntType])) tps -> [SymArray e]
+    toVector [] Nil = []
+    toVector (tp:tps) (e ::: es) = (toSymArray tp e):toVector tps es
+
+toLispType :: SymType -> (forall tps. Struct Repr tps -> a) -> a
+toLispType TpBool f = f (Singleton bool)
+toLispType TpInt f = f (Singleton int)
+toLispType (TpBounded bw) f = f (Singleton $ bitvec bw)
+toLispType (TpPtr trgs tp) f
+  = List.reifyList (\ptr g -> case [ () | DynamicAccess <- offsetPattern ptr] of
+                     [] -> g (Singleton bool)
+                     xs -> List.reifyList (\_ g -> g (Singleton int)) xs $
+                           \idx -> g (Struct ((Singleton bool) ::: idx))
+                   ) (Map.keys trgs) $
+    \lst -> f (Struct lst)
+toLispType (TpThreadId trgs) f
+  = List.reifyList (\_ g -> g (Singleton bool)) (Map.keys trgs) $
+    \lst -> f (Struct lst)
+toLispType (TpCondition trgs) f
+  = List.reifyList (\_ g -> g (Singleton bool)) (Map.keys trgs) $
+    \lst -> f (Struct lst)
+toLispType (TpVector tps) f
+  = List.reifyList (\tp g -> toLispType tp g) tps $
+    \lst -> f (Struct lst)
+
+toLispStructType :: Th.Struct SymType -> (forall tps. Struct Repr tps -> a) -> a
+toLispStructType (Th.Singleton tp) f
+  = toLispType tp f
+toLispStructType (Th.Struct tps) f
+  = List.reifyList toLispStructType tps $
+    \lst -> f (Struct lst)
+
+toLispAllocType :: AllocType -> (forall sz tps. List Repr sz -> Struct Repr tps -> a) -> a
+toLispAllocType (TpStatic 1 tp) f
+  = toLispStructType tp (f Nil)
+toLispAllocType (TpStatic n tp) f = toLispStructType tp $
+                                    \tp' -> reifyList (\_ g -> g tp') (replicate n ()) $
+                                            \lst -> f Nil (Struct lst)
+toLispAllocType (TpDynamic tp) f
+  = toLispStructType tp $
+    \tp' -> f (List.list1 int) tp'

@@ -7,17 +7,17 @@
 extern "C" {
 #endif
 
-  extern int __nondet_int();
-  extern unsigned int __nondet_uint();
-  extern long __nondet_long();
-  extern size_t __nondet_size();
-  extern bool __nondet_bool();
-  extern char __nondet_char();
+  extern int __nondet_int(void);
+  extern unsigned int __nondet_uint(void);
+  extern long __nondet_long(void);
+  extern size_t __nondet_size(void);
+  extern bool __nondet_bool(void);
+  extern char __nondet_char(void);
 
   extern void __unsigned_uint(unsigned int arg);
 
   extern void __yield(int loc);
-  extern void __yield_internal(int loc);
+  extern void __yield_local(int loc);
   extern bool __act(void *(*thread) (void *),int loc,...);
   extern void __atomic_begin(void);
   extern void __atomic_end(void);

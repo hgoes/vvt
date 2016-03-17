@@ -1,48 +1,43 @@
-{-# LANGUAGE ViewPatterns,ParallelListComp,OverloadedStrings,RankNTypes,
-             ScopedTypeVariables,FlexibleContexts,ImpredicativeTypes,
-             ExistentialQuantification,TypeFamilies,DeriveDataTypeable,
-             GADTs #-}
 module Realization.Lisp.Karr where
 
+import Args
 import PartialArgs
 import Realization.Lisp
 import Realization.Lisp.Value
-import Language.SMTLib2
-import Language.SMTLib2.Internals
-import Language.SMTLib2.Internals.Operators
-import Language.SMTLib2.Internals.Instances
-import Data.Unit
 import Karr
 
+import Language.SMTLib2
+import Language.SMTLib2.Internals.Interface
+import qualified Language.SMTLib2.Internals.Expression as E
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Type
+import qualified Language.SMTLib2.Internals.Type.List as List
+import qualified Language.SMTLib2.Internals.Backend as B
+
+import Data.Dependent.Map (DMap,DSum(..))
+import qualified Data.Dependent.Map as DMap
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
-
-import qualified Data.Text as T
-import Data.Typeable
-import Control.Monad.State (runStateT,get,put,lift)
-import Data.Fix
-import Data.Foldable
-import Data.Traversable
-import Prelude hiding (sequence,mapM,mapM_,concat,foldl)
+import qualified Data.AttoLisp as L
+import Data.Maybe
+import Control.Monad.State
+import Debug.Trace
 import qualified Data.Vector as Vec
 import qualified Data.IntMap as IMap
-import Debug.Trace
 
-data KarrExtractor = KarrExtractor { allLinears :: Map (T.Text,LispRev) Int
-                                   , pcVars :: Map T.Text LispValue
-                                   , linVars :: Map T.Text LinearValue
-                                   , input :: Map T.Text LinearValue
-                                   , gates :: Map T.Text LinearValue
-                                   }
+data KarrExtractor e = KarrExtractor { nonlinState :: LispState (LinearExpr e)
+                                     , nonlinInput :: LispState (LinearExpr e)
+                                     , nonlinGates :: LispState (LinearExpr e)
+                                     }
 
-type KarrPCState = Map T.Text (LispStruct LispUValue)
-type KarrLinState = Map (T.Text,LispRev) (Map (T.Text,LispRev) Integer,Integer)
+type KarrPCState = DMap LispName LispUVal
+type KarrLinState = Map (LispRev IntType) (Map (LispRev IntType) Integer,Integer)
 
-karrPredicates :: Monad m => LispProgram -> SMT' m [SMTExpr Bool]
+karrPredicates :: Backend b => LispProgram -> SMT b [LispExpr BoolType]
 karrPredicates prog = do
-  (lins,initPc,initLins,trans) <- getKarrTrans' prog
+  (initPc,initLins,trans) <- getKarrTrans prog
   let (st_mp,tmap) = buildMp (Map.singleton initPc 1)
                      (Map.singleton 0
                       (Map.singleton 1
@@ -65,25 +60,25 @@ karrPredicates prog = do
               | (nd,diag) <- IMap.toList $ karrNodes karr1
               , (vec,c) <- extractPredicateVec diag ] ) $
     --trace (show karr1) $
-    return [ (case [ case f of
-                        1 -> x
-                        -1 -> negate x
-                        _ -> (constant f)*x
-                     | ((name,rev),idx) <- Map.toList lins
-                     , let f = vec Vec.! idx
-                     , f/=0
-                     , let x = InternalObj (case rev of
-                                             ElementSpec idx
-                                               -> LispVarAccess (NamedVar name State
-                                                                 (fst $ (programState prog) Map.! name))
-                                                  idx []) () ] of
-               [x] -> x
-               xs -> app plus xs) `op`
-             (constant c)
-         | (nd,diag) <- IMap.toList $ karrNodes karr1
-         , (vec,c) <- extractPredicateVec diag
-         , op <- [(.>.),(.>=.)] ]
+    return [ LispExpr (Ord op
+                       (case [ case f of
+                               1 -> x
+                               -1 -> LispExpr (Neg x)
+                               _ -> LispExpr ((LispExpr $ ConstInt f) :*: x)
+                             | (LispRev name@(LispName Nil _ _) (RevVar rev),idx) <- Map.toList lins
+                             , let f = vec Vec.! idx
+                             , f/=0
+                             , let x :: LispExpr IntType
+                                   x = LispRef (NamedVar name State) rev] of
+                        [x] -> x
+                        xs -> LispExpr (PlusLst xs))
+                       (LispExpr (ConstInt c)))
+           | (nd,diag) <- IMap.toList $ karrNodes karr1
+           , (vec,c) <- extractPredicateVec diag
+           , op <- [E.Gt,E.Ge] ]
   where
+    (_,lins) = Map.mapAccum (\n _ -> (n+1,n)) (0::Int) (getLinears prog)
+    
     buildMp st_mp mp [] = (st_mp,mp)
     buildMp st_mp mp ((from,to,lins):rest)
       = let (from_st,st_mp1) = case Map.lookup from st_mp of
@@ -101,608 +96,408 @@ karrPredicates prog = do
                   mp
         in buildMp st_mp2 nmp rest
 
-getKarrTrans' :: Monad m => LispProgram
-              -> SMT' m (Map (T.Text,LispRev) Int,
-                         KarrPCState,[KarrLinState],
-                         [(KarrPCState,KarrPCState,KarrLinState)])
-getKarrTrans' prog = do
+getKarrTrans :: Backend b => LispProgram
+             -> SMT b (KarrPCState,[KarrLinState],
+                       [(KarrPCState,KarrPCState,KarrLinState)])
+getKarrTrans prog = do
   extr1 <- makeKarrExtractor prog
-  (invars,extr2) <- makeInvariants prog extr1
-  mapM_ assert invars
+  (invs,extr2) <- makeInvariants prog extr1
+  mapM_ assert invs
   res <- checkSat
-  if not res
-    then return (Map.empty,Map.empty,[],[])
+  if res/=Sat
+    then return (DMap.empty,[],[])
     else do
     (initPc,extr3) <- makeInitPCs prog extr2
     (initLin,extr4) <- makeInitLins prog extr3
     (nxtPc,extr5) <- makeNextPCs prog extr4
     (nxtLin,extr6) <- makeNextLins prog extr5
-    trans <- traceTrans extr6 nxtPc nxtLin (Set.singleton initPc) Set.empty initPc []
-    return (allLinears extr4,initPc,initLin,trans)
+    (trans,extr7) <- runLin (traceTrans extr6 nxtPc nxtLin (Set.singleton initPc) Set.empty initPc []) extr6
+    return (initPc,initLin,trans)
   where
+    allLinear = getLinears prog
+    traceTrans :: Backend b => KarrExtractor (Expr b)
+               -> LispState (LinearExpr (Expr b))
+               -> LispState (LinearExpr (Expr b))
+               -> Set KarrPCState
+               -> Set KarrPCState
+               -> KarrPCState
+               -> [(KarrPCState,KarrPCState,KarrLinState)]
+               -> LinearM b [(KarrPCState,KarrPCState,KarrLinState)]
     traceTrans extr nxtPc nxtLin done queue st res = do
-      trgs <- stack $ do
-        mapM_ assert (assignPCValues (pcVars extr) st)
-        allTrgs nxtPc nxtLin []
+      trgs <- do
+        lin push
+        -- I have no idea...
+        (_::[()]) <- mapM (\(name@(LispName _ _ _) :=> val) -> do
+                              val' <- liftComp val
+                              case DMap.lookup name (lispState $ nonlinState extr) of
+                                Just (LispValue' var) -> do
+                                  NonLinear cond <- eqComposite var val'
+                                  lin (assert cond)
+                          ) (DMap.toAscList st)
+        trgs <- allTrgs nxtPc nxtLin []
+        lin pop
+        return trgs
       let nqueue = foldl (\cqueue (npc,_) -> if Set.member npc done
                                              then cqueue
                                              else Set.insert npc cqueue
                          ) queue trgs
           nres = [ (st,nst,lin) | (nst,lin) <- trgs ]++res
       case Set.minView nqueue of
-       Nothing -> return nres
-       Just (npc,nnqueue) -> traceTrans extr nxtPc nxtLin (Set.insert npc done) nnqueue npc nres
+        Nothing -> return nres
+        Just (npc,nnqueue) -> traceTrans extr nxtPc nxtLin (Set.insert npc done) nnqueue npc nres
+      return res
+    allTrgs :: Backend b => LispState (LinearExpr (Expr b))
+            -> LispState (LinearExpr (Expr b))
+            -> [(KarrPCState,KarrLinState)]
+            -> LinearM b [(KarrPCState,KarrLinState)]
     allTrgs nxtPc nxtLin res = do
-      sat <- checkSat
-      if sat
+      hasMore <- lin checkSat
+      if hasMore==Sat
         then do
-        trgPc <- extractPCValues nxtPc
-        trgLin <- extractLinValues nxtLin
-        assert $ not' $ app and' $
-          (assignPCValues nxtPc trgPc)++
-          (assignLinValues nxtLin trgLin)
-        allTrgs nxtPc nxtLin ((trgPc,toLinState trgLin):res)
+        LispConcr trgPc <- unliftComp (\(NonLinear x) -> lin (getValue x)
+                                      ) nxtPc
+        trgLin <- sequence $ Map.mapWithKey
+                  (\rev _ -> do
+                      let Linear coeff c = accessComposite rev nxtLin
+                      rcoeff <- mapM (\e -> do
+                                         IntValueC v <- lin (getValue e)
+                                         cv <- lin $ embedConst (IntValueC v)
+                                         cond <- lin (e .==. cv)
+                                         return (v,cond)
+                                     ) coeff
+                      IntValueC rc <- lin (getValue c)
+                      crc <- lin $ embedConst (IntValueC rc)
+                      cond <- lin (c .==. crc)
+                      return ((fmap fst rcoeff,rc),cond : Map.elems (fmap snd rcoeff))
+                  ) allLinear
+        rtrgPc <- liftComp (LispConcr trgPc)
+        NonLinear conj1 <- eqComposite nxtPc rtrgPc
+        let conj2 = concat $ Map.elems $ fmap snd trgLin
+        lin ((not' $ and' $ conj1:conj2) >>= assert)
+        allTrgs nxtPc nxtLin ((trgPc,fmap fst trgLin):res)
         else return res
-    
-getKarrTrans :: Monad m => LispProgram
-             -> SMT' m (Map (T.Text,LispRev) Int,
-                        [KarrPCState],
-                        [(KarrPCState,KarrPCState,KarrLinState)])
-getKarrTrans prog = do
-  extr1 <- makeKarrExtractor prog
-  (invars,extr2) <- makeInvariants prog extr1
-  mapM_ assert invars
-  inits <- stack $ do
-    exprs <- makeInitState prog extr2
-    mapM_ assert exprs
-    allStates extr2
-  (nxtPc,extr3) <- makeNextPCs prog extr2
-  (nxtLin,extr4) <- makeNextLins prog extr3
-  trans <- allTrans extr3 nxtPc nxtLin
-  return (allLinears extr4,inits,trans)
+
+getLinears :: LispProgram -> Map (LispRev IntType) ()
+getLinears prog
+  = execState
+    (do
+        (_::LispState Repr) <- createComposite
+                               (\tp rev -> case tp of
+                                 IntRepr -> do
+                                   modify (Map.insert rev ())
+                                   return IntRepr
+                                 _ -> return tp
+                               ) (programState prog)
+        return ()
+    ) Map.empty
+          
+makeInitPCs :: Backend b => LispProgram -> KarrExtractor (Expr b)
+            -> SMT b (KarrPCState,KarrExtractor (Expr b))
+makeInitPCs prog extr
+  = runLin
+    (do
+        pcVars <- mapM (\(name@(LispName _ _ _) :=> _)
+                        -> case DMap.lookup name (programInit prog) of
+                        Just (LispInit pcVal) -> do
+                          pcVal' <- relativizeLinValue prog
+                                    (nonlinState extr) (nonlinInput extr) pcVal
+                          return (name :=> (LispValue' pcVal'))
+                       ) (DMap.toAscList pcs)
+        LispConcr res <- unliftComp (\(NonLinear x) -> lin (getValue x)
+                                    ) (LispState (DMap.fromAscList pcVars))
+        return res
+    ) extr
   where
-    allStates extr = do
-      res <- checkSat
-      if res
-        then do
-        pc <- extractPCValues (pcVars extr)
-        assert $ not' $ app and' $ assignPCValues (pcVars extr) pc
-        pcs <- allStates extr
-        return (pc:pcs)
-        else return []
-    allTrans extr nxtPc nxtLin = do
-      res <- checkSat
-      if res
-        then do
-        from <- extractPCValues (pcVars extr)
-        to <- extractPCValues nxtPc
-        vals <- extractLinValues nxtLin
-        assert $ not' $ app and' $
-          (assignPCValues (pcVars extr) from)++
-          (assignPCValues nxtPc to)++
-          (assignLinValues nxtLin vals)
-        trans <- allTrans extr nxtPc nxtLin
-        return $ (from,to,toLinState vals):trans
-        else return []
+    pcs = DMap.filterWithKey (\_ (Annotation ann) -> case Map.lookup "pc" ann of
+                               Just (L.Symbol "true") -> True
+                               _ -> False
+                             ) (programState prog)
 
-toLinState :: Map T.Text (Maybe (LispStruct (Maybe (Map (T.Text,LispRev) Integer,Integer))))
-           -> KarrLinState
-toLinState = Map.foldlWithKey (\cur name val -> case val of
-                                Nothing -> cur
-                                Just val' -> toLinState' val' name [] cur
-                              ) Map.empty
+makeNextPCs :: Backend b => LispProgram -> KarrExtractor (Expr b)
+            -> SMT b (LispState (LinearExpr (Expr b)),KarrExtractor (Expr b))
+makeNextPCs prog extr
+  = runLin
+    (do
+        pcVars <- mapM (\(name@(LispName _ _ _) :=> _)
+                        -> case DMap.lookup name (programNext prog) of
+                        Just pcVar -> do
+                          pcVar' <- relativizeLinVar prog
+                                    (nonlinState extr) (nonlinInput extr) pcVar
+                          return (name :=> (LispValue' pcVar'))
+                       ) (DMap.toAscList pcs)
+        return (LispState $ DMap.fromAscList pcVars)) extr
   where
-    toLinState' (Singleton Nothing) _ _ cur = cur
-    toLinState' (Singleton (Just (vec,c))) name idx cur
-      = Map.insert (name,ElementSpec idx) (vec,c) cur
-    toLinState' (Struct xs) name idx cur
-      = foldl (\cur (i,x) -> toLinState' x name (idx++[i]) cur
-              ) cur (zip [0..] xs)
+    pcs = DMap.filterWithKey (\_ (Annotation ann) -> case Map.lookup "pc" ann of
+                               Just (L.Symbol "true") -> True
+                               _ -> False
+                             ) (programState prog)
 
-makeKarrExtractor :: Monad m => LispProgram -> SMT' m KarrExtractor
-makeKarrExtractor prog = do
-  pcSt <- argVarsAnnNamed "pc" (fmap fst pcs)
-  let makeStruct :: Monad m => Map (T.Text,LispRev) a -> T.Text -> [Integer] -> LispStruct (Either Sort ())
-                 -> SMT' m (LispStruct (Either LispVal (Map (T.Text,LispRev) (SMTExpr Integer),SMTExpr Integer)))
-      makeStruct mp name idx (Singleton (Left sort))
-        = withIndexableSort (undefined::SMTExpr Integer) sort $
-          \(_::t) -> do
-            val <- argVarsAnnNamed (T.unpack name) unit
-            return (Singleton (Left (Val (val::SMTExpr t))))
-      makeStruct mp name idx (Singleton (Right _)) = do
-        let vals = Map.mapWithKey (\(name',rev') _ -> if name==name' &&
-                                                         rev'==ElementSpec idx
-                                                      then constant 1
-                                                      else constant 0
-                                  ) mp
-        return (Singleton (Right (vals,constant 0)))
-      makeStruct mp name idx (Struct xs) = do
-        nxs <- mapM (\(i,x) -> makeStruct mp name (idx++[i]) x
-                    ) (zip [0..] xs)
-        return (Struct nxs)
-  normalSt <- sequence $ Map.mapWithKey
-              (\name (tp,ann)
-               -> case translateType tp of
-                   NonLinearType tp -> do
-                     res <- argVarsAnnNamed (T.unpack name) tp
-                     return (NonLinearValue res)
-                   LinearType mp tp -> do
-                     val <- makeStruct mp name [] tp
-                     return (LinearValue mp val)
-              ) nonPcs
-  inputSt <- mapM (\tp -> case tp of
-                    NonLinearType tp -> do
-                      val <- argVarsAnnNamed "input" tp
-                      return (NonLinearValue val)
-                    LinearType mp tp -> do
-                      vals <- mapM (\def -> case def of
-                                     Left srt -> withIndexableSort (undefined::SMTExpr Integer) srt $
-                                                 \(_::t) -> do
-                                                   v <- varNamed "input"
-                                                   return (Left (Val (v::SMTExpr t)))
-                                     Right _ -> do
-                                       cond <- varNamed "input-sw"
-                                       return (Right (fmap (const (constant 0)) mp,
-                                                      ite cond (constant 1) (constant 0)))
-                                   ) tp
-                      return (LinearValue mp vals)
-                  ) inps
-  return $ KarrExtractor { allLinears = allLins
-                         , pcVars = pcSt
-                         , linVars = normalSt
-                         , input = inputSt
-                         , gates = Map.empty }
-  where
-    (pcs,nonPcs) = Map.partition (\(tp,ann) -> Map.member "pc" ann)
-                   (programState prog)
-    nonPcs' = fmap (\(tp,ann) -> translateType tp) nonPcs
-    allLins :: Map (T.Text,LispRev) Int
-    allLins = enumVars (\_ -> Just (Accessor (\u i -> do
-                                                 (_::Integer) <- cast u
-                                                 return i)))
-              nonPcs
-    inps = fmap (\(tp,ann) -> translateType tp) (programInput prog)
-    translateType :: LispType -> LinearType
-    translateType tp = if typeLevel tp == 0
-                       then LinearType allLins (fmap (\sort -> case sort of
-                                                       Fix IntSort -> Right ()
-                                                       _ -> Left sort) (typeBase tp))
-                       else NonLinearType tp  
-
-makeInitState :: Monad m => LispProgram -> KarrExtractor -> SMT' m [SMTExpr Bool]
-makeInitState prog extr
-  = mapM (\(name,init) -> do
-             let expr = InternalObj (LispEq (NamedVar name State
-                                             (fst $ (programState prog) Map.! name))
-                                     (LispConstr init)) ()
-             (init',_) <- translateNonLinExpr prog extr expr
-             return init'
-         ) (Map.toList $ programInit prog)
-
-makeInitPCs :: Monad m => LispProgram -> KarrExtractor
-            -> SMT' m (KarrPCState,KarrExtractor)
-makeInitPCs prog extr = do
-  let pcs = Map.intersection (programInit prog) (pcVars extr)
-  runStateT (mapM (\val -> do
-                      extr <- get
-                      (nval,nextr) <- lift $ translateValue prog extr val
-                      put nextr
-                      rval <- lift $ toNonLinValue nval
-                      lift $ unliftArgs rval getValue
-                  ) pcs) extr
-
-makeInitLins :: Monad m => LispProgram -> KarrExtractor
-             -> SMT' m ([KarrLinState],KarrExtractor)
+makeInitLins :: Backend b => LispProgram -> KarrExtractor (Expr b)
+             -> SMT b ([KarrLinState],KarrExtractor (Expr b))
 makeInitLins prog extr
-  = runStateT (do
-                  base <- mapM (\val -> do
-                                   extr <- get
-                                   (nval,nextr) <- lift $ translateValue prog extr val
-                                   put nextr
-                                   return nval
-                               ) (programInit prog)  >>=
-                          lift . extractLinValues >>= return.toLinState
-                  let missing = Map.difference (allLinears extr) base
-                  return $ complete base (Map.toList missing)
-              ) extr
+  = runLin
+    (do
+        lst <- execStateT
+               (do
+                (_::LispState Repr) <- createComposite
+                                       (\tp rev@(LispRev name idx)
+                                        -> case tp of
+                                        IntRepr -> do
+                                          lst <- get
+                                          case DMap.lookup name (programInit prog) of
+                                             Just (LispInit val) -> do
+                                               rval <- lift $ relativizeLinValue prog
+                                                       (nonlinState extr)
+                                                       (nonlinInput extr) val
+                                               let Linear _ rval' = accessComposite idx rval
+                                               IntValueC v <- lift $ lin $ getValue rval'
+                                               put ((rev,Just v):lst)
+                                               return IntRepr
+                                             Nothing -> do
+                                               put ((rev,Nothing):lst)
+                                               return IntRepr
+                                        _ -> return tp) (programState prog)
+                return ()) []
+        return $ fmap Map.fromList $ complete lst) extr
   where
-    complete mp [] = [mp]
-    complete mp ((var,_):rest) = [ mp'
-                                 | i <- [0,1]
-                                 , mp' <- complete (Map.insert var
-                                                    (fmap (const 0)
-                                                     (allLinears extr),i) mp) rest ]
+    complete [] = [[]]
+    complete ((rev,Just v):vs) = fmap ((rev,(Map.empty,v)):) (complete vs)
+    complete ((rev,Nothing):vs) = [ (rev,(Map.empty,x)):xs
+                                  | xs <- complete vs
+                                  , x <- [0,1] ]
 
-makeInvariants :: Monad m => LispProgram -> KarrExtractor -> SMT' m ([SMTExpr Bool],KarrExtractor)
-makeInvariants prog extr
-  = runStateT (mapM (\invar -> do
-                        extr <- get
-                        (invar',nextr) <- lift $ translateNonLinExpr prog extr invar
-                        put nextr
-                        return invar'
-                    ) (programInvariant prog)) extr
-
-makeNextPCs :: Monad m => LispProgram -> KarrExtractor -> SMT' m (Map T.Text LispValue,KarrExtractor)
-makeNextPCs prog extr = do
-  let pcs = Map.intersection (programNext prog) (pcVars extr)
-  runStateT (mapM (\var -> do
-                      extr <- get
-                      (val,nextr) <- lift $ translateVar prog extr var
-                      put nextr
-                      lift $ toNonLinValue val
-                  ) pcs) extr
-
-makeNextLins :: Monad m => LispProgram -> KarrExtractor
-             -> SMT' m (Map T.Text LinearValue,KarrExtractor)
+makeNextLins :: Backend b => LispProgram -> KarrExtractor (Expr b)
+             -> SMT b (LispState (LinearExpr (Expr b)),
+                       KarrExtractor (Expr b))
 makeNextLins prog extr
-  = runStateT (mapM (\nxt -> do
-                        extr <- get
-                        (nval,nextr) <- lift $ translateVar prog extr nxt
-                        put nextr
-                        return nval
-                    ) lins) extr
+  = runLin
+    (do
+        nxt <- mapM (\(name@(LispName _ _ _) :=> var) -> do
+                        val <- relativizeLinVar prog
+                               (nonlinState extr)
+                               (nonlinInput extr) var
+                        return (name :=> (LispValue' val))
+                    ) (DMap.toAscList (programNext prog))
+        return $ LispState (DMap.fromAscList nxt)) extr
+
+makeInvariants :: Backend b => LispProgram -> KarrExtractor (Expr b)
+               -> SMT b ([Expr b BoolType],KarrExtractor (Expr b))
+makeInvariants prog extr
+  = runLin (mapM (\inv -> do
+                     NonLinear ninv <- relativizeLinExpr prog
+                                       (nonlinState extr) (nonlinInput extr) inv
+                     return ninv
+                 ) (programInvariant prog)) extr
+
+makeKarrExtractor :: Backend b => LispProgram -> SMT b (KarrExtractor (Expr b))
+makeKarrExtractor prog = do
+  st <- createComposite declareLinear
+        (programState prog)
+  inp <- createComposite declareLinear
+         (programInput prog)
+  return KarrExtractor { nonlinState = st
+                       , nonlinInput = inp
+                       , nonlinGates = LispState DMap.empty }
+
+relativizeLinValue :: Backend b
+                   => LispProgram
+                   -> LispState (LinearExpr (Expr b))
+                   -> LispState (LinearExpr (Expr b))
+                   -> LispValue '(sz,tps) LispExpr
+                   -> LinearM b (LispValue '(sz,tps) (LinearExpr (Expr b)))
+relativizeLinValue prog st inp
+  = relativizeValue st inp
+    (\name -> do
+        LispState gts <- LinearM get
+        case DMap.lookup name gts of
+          Just (LispValue' res) -> return res
+          Nothing -> case DMap.lookup name (programGates prog) of
+            Just gt -> do
+              res <- relativizeLinVar prog st inp (gateDefinition gt)
+              LinearM $ modify (\(LispState mp)
+                                -> LispState (DMap.insert name (LispValue' res) mp))
+              return res)
+
+relativizeLinVar :: Backend b
+                 => LispProgram
+                 -> LispState (LinearExpr (Expr b))
+                 -> LispState (LinearExpr (Expr b))
+                 -> LispVar LispExpr '(sz,tps)
+                 -> LinearM b (LispValue '(sz,tps) (LinearExpr (Expr b)))
+relativizeLinVar prog st inp
+  = relativizeVar st inp
+    (\name -> do
+        LispState gts <- LinearM get
+        case DMap.lookup name gts of
+          Just (LispValue' res) -> return res
+          Nothing -> case DMap.lookup name (programGates prog) of
+            Just gt -> do
+              res <- relativizeLinVar prog st inp (gateDefinition gt)
+              LinearM $ modify (\(LispState mp)
+                                -> LispState (DMap.insert name (LispValue' res) mp))
+              return res)
+
+relativizeLinExpr :: (Backend b)
+                  => LispProgram
+                  -> LispState (LinearExpr (Expr b))
+                  -> LispState (LinearExpr (Expr b))
+                  -> LispExpr tp
+                  -> LinearM b (LinearExpr (Expr b) tp)
+relativizeLinExpr prog st inp
+  = relativize st inp
+    (\name -> do
+        LispState gts <- LinearM get
+        case DMap.lookup name gts of
+          Just (LispValue' res) -> return res
+          Nothing -> case DMap.lookup name (programGates prog) of
+            Just gt -> do
+              res <- relativizeLinVar prog st inp (gateDefinition gt)
+              LinearM $ modify (\(LispState mp)
+                                -> LispState (DMap.insert name (LispValue' res) mp))
+              return res)
+                 
+                         
+data LinearExpr e tp where
+  NonLinear :: e tp -> LinearExpr e tp
+  Linear :: Map (LispRev IntType) (e IntType) -> e IntType -> LinearExpr e IntType
+
+instance GetType e => GetType (LinearExpr e) where
+  getType (NonLinear e) = getType e
+  getType (Linear _ _) = IntRepr
+
+declareLinear :: (Backend b) => Repr tp -> LispRev tp -> SMT b (LinearExpr (Expr b) tp)
+declareLinear tp rev = declare' rev tp
   where
-    lins = Map.intersection (programNext prog) (linVars extr)
+    declare' :: (Backend b) => LispRev tp -> Repr tp -> SMT b (LinearExpr (Expr b) tp)
+    declare' rev IntRepr = do
+      c0 <- cint 0
+      c1 <- cint 1
+      return (Linear (Map.singleton rev c1) c0)
+    declare' _ tp = fmap NonLinear (declareVar tp)
 
-extractPCValues :: Monad m => Map T.Text LispValue -> SMT' m KarrPCState
-extractPCValues = mapM (\v -> unliftArgs v getValue)
+mkLinear :: GetType e => e tp -> LinearExpr e tp
+mkLinear e = case getType e of
+  IntRepr -> Linear Map.empty e
+  _ -> NonLinear e
 
-assignPCValues :: Map T.Text LispValue -> KarrPCState -> [SMTExpr Bool]
-assignPCValues vars vals = assignPartial' vars uvals
-  where
-    uvals = unmaskValue vars vals
+newtype LinearM b r = LinearM (StateT (LispState (LinearExpr (Expr b))) (SMT b) r)
+                    deriving (Functor,Applicative,Monad)
 
-extractLinValues :: Monad m => Map T.Text LinearValue
-                 -> SMT' m (Map T.Text (Maybe (LispStruct (Maybe (Map (T.Text,LispRev) Integer,Integer)))))
-extractLinValues
-  = mapM (\v -> case v of
-                 NonLinearValue _ -> return Nothing
-                 LinearValue mp val -> do
-                   res <- mapM (\v -> case v of
-                                 Left _ -> return Nothing
-                                 Right (vec,c) -> do
-                                   vec' <- mapM getValue vec
-                                   c' <- getValue c
-                                   return (Just (vec',c'))
-                               ) val
-                   return (Just res)
-         )
+lin :: Backend b => SMT b r -> LinearM b r
+lin = LinearM . lift
 
-assignLinValues :: Map T.Text LinearValue
-                -> Map T.Text (Maybe (LispStruct (Maybe (Map (T.Text,LispRev) Integer,Integer))))
-                -> [SMTExpr Bool]
-assignLinValues vars vals
-  = concat $ Map.elems $ Map.intersectionWith assignLinVal vars vals
-  where
-    assignLinVal :: LinearValue
-                 -> Maybe (LispStruct (Maybe (Map (T.Text,LispRev) Integer,Integer)))
-                 -> [SMTExpr Bool]
-    assignLinVal (NonLinearValue _) Nothing = []
-    assignLinVal (LinearValue mp var) (Just val)
-      = concat $ linearizeStruct $ zipStruct assignLinElem var val
-    assignLinElem :: Either LispVal LinearExpr -> Maybe (Map (T.Text,LispRev) Integer,Integer)
-                  -> [SMTExpr Bool]
-    assignLinElem (Left _) Nothing = []
-    assignLinElem (Right (vec,c)) (Just (vec',c'))
-      = assignPartial' vec (unmaskValue vec vec') ++
-        [c .==. constant c']
+runLin :: Backend b => LinearM b r -> KarrExtractor (Expr b)
+       -> SMT b (r,KarrExtractor (Expr b))
+runLin (LinearM act) extr = do
+  (res,ngts) <- runStateT act (nonlinGates extr)
+  return (res,extr { nonlinGates = ngts })
 
-{-translateInit :: Monad m => LispProgram -> KarrExtractor -> SMTExpr Bool
-              -> SMT' m (Maybe (SMTExpr Bool),KarrExtractor)
-translateInit prog extr (App SMTEq [InternalObj (cast -> Just (LispVarAccess (NamedVar name _ _) [] [])) _,InternalObj (cast -> Just -}
-
-translateValue :: Monad m => LispProgram -> KarrExtractor -> LispValue
-               -> SMT' m (LinearValue,KarrExtractor)
-translateValue prog extr val = case size val of
-  Size [] -> do
-    (res,extr') <- translateLin (value val)
-    return (LinearValue (allLinears extr) res,extr')
-  _ -> do
-    (res,extr') <- translateNonLin val
-    return (NonLinearValue res,extr')
-  where
-    translateLin val = runStateT (mapM (\(Val e) -> do
-                                           extr <- get
-                                           (e',extr') <- lift $ translateExpr prog extr e
-                                           put extr'
-                                           return e'
-                                       ) val) extr
-    translateNonLin (LispValue (Size sz) val) = do
-      (nsz,extr1) <- runStateT (mapM (\(SizeElement el) -> do
-                                         extr <- get
-                                         (nel,nextr) <- lift $ translateNonLinExpr prog extr el
-                                         put nextr
-                                         return (SizeElement nel)
-                                     ) sz) extr
-      (nval,extr2) <- runStateT (mapM (\(Val v) -> do
-                                          extr <- get
-                                          (nv,nextr) <- lift $ translateNonLinExpr prog extr v
-                                          put nextr
-                                          return (Val nv)
-                                      ) val) extr1
-      return (LispValue (Size nsz) nval,extr2)
-
-translateVar :: Monad m => LispProgram -> KarrExtractor -> LispVar
-             -> SMT' m (LinearValue,KarrExtractor)
-translateVar prog extr (NamedVar name cat tp) = case cat of
-  Input -> case Map.lookup name (input extr) of
-    Just val -> return (val,extr)
-  State -> case Map.lookup name (linVars extr) of
-    Just val -> return (val,extr)
-    Nothing -> case Map.lookup name (pcVars extr) of
-      Just val -> return (NonLinearValue val,extr)
-  Gate -> case Map.lookup name (gates extr) of
-    Just val -> return (val,extr)
-    Nothing -> case Map.lookup name (programGates prog) of
-      Just (_,var) -> do
-        (lin,extr') <- translateVar prog extr var
-        nlin <- defineLinValue (T.unpack name) lin
-        return (nlin,extr' { gates = Map.insert name nlin (gates extr') })
-translateVar prog extr (LispStore var idx dyn val)
-  = entype (\(val1::SMTExpr t)
-            -> let ann = extractAnnotation val1
-                   sort = getSort (undefined::t) ann
-               in withIndexableSort (undefined::SMTExpr Integer) sort $
-                  \(_::s) -> case cast val1 of
-                              Just (val2::SMTExpr s) -> do
-                                (val3,extr1) <- translateExpr prog extr val2
-                                (lin,extr2) <- translateVar prog extr1 var
-                                let (_,nlin) = accessLinearValue
-                                               (\_ -> ((),case val3 of
-                                                        Left (Val v) -> case cast v of
-                                                          Just rv -> rv))
-                                               (\_ -> ((),case val3 of
-                                                        Right lin' -> lin'))
-                                               idx dyn lin
-                                return (nlin,extr2)) val
-translateVar prog extr (LispConstr val) = translateValue prog extr val
-translateVar prog extr (LispITE cond ifT ifF) = do
-  (ncond,extr1) <- translateNonLinExpr prog extr cond
-  (valT,extr2) <- translateVar prog extr1 ifT
-  (valF,extr3) <- translateVar prog extr2 ifF
-  return (argITE ncond valT valF,extr3)
-
-translateAccess :: Monad m => LispProgram -> KarrExtractor -> LispVarAccess
-              -> SMT' m (Either LispVal LinearExpr,KarrExtractor)
-translateAccess prog extr (LispVarAccess var idx dyn) = do
-  (val,extr1) <- translateVar prog extr var
-  let (res,_) = accessLinearValue (\e -> (Left (Val e),e))
-                (\lin -> (Right lin,lin)) idx dyn val
-  return (res,extr1)
-translateAccess prog extr (LispSizeAccess var dyn) = do
-  (NonLinearValue val,extr1) <- translateVar prog extr var
-  let (res,_) = accessSize (\sz -> (Val sz,sz)) dyn val
-  return (Left res,extr1)
-translateAccess prog extr (LispSizeArrAccess var idx) = do
-  (NonLinearValue val,extr1) <- translateVar prog extr var
-  let (res,_) = accessSizeArr (\e -> (Val e,e)) idx val
-  return (Left res,extr1)
-translateAccess prog extr (LispEq v1 v2) = do
-  (val1,extr1) <- translateVar prog extr v1
-  (val2,extr2) <- translateVar prog extr1 v2
-  val1' <- toNonLinValue val1
-  val2' <- toNonLinValue val2
-  return (Left (Val $ valueEq val1' val2'),extr2)
-
-translateLinExpr :: Monad m => LispProgram -> KarrExtractor -> SMTExpr Integer
-                 -> SMT' m (LinearExpr,KarrExtractor)
-translateLinExpr prog extr (InternalObj (cast -> Just acc) _) = do
-  (res,extr1) <- translateAccess prog extr acc
-  case res of
-   Left (Val v) -> case cast v of
-     Just v' -> return ((fmap (const $ constant 0) (allLinears extr1),v'),extr1)
-   Right lin -> return (lin,extr1)
-translateLinExpr prog extr (Const i ())
-  = return ((fmap (const $ constant 0) (allLinears extr),constant i),extr)
-translateLinExpr prog extr (App SMTMinus (lhs,rhs)) = do
-  ((vecL,cL),extr1) <- translateLinExpr prog extr lhs
-  ((vecR,cR),extr2) <- translateLinExpr prog extr rhs
-  return ((Map.unionWith (-) vecL vecR,cL-cR),extr2)
-translateLinExpr prog extr (App (SMTArith Plus) vals) = do
-  (lins,extr1) <- translateLinExprs prog extr vals
-  return ((Map.unionsWith (+) (fmap fst lins),app plus (fmap snd lins)),extr1)
-translateLinExpr prog extr (App (SMTArith Mult) [lhs,rhs]) = case lhs of
-  Const l _ -> do
-    ((vecR,cR),extr1) <- translateLinExpr prog extr rhs
-    return ((fmap (*(constant l)) vecR,cR*(constant l)),extr1)
-  _ -> case rhs of
-    Const r _ -> do
-      ((vecL,cL),extr1) <- translateLinExpr prog extr lhs
-      return ((fmap (*(constant r)) vecL,cL*(constant r)),extr1)
+instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
+  type EmVar (LinearM b) (LinearExpr e) = B.Var b
+  type EmQVar (LinearM b) (LinearExpr e) = B.QVar b
+  type EmFun (LinearM b) (LinearExpr e) = B.Fun b
+  type EmConstr (LinearM b) (LinearExpr e) = B.Constr b
+  type EmField (LinearM b) (LinearExpr e) = B.Field b
+  type EmFunArg (LinearM b) (LinearExpr e) = B.FunArg b
+  type EmLVar (LinearM b) (LinearExpr e) = B.LVar b
+  embedConst (IntValueC n) = do
+    c <- lin $ embedConst (IntValueC n)
+    return (Linear Map.empty c)
+  embedConst n = do
+    c <- lin $ embedConst n
+    return (NonLinear c)
+  embed (ConstInt n) = do
+    c <- lin (embed (ConstInt n))
+    return (Linear Map.empty c)
+  embed (E.Const c) = do
+    nc <- lin (embed (E.Const c))
+    return (NonLinear nc)
+  embed (E.App (E.Eq tp n) args) = case tp of
+    IntRepr -> do
+      c0 <- lin (embed (ConstInt 0))
+      let xs :: [LinearExpr e IntType]
+          xs = E.allEqToList n args
+          allVars = Map.unions $ fmap (\(Linear cs _) -> fmap (const ()) cs) xs
+      conj <- sequence $ Map.elems $ Map.mapWithKey
+              (\var _ -> let eqs = fmap (\(Linear cs _) -> case Map.lookup var cs of
+                                          Nothing -> c0
+                                          Just x -> x
+                                        ) xs
+                         in lin (eq eqs)
+              ) allVars
+      fmap NonLinear $ lin (and' conj)
     _ -> do
-      nondet <- varNamed "nondet"
-      return ((fmap (const $ constant 0) (allLinears extr),ite nondet 1 0),extr)
-translateLinExpr prog extr (App SMTITE (cond,lhs,rhs)) = do
-  (ncond,extr1) <- translateNonLinExpr prog extr cond
-  (nlhs,extr2) <- translateLinExpr prog extr1 lhs
-  (nrhs,extr3) <- translateLinExpr prog extr2 rhs
-  return (argITE ncond nlhs nrhs,extr3)
-translateLinExpr prog extr expr = error $ "Cannot translate linear expression "++show expr
-  
-translateLinExprs :: Monad m => LispProgram -> KarrExtractor -> [SMTExpr Integer]
-                  -> SMT' m ([LinearExpr],KarrExtractor)
-translateLinExprs _ extr [] = return ([],extr)
-translateLinExprs prog extr (x:xs) = do
-  (nx,extr1) <- translateLinExpr prog extr x
-  (nxs,extr2) <- translateLinExprs prog extr1 xs
-  return (nx:nxs,extr2)
-
-translateExpr :: (Monad m,Indexable t (SMTExpr Integer))
-              => LispProgram -> KarrExtractor -> SMTExpr t
-              -> SMT' m (Either LispVal LinearExpr,KarrExtractor)
-translateExpr prog extr expr = case cast expr of
-  Just lin -> do
-    (res,extr') <- translateLinExpr prog extr lin
-    return (Right res,extr')
-  Nothing -> do
-    (res,extr') <- translateNonLinExpr prog extr expr
-    return (Left (Val res),extr')
-
-translateNonLinExpr :: Monad m => LispProgram -> KarrExtractor -> SMTExpr t
-                    -> SMT' m (SMTExpr t,KarrExtractor)
-translateNonLinExpr prog extr (Const x ann) = return (Const x ann,extr)
-translateNonLinExpr prog extr (InternalObj (cast -> Just acc) _) = do
-  (Left (Val e),extr') <- translateAccess prog extr acc
-  case cast e of
-   Just e' -> return (e',extr')
-translateNonLinExpr prog extr (App (SMTOrd op) (cast -> Just (lhs,rhs))) = do
-  ((vecL,cL),extr1) <- translateLinExpr prog extr lhs
-  ((vecR,cR),extr2) <- translateLinExpr prog extr1 rhs
-  nondet <- varNamed "nondet"
-  return (ite (app and' $
-               [ v .==. 0 | v <- Map.elems vecL ]++
-               [ v .==. 0 | v <- Map.elems vecR ]) (App (SMTOrd op) (cL,cR))
-          nondet,extr2)
-translateNonLinExpr prog extr (App SMTEq (cast -> Just [lhs,rhs])) = do
-  ((vecL,cL),extr1) <- translateLinExpr prog extr lhs
-  ((vecR,cR),extr2) <- translateLinExpr prog extr1 rhs
-  nondet <- varNamed "nondet"
-  return (ite (app and' $
-               [ v .==. 0 | v <- Map.elems vecL ]++
-               [ v .==. 0 | v <- Map.elems vecR ]) (App SMTEq [cL,cR])
-          nondet,extr2)
-translateNonLinExpr prog extr (App fun args) = do
-  (extr',args') <- foldExprs (\extr expr _ -> do
-                                 (nexpr,nextr) <- translateNonLinExpr prog extr expr
-                                 return (nextr,nexpr)
-                             ) extr args (extractArgAnnotation args)
-  case fun of
-   SMTBuiltIn "exactly-one" _ -> case cast args' of
-     Just args'' -> case cast (oneOf args'') of
-       Just r -> return (r,extr')
-   SMTBuiltIn "at-most-one" _ -> case cast args' of
-     Just args'' -> case cast (atMostOneOf args'') of
-       Just r -> return (r,extr')
-   _ -> return (App fun args',extr')
-translateNonLinExpr _ _ expr = error $ "Cannot translate non-linear expression "++show expr
-
-toNonLinValue :: Monad m => LinearValue -> SMT' m LispValue
-toNonLinValue (NonLinearValue v) = return v
-toNonLinValue (LinearValue _ val) = do
-  nval <- mapM toNonLin val
-  return $ LispValue (Size []) nval
-  where
-    toNonLin (Left val) = return val
-    toNonLin (Right (vec,c)) = do
-      nondet <- varNamed "nondet"
-      return (Val (ite (app and' [ v .==. 0 | v <- Map.elems vec ])
-                   c nondet))
-
-                    
-accessLinearValue :: (forall t. Indexable t (SMTExpr Integer) => SMTExpr t -> (a,SMTExpr t))
-                  -> (LinearExpr -> (a,LinearExpr))
-                  -> [Integer] -> [SMTExpr Integer]
-                  -> LinearValue -> (a,LinearValue)
-accessLinearValue f g idx dyn (NonLinearValue val) = (res,NonLinearValue nval)
-  where
-    (res,nval) = accessValue f idx dyn val
-accessLinearValue f g idx [] (LinearValue mp val) = (res,LinearValue mp nval)
-  where
-    (res,nval) = accessStruct (\v -> case v of
-                                Left (Val x) -> let (res,nx) = f x
-                                                in (res,Left (Val nx))
-                                Right lin -> let (res,nlin) = g lin
-                                             in (res,Right nlin)
-                              ) idx val
-
-data Accessor a = Accessor (forall t. (SMTType t,Unit (SMTAnnotation t)) => t -> Int -> Maybe a)
-
-enumVars :: (Annotation -> Maybe (Accessor a))
-         -> Map T.Text (LispType,Annotation) -> Map (T.Text,LispRev) a
-enumVars f mp
-  = snd $ Map.foldlWithKey (\(n,mp) name (tp,ann)
-                            -> case f ann of
-                                Nothing -> (n,mp)
-                                Just (Accessor g)
-                                  -> foldTypeWithIndex
-                                     (\(n,mp) idx t
-                                      -> case g t n of
-                                          Nothing -> (n,mp)
-                                          Just x -> (n+1,Map.insert (name,idx) x mp)
-                                     ) (n,mp) tp
-                           ) (0,Map.empty) mp
-
-defineLinValue :: Monad m => String -> LinearValue -> SMT' m LinearValue
-defineLinValue name (NonLinearValue val) = do
-  nval <- defineValue name val
-  return (NonLinearValue nval)
-defineLinValue name (LinearValue mp val) = do
-  nval <- mapM (\val -> case val of
-                 Left (Val e) -> do
-                   ne <- defConstNamed name e
-                   return (Left (Val ne))
-                 Right (vec,c) -> do
-                   nvec <- mapM (defConstNamed name) vec
-                   nc <- defConstNamed name c
-                   return (Right (nvec,nc))
-               ) val
-  return (LinearValue mp nval)
-
-type LinearExpr = (Map (T.Text,LispRev) (SMTExpr Integer),SMTExpr Integer)
-
-data LinearValue = NonLinearValue LispValue
-                 | LinearValue (Map (T.Text,LispRev) Int) (LispStruct (Either LispVal LinearExpr))
-                 deriving (Typeable,Eq,Ord,Show)
-
-data LinearType = NonLinearType LispType
-                | LinearType (Map (T.Text,LispRev) Int) (LispStruct (Either Sort ()))
-                deriving (Typeable,Eq,Ord,Show)
-
-instance Args LinearValue where
-  type ArgAnnotation LinearValue = LinearType
-  foldExprs f s ~(NonLinearValue val) (NonLinearType tp) = do
-    (s1,nval) <- foldExprs f s val tp
-    return (s1,NonLinearValue nval)
-  foldExprs f s ~(LinearValue _ val) (LinearType mp tp) = do
-    (s1,nval) <- foldStruct g s val tp
-    return (s1,LinearValue mp nval)
-    where
-      g s ~(Left val) (Left tp) = do
-        (s1,nval) <- foldLispVal 0 f s val tp
-        return (s1,Left nval)
-      g s ~(Right (vec,c)) (Right n) = do
-        (s1,nvec) <- foldExprs f s vec (fmap (const ()) mp)
-        (s2,nc) <- foldExprs f s1 c ()
-        return (s2,Right (nvec,nc))
-  foldsExprs f s lst (NonLinearType tp) = do
-    (s1,nlst,res) <- foldsExprs f s (fmap (\(NonLinearValue v,b) -> (v,b)) lst) tp
-    return (s1,fmap NonLinearValue nlst,NonLinearValue res)
-  foldsExprs f s lst (LinearType mp tp) = do
-    (s1,nlst,res) <- foldsStruct g s (fmap (\(LinearValue _ v,b) -> (v,b)) lst) tp
-    return (s1,fmap (LinearValue mp) nlst,LinearValue mp res)
-    where
-      g s lst (Left tp) = do
-        (s1,nlst,res) <- foldsLispVal 0 f s (fmap (\(Left v,b) -> (v,b)) lst) tp
-        return (s1,fmap Left nlst,Left res)
-      g s lst (Right n) = do
-        (s1,nvecs,nvec) <- foldsExprs f s (fmap (\(Right (vec,c),b) -> (vec,b)) lst)
-                           (fmap (const ()) mp)
-        (s2,ncs,nc) <- foldsExprs f s1 (fmap (\(Right (vec,c),b) -> (c,b)) lst) ()
-        return (s2,zipWith (\v c -> Right (v,c)) nvecs ncs,Right (nvec,nc))
-  extractArgAnnotation (NonLinearValue val) = NonLinearType (extractArgAnnotation val)
-  extractArgAnnotation (LinearValue mp val) = LinearType mp (fmap extract val)
-    where
-      extract (Left (Val (e::SMTExpr t))) = Left $ getSort (undefined::t) unit
-      extract (Right _) = Right ()
-  toArgs (NonLinearType tp) xs = do
-    (res,xs1) <- toArgs tp xs
-    return (NonLinearValue res,xs1)
-  toArgs (LinearType mp tp) xs = do
-    (res,xs1) <- toArgsStruct f tp xs
-    return (LinearValue mp res,xs1)
-    where
-      f (Left sort) xs = do
-        (val,xs1) <- toArgsLispVal 0 sort xs
-        return (Left val,xs1)
-      f (Right _) xs = do
-        (lins,xs1) <- toArgs (fmap (const ()) mp) xs
-        (c,xs2) <- toArgs () xs1
-        return (Right (lins,c),xs2)
-  getTypes _ (NonLinearType tp) = getTypes (undefined::LispValue) tp
-  getTypes _ (LinearType mp tp) = getTypesStruct f tp
-    where
-      f (Left sort) = getTypesLispVal 0 sort
-      f (Right _) = getTypes (undefined::LinearExpr) (fmap (const ()) mp,())
-
-toLinear :: Map (T.Text,LispRev) Int -> SMTExpr Integer -> LinearExpr
-toLinear linVars expr = (fmap (const $ constant 0) linVars,expr)
+      nargs <- List.mapM (\(NonLinear x) -> return x) args
+      res <- lin (embed (E.App (E.Eq tp n) nargs))
+      return (NonLinear res)
+  embed (E.App (E.Ord NumInt op) ((Linear coeff1 c1) ::: (Linear coeff2 c2) ::: Nil)) = do
+    allZero1 <- mapM (\x -> lin (x .==. (cint 0))) coeff1
+    allZero2 <- mapM (\x -> lin (x .==. (cint 0))) coeff2
+    let allZero = Map.elems allZero1 ++ Map.elems allZero2
+    nondet <- lin (declareVar bool)
+    cond <- lin (embed (E.App (E.Ord NumInt op) (c1 ::: c2 ::: Nil)))
+    fmap NonLinear $ lin (ite (and' allZero) cond nondet)
+  embed (E.App (E.Arith NumInt E.Plus n) args) = do
+    let xs :: [LinearExpr e IntType]
+        xs = E.allEqToList n args
+        allVars = Map.unions $ fmap (\(Linear cs _) -> fmap (const ()) cs) xs
+    ncoeffs <- sequence $ Map.mapWithKey
+               (\var _ -> let sum = catMaybes $ fmap (\(Linear cs _) -> Map.lookup var cs
+                                                     ) xs
+                          in lin (plus sum)
+               ) allVars
+    let cs = fmap (\(Linear _ c) -> c) xs
+    nc <- lin (plus cs)
+    return $ Linear ncoeffs nc
+  embed (E.App (E.Arith NumInt E.Minus (Succ Zero)) ((Linear coeff c) ::: Nil)) = do
+    ncoeff <- mapM (\e -> lin (neg e)) coeff
+    nc <- lin (neg c)
+    return $ Linear ncoeff nc
+  embed (E.App (E.Arith NumInt E.Minus n) args) = do
+    let x@(Linear coeff c):xs = E.allEqToList n args :: [LinearExpr e IntType]
+        allVars = Map.unions $ fmap (\(Linear cs _) -> fmap (const ()) cs) (x:xs)
+    neg_coeffs <- mapM (\(Linear cs _) -> mapM (\e -> lin (neg e)) cs
+                       ) xs
+    neg_cs <- mapM (\(Linear _ c) -> lin (neg c)) xs
+    ncoeffs <- sequence $ Map.mapWithKey
+               (\var _ -> let sum = catMaybes $ fmap (Map.lookup var) (coeff:neg_coeffs)
+                          in lin (plus sum)
+               ) allVars
+    nc <- lin (plus (c:neg_cs))
+    return $ Linear ncoeffs nc
+  embed (E.App (E.Arith NumInt E.Mult (Succ (Succ Zero))) ((Linear coeff1 c1) ::: (Linear coeff2 c2) ::: Nil))
+    | Map.null coeff1 = do
+        ncoeff <- mapM (\e -> lin (e .*. c1)) coeff2
+        nc <- lin (c1 .*. c2)
+        return $ Linear ncoeff nc
+    | Map.null coeff2 = do
+        ncoeff <- mapM (\e -> lin (e .*. c2)) coeff1
+        nc <- lin (c1 .*. c2)
+        return $ Linear ncoeff nc
+    | otherwise = do
+        nondet <- lin (declareVar bool)
+        c <- lin (ite nondet (cint 1) (cint 0))
+        return $ Linear Map.empty c
+  embed (E.App (E.Abs NumInt) ((Linear coeff c) ::: Nil))
+    | Map.null coeff = do
+        nc <- lin (abs' c)
+        return $ Linear Map.empty nc
+    | otherwise = do
+        nondet <- lin (declareVar bool)
+        nc <- lin (ite nondet (cint 1) (cint 0))
+        return $ Linear Map.empty nc
+  embed (ToInt (NonLinear x)) = do
+    c <- lin (toInt x)
+    return $ Linear Map.empty c
+  embed (ITE (NonLinear c) (Linear coeff1 c1) (Linear coeff2 c2)) = do
+    ncoeff <- lin $ sequence $ Map.mergeWithKey (\_ x y -> Just (ite c x y))
+              (fmap (\v -> (ite c v (cint 0))))
+              (fmap (\v -> (ite c (cint 0) v))) coeff1 coeff2
+    nc <- lin (ite c c1 c2)
+    return $ Linear ncoeff nc
+  embed (E.App f args) = do
+    nargs <- List.mapM (\i -> case i of
+                         NonLinear i' -> return i'
+                         Linear _ _ -> lin (declareVar int)
+                       ) args
+    fmap mkLinear $ lin $ embed (E.App f nargs)

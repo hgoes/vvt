@@ -1,59 +1,41 @@
-{-# LANGUAGE GADTs #-}
 module Realization.Lisp.Predicates where
 
 import Realization.Lisp
-import Realization.Lisp.Value
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals
-import Data.Set (Set)
-import qualified Data.Set as Set
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Typeable (cast)
+import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Interface
+import Language.SMTLib2.Internals.Type
+import qualified Language.SMTLib2.Internals.Type.Struct as Struct
+import qualified Data.Dependent.Map as DMap
 import Data.Foldable
 import Prelude hiding (foldl)
-import Data.Fix
+import Data.GADT.Compare
+import Data.Functor.Identity
 
-ineqPredicates :: [SMTExpr Integer] -> [SMTExpr Bool]
-ineqPredicates [] = []
-ineqPredicates (i:is) = fmap (\j -> i .<. j) is ++
-                        fmap (\j -> i .<=. j) is ++
-                        ineqPredicates is
+ineqPredicates :: (Embed m e,GetType e) => [e IntType] -> m [e BoolType]
+ineqPredicates [] = return []
+ineqPredicates (i:is) = do
+  lts <- mapM (\j -> i .<. j) is
+  les <- mapM (\j -> i .<=. j) is
+  rest <- ineqPredicates is
+  return (lts++les++rest)
 
-boolStates :: LispProgram -> [SMTExpr Bool]
-boolStates prog = Map.foldlWithKey (\lin name (tp,_)
-                                    -> getBool name tp lin
-                                   ) [] (programState prog)
+statesOfType :: Repr t -> LispProgram -> [LispExpr t]
+statesOfType repr prog = DMap.foldlWithKey (\lin name _
+                                            -> getStates repr name ++ lin
+                                           ) [] (programState prog)
   where
-    getBool name tp lin
-      | typeLevel tp == 0 = getBool' name tp (typeBase tp) [] lin
-      | otherwise = lin
+    getStates :: Repr t -> LispName sig -> [LispExpr t]
+    getStates repr name@(LispName lvl tps _) = case lvl of
+      Nil -> runIdentity $ Struct.flattenIndex
+             (\idx repr' -> case geq repr repr' of
+               Just Refl -> return [LispRef (NamedVar name State) idx]
+               Nothing -> return [])
+             (return . concat) tps
+      _ -> []
 
-    getBool' name otp (Struct tps) idx lin
-      = foldl (\lin (i,tp) -> getBool' name otp tp (idx++[i]) lin
-              ) lin (zip [0..] tps)
-    getBool' name otp (Singleton (Fix BoolSort)) idx lin
-      = (InternalObj (LispVarAccess (NamedVar name State otp) idx []) ()):lin
-    getBool' _ _ _ _ lin = lin
-
-linearStates :: LispProgram -> Set (SMTExpr Integer)
-linearStates prog
-  = Map.foldlWithKey (\lin name (tp,_)
-                      -> getLinear name tp lin
-                     ) Set.empty (programState prog)
-  where
-    getLinear name tp lin
-      | typeLevel tp == 0 = getLinear' name tp (typeBase tp) [] lin
-      | otherwise = lin
-
-    getLinear' name otp (Struct tps) idx lin
-      = foldl (\lin (i,tp) -> getLinear' name otp tp (idx++[i]) lin
-              ) lin (zip [0..] tps)
-    getLinear' name otp (Singleton (Fix IntSort)) idx lin
-      = Set.insert (InternalObj (LispVarAccess (NamedVar name State otp) idx []) ()) lin
-    getLinear' _ _ _ _ lin = lin
-
+{-
 linearExpressions :: LispProgram -> Set (SMTExpr Integer)
 linearExpressions prog = lin5
   where
@@ -116,3 +98,4 @@ linearExpressions prog = lin5
       = fst $ foldExprsId (\lins expr' _ -> (linearExpr expr' lins,expr')
                           ) cur args (extractArgAnnotation args)
     decomposeLin' _ cur = cur
+-}

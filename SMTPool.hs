@@ -1,62 +1,63 @@
 {-# LANGUAGE ExistentialQuantification,FlexibleContexts #-}
 module SMTPool where
 
-import Language.SMTLib2
-import Language.SMTLib2.Connection
+import Language.SMTLib2.Internals.Backend
+import Language.SMTLib2.Internals.Monad
 
 import Data.Pool
 import Control.Exception
+import Control.Monad.State.Strict
 
-data SMTInstance info a = forall b. SMTBackend b IO =>
-                          SMTInstance { instanceConn :: SMTConnection b
-                                      , instanceVars :: a
-                                      , instanceInfo :: info
+data SMTInstance info b = SMTInstance { instanceState :: SMTState b
+                                      , instanceInfo :: info b
                                       }
 
-type SMTPool info a = Pool (SMTInstance info a)
+data SMTPool info = forall b. (Backend b,SMTMonad b ~ IO)
+                    => SMTPool (Pool (SMTInstance info b))
 
-createSMTPool :: SMTBackend b IO
-                 => IO b
-                 -> SMT a
-                 -> IO (SMTPool () a)
-createSMTPool backend act = createSMTPool' backend () act
+newtype PoolVars a b = PoolVars (a (Expr b))
 
-createSMTPool' :: SMTBackend b IO
-                 => IO b
-                 -> info
-                 -> SMT a
-                 -> IO (SMTPool info a)
-createSMTPool' createBackend info act
-  = createPool (do
+createSMTPool :: (Backend b,SMTMonad b ~ IO)
+               => IO b
+               -> SMT b (info b)
+               -> IO (SMTPool info)
+createSMTPool createBackend (SMT info)
+  = fmap SMTPool $
+    createPool (do
                    b <- createBackend
-                   conn <- open b
-                   vars <- performSMTExitCleanly conn act
-                   return $ SMTInstance conn vars info)
-    (\(SMTInstance { instanceConn = conn }) -> close conn)
+                   let st0 = SMTState b emptyDatatypeInfo
+                   (info',st1) <- (runStateT info st0) `onException`
+                                  (exit b)
+                   return $ SMTInstance st1 info')
+    (\(SMTInstance { instanceState = st }) -> exit (backend st) >> return ())
     1 5 10
 
-withSMTPool :: SMTPool info a -> (a -> SMT b) -> IO b
+withSMTPool :: SMTPool info
+            -> (forall b. Backend b => info b -> SMT b c)
+            -> IO c
 withSMTPool pool act = do
-  Right res <- withSMTPool' pool (\info vars -> do
-                                     res <- act vars
-                                     return (Right (res,info)))
+  Right res <- withSMTPool' pool
+               (\info -> do
+                   res <- act info
+                   return (Right (res,info)))
   return res
 
-withSMTPool' :: SMTPool info a -> (info -> a -> SMT (Either c (b,info))) -> IO (Either c b)
-withSMTPool' pool act = do
-  (inst@SMTInstance { instanceConn = conn
-                    , instanceVars = vars
+withSMTPool' :: SMTPool info
+             -> (forall b. Backend b => info b -> SMT b (Either c (r,info b)))
+             -> IO (Either c r)
+withSMTPool' (SMTPool pool) act = do
+  (inst@SMTInstance { instanceState = st0
                     , instanceInfo = info },local) <- takeResource pool
   (do
-      res <- performSMTExitCleanly conn
-             (act info vars)
+      let SMT act' = act info
+      (res,st1) <- (runStateT act' st0) `onException`
+                   (exit $ backend st0)
       case res of
        Left x -> do
          destroyResource pool local inst
          return (Left x)
        Right (res,info') -> do
-         putResource local (SMTInstance { instanceConn = conn
-                                        , instanceVars = vars
+         putResource local (SMTInstance { instanceState = st1
                                         , instanceInfo = info' })
          return (Right res))
     `onException` (destroyResource pool local inst)
