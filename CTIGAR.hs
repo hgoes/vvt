@@ -233,30 +233,18 @@ mkIC3Config :: mdl -> BackendOptions
 mkIC3Config mdl opts verb stats dumpDomain
   = IC3Cfg { ic3Model = mdl
            , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
-                                     (if Set.member ConsecutionBackend (optDebugBackend opts)
-                                      then Just "cons"
-                                      else Nothing)
+                                     (fmap (\t -> ("cons",t)) $ Map.lookup ConsecutionBackend (optDebugBackend opts))
            , ic3LiftingBackend = mkPipe (optBackend opts Map.! Lifting)
-                                 (if Set.member Lifting (optDebugBackend opts)
-                                  then Just "lift"
-                                  else Nothing)
+                                 (fmap (\t -> ("lift",t)) $ Map.lookup Lifting (optDebugBackend opts))
            , ic3DomainBackend = mkPipe (optBackend opts Map.! Domain)
-                                (if Set.member Domain (optDebugBackend opts)
-                                 then Just "domain"
-                                 else Nothing)
+                                (fmap (\t -> ("domain",t)) $ Map.lookup Domain (optDebugBackend opts))
            , ic3BaseBackend = mkPipe (optBackend opts Map.! Base)
-                              (if Set.member Base (optDebugBackend opts)
-                               then Just "base"
-                               else Nothing)
+                              (fmap (\t -> ("base",t)) $ Map.lookup Base (optDebugBackend opts))
            , ic3InitBackend = mkPipe (optBackend opts Map.! Initiation)
-                              (if Set.member Initiation (optDebugBackend opts)
-                               then Just "init"
-                               else Nothing)
+                              (fmap (\t -> ("init",t)) $ Map.lookup Initiation (optDebugBackend opts))
            , ic3InterpolationBackend = addModulusEmulation $
                                        mkPipe (optBackend opts Map.! Interpolation)
-                                       (if Set.member Interpolation (optDebugBackend opts)
-                                        then Just "interp"
-                                        else Nothing)
+                                       (fmap (\t -> ("interp",t)) $ Map.lookup Interpolation (optDebugBackend opts))
            , ic3DebugLevel = verb
            , ic3MaxSpurious = 0
            , ic3MicAttempts = 1 `shiftL` 20
@@ -267,12 +255,12 @@ mkIC3Config mdl opts verb stats dumpDomain
            , ic3DumpDomainFile = dumpDomain
            }
   where
-    mkPipe :: BackendUse -> Maybe String -> AnyBackend IO
+    mkPipe :: BackendUse -> Maybe (String,BackendDebug) -> AnyBackend IO
     mkPipe cmd debug = createBackend cmd (\b -> case debug of
                                            Nothing -> AnyBackend b
-                                           Just name -> AnyBackend $ do
+                                           Just (name,tp) -> AnyBackend $ do
                                              b' <- b
-                                             return (namedDebugBackend name b'))
+                                             createDebugBackend name tp b')
 
 runIC3 :: TR.TransitionRelation mdl => IC3Config mdl -> IC3 mdl a -> IO a
 runIC3 cfg act = do

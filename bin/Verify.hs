@@ -46,11 +46,10 @@ allOpts
                         }) "<backend>:solver")
      "The SMT solver used for the specified backend."
     ,Option [] ["debug-backend"]
-     (ReqArg (\b opt -> case readsPrec 0 b of
-               [(backend,[])]
-                 -> opt { optBackends = setDebugBackend backend
-                                        (optBackends opt)
-                        }) "<backend>")
+     (ReqArg (\b opt -> case [ x | (x,"") <- readBackendDebug b ] of
+                 (tp,dbg):_
+                   -> opt { optBackends = setDebugBackend tp dbg (optBackends opt)
+                          }) "<backend>")
      "Output the communication with the specified backend solver."
     ,Option ['t'] ["timeout"]
      (ReqArg (\t opt -> opt { optTimeout = Just $ parseTime t }) "time")

@@ -1,12 +1,13 @@
 module BackendOptions where
 
 import Data.Map (Map)
-import Data.Set (Set)
 import qualified Data.Map as Map
-import qualified Data.Set as Set
+import System.IO
+import Control.Monad.Trans
 
 import Language.SMTLib2.Internals.Backend (Backend,SMTMonad)
 import Language.SMTLib2.Pipe (createPipe)
+import Language.SMTLib2.Debug (DebugBackend,namedDebugBackend,debugBackend')
 #ifdef NATIVE_Z3
 import Language.SMTLib2.Z3 (z3Solver)
 #endif
@@ -26,8 +27,11 @@ data BackendUse = BackendPipe String [String]
                 | NativeZ3
                 | NativeMathSAT
 
+data BackendDebug = DebugPipe
+                  | DebugFile FilePath
+
 data BackendOptions = BackendOptions { optBackend :: Map BackendType BackendUse
-                                     , optDebugBackend :: Set BackendType
+                                     , optDebugBackend :: Map BackendType BackendDebug
                                      }
 
 instance Show BackendType where
@@ -59,6 +63,14 @@ instance Read BackendUse where
   readsPrec _ "MathSAT" = [(NativeMathSAT,[])]
   readsPrec _ (words -> name:opts) = [(BackendPipe name opts,[])]
 
+readBackendDebug :: ReadS (BackendType,BackendDebug)
+readBackendDebug str0 = [ ((tp,dbg),str2)
+                        | (tp,str1) <- readsPrec 0 str0
+                        , (dbg,str2) <- case str1 of
+                            "" -> [(DebugPipe,"")]
+                            ':':file -> [(DebugFile file,"")]
+                            _ -> [(DebugPipe,str1)] ]
+
 defaultBackendOptions :: BackendOptions
 defaultBackendOptions
   = BackendOptions { optBackend = Map.fromList
@@ -68,7 +80,7 @@ defaultBackendOptions
                                   ,(Base,z3)
                                   ,(Initiation,z3)
                                   ,(Interpolation,mathsat)]
-                   , optDebugBackend = Set.empty }
+                   , optDebugBackend = Map.empty }
   where
 #ifdef NATIVE_Z3
     z3 = NativeZ3
@@ -86,10 +98,10 @@ setBackend tp solver opts = opts { optBackend = Map.insert tp solver
                                                 (optBackend opts)
                                  }
 
-setDebugBackend :: BackendType -> BackendOptions -> BackendOptions
-setDebugBackend tp opts = opts { optDebugBackend = Set.insert tp
-                                                   (optDebugBackend opts)
-                               }
+setDebugBackend :: BackendType -> BackendDebug -> BackendOptions -> BackendOptions
+setDebugBackend tp dbg opts = opts { optDebugBackend = Map.insert tp dbg
+                                                       (optDebugBackend opts)
+                                   }
 
 createBackend :: BackendUse -> (forall b. (Backend b,SMTMonad b ~ IO) => IO b -> a)
               -> a
@@ -104,3 +116,10 @@ createBackend NativeMathSAT f = f (return mathsatBackend)
 #else
 createBackend NativeMathSAT _ = error "Native MathSAT support not enabled (build with -fNative-MathSAT to enable)."
 #endif
+
+createDebugBackend :: (Backend b,MonadIO (SMTMonad b))
+                   => String -> BackendDebug -> b -> IO (DebugBackend b)
+createDebugBackend name DebugPipe b = return $ namedDebugBackend name b
+createDebugBackend name (DebugFile fp) b = do
+  h <- openFile fp AppendMode
+  return $ debugBackend' False False Nothing h b
