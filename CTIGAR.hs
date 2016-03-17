@@ -1049,7 +1049,7 @@ check st opts verb stats dumpDomain = do
       concrs <- getWitness real xs
       return $ (concr1,concr2):concrs
 
-getFixpoint :: (Embed m e,Composite st)
+getFixpoint :: (Embed m e,GetType e,Composite st)
             => Dom.Domain st -> [Dom.AbstractState st] -> st e
             -> m (e BoolType)
 getFixpoint domain sts inp = do

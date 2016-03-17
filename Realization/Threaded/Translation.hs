@@ -31,6 +31,7 @@ import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
 import qualified Data.Text as T
 import Foreign.Ptr (Ptr)
 import Data.Functor.Identity
+import Data.GADT.Compare
 
 import Debug.Trace
 
@@ -650,6 +651,7 @@ fromSymVal val f = fromSymVal' val
 fromSymVal' :: SymVal e -> (forall tps. Struct e tps -> a) -> a
 fromSymVal' (ValBool e) f = f (Singleton e)
 fromSymVal' (ValInt e) f = f (Singleton e)
+fromSymVal' (ValBounded e) f = f (Singleton e)
 fromSymVal' (ValPtr trgs tp) f
   = List.reifyList
     (\(cond,idx) g -> case idx of
@@ -727,6 +729,9 @@ toSymVal TpBool (Singleton e) = case getType e of
   BoolRepr -> ValBool e
 toSymVal TpInt (Singleton e) = case getType e of
   IntRepr -> ValInt e
+toSymVal (TpBounded bw1) (Singleton e) = case getType e of
+  BitVecRepr bw2 -> case geq bw1 bw2 of
+    Just Refl -> ValBounded e
 toSymVal (TpPtr trgs tp) (Struct lst)
   = ValPtr (Map.fromList $ zip
             (Map.keys trgs)
@@ -807,6 +812,7 @@ toSymArray (TpVector tps) (Struct lst)
 toLispType :: SymType -> (forall tps. Struct Repr tps -> a) -> a
 toLispType TpBool f = f (Singleton bool)
 toLispType TpInt f = f (Singleton int)
+toLispType (TpBounded bw) f = f (Singleton $ bitvec bw)
 toLispType (TpPtr trgs tp) f
   = List.reifyList (\ptr g -> case [ () | DynamicAccess <- offsetPattern ptr] of
                      [] -> g (Singleton bool)

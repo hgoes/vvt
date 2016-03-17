@@ -44,6 +44,7 @@ eqValue (LispValue sz1 v1) (LispValue sz2 v2) = do
   conj2 <- eqVal v1 v2
   case conj1++conj2 of
     [] -> embed $ ConstBool True
+    [x] -> return x
     xs -> embed $ AndLst xs
   where
     eqVal :: (Embed m e,GetType e) => Struct (Sized e lvl) tps

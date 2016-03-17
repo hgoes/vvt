@@ -24,11 +24,11 @@ class (Ord (CompDescr arg),GCompare (RevComp arg),GShow (RevComp arg))
   type CompDescr arg
   type RevComp arg :: Type -> *
   compositeType :: CompDescr arg -> arg Repr
-  foldExprs :: (Monad m)
+  foldExprs :: (Monad m,GetType e)
             => (forall t. RevComp arg t -> e t -> m (e' t))
             -> arg e
             -> m (arg e')
-  accessComposite :: RevComp arg t -> arg e -> e t
+  accessComposite :: GetType e => RevComp arg t -> arg e -> e t
   createComposite :: (Monad m)
                   => (forall t. Repr t -> RevComp arg t -> m (e t))
                   -> CompDescr arg
@@ -138,7 +138,7 @@ mkCompExpr f descr
                   arg <- createComposite (\_ rev -> return (CompositeExpr descr (Var rev))) descr
                   f arg) descr
 
-concretizeExpr :: (Embed m e,Composite arg)
+concretizeExpr :: (Embed m e,GetType e,Composite arg)
                => arg e
                -> CompositeExpr arg tp
                -> m (e tp)
