@@ -9,7 +9,7 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals.Type
 import qualified Language.SMTLib2.Internals.Type.List as List
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
-import Language.SMTLib2.Internals.Expression
+import qualified Language.SMTLib2.Internals.Expression as E
 
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -60,7 +60,7 @@ slice prog = prog { programState = filterMap (programState prog) State
                  ) dep0 (programProperty prog)
     deps = recDependencies prog dep1
     filterExpr :: LispExpr t -> LispExpr t
-    filterExpr (LispExpr (App fun args)) = LispExpr (App fun nargs)
+    filterExpr (LispExpr (E.App fun args)) = LispExpr (E.App fun nargs)
       where
         nargs = runIdentity $ List.mapM (return.filterExpr) args
     filterExpr (LispExpr e) = LispExpr e
@@ -68,9 +68,9 @@ slice prog = prog { programState = filterMap (programState prog) State
       Nothing -> defaultExpr (getType e)
       Just nvar -> LispRef nvar idx
     filterExpr (LispEq v1 v2) = case filterVar v1 of
-      Nothing -> LispExpr (Const $ BoolValue True)
+      Nothing -> LispExpr (ConstBool True)
       Just v1' -> case filterVar v2 of
-        Nothing -> LispExpr (Const $ BoolValue True)
+        Nothing -> LispExpr (ConstBool True)
         Just v2' -> LispEq v1' v2'
     filterExpr (ExactlyOne xs) = ExactlyOne $ fmap filterExpr xs
     filterExpr (AtMostOne xs) = AtMostOne $ fmap filterExpr xs
@@ -102,11 +102,11 @@ slice prog = prog { programState = filterMap (programState prog) State
 
 defaultExpr :: Repr tp -> LispExpr tp
 defaultExpr tp = case tp of
-  BoolRepr -> LispExpr (Const $ BoolValue True)
-  IntRepr -> LispExpr (Const $ IntValue 0)
-  RealRepr -> LispExpr (Const $ RealValue 0)
-  BitVecRepr bw -> LispExpr (Const $ BitVecValue 0 bw)
-  ArrayRepr idx el -> LispExpr (App (ConstArray idx el) ((defaultExpr el) ::: Nil))
+  BoolRepr -> LispExpr (ConstBool True)
+  IntRepr -> LispExpr (ConstInt 0)
+  RealRepr -> LispExpr (ConstReal 0)
+  BitVecRepr bw -> LispExpr (ConstBV 0 bw)
+  ArrayRepr idx el -> LispExpr (ConstArray idx (defaultExpr el))
 
 recDependencies :: LispProgram -> DepState -> Set AnyName
 recDependencies prog dep = case todo dep of
@@ -144,7 +144,7 @@ getDependencies (LispITE c v1 v2) st0 = st3
     st3 = getDependencies v2 st2
 
 getDependenciesExpr :: LispExpr a -> DepState -> DepState
-getDependenciesExpr (LispExpr (App fun args)) st
+getDependenciesExpr (LispExpr (E.App fun args)) st
   = runIdentity $ List.foldM (\st e -> return $ getDependenciesExpr e st
                              ) st args
 getDependenciesExpr (LispRef var _) st
