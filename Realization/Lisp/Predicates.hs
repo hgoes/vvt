@@ -4,8 +4,6 @@ import Realization.Lisp
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Interface
-import Language.SMTLib2.Internals.Type
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import qualified Data.Dependent.Map as DMap
 import Data.Foldable
