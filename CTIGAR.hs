@@ -1141,7 +1141,6 @@ elimSpuriousTrans st level = do
                                , numAddPreds = (numAddPreds stats)+(length props) })
   interp <- interpolateState level (stateLifted rst) (stateLiftedInputs rst)
   ic3Debug 0 $ "mined new predicates: " ++ (show (length props))
-  ic3Debug 0 $ "total added preds:" ++ (show $ fmap numAddPreds (ic3Stats env))
   ic3Debug 0 $ "computed interpolant: " ++ (show interp)
   domain <- gets ic3Domain
   order <- gets ic3LitOrder
