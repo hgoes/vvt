@@ -5,7 +5,6 @@ import Args
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Expression
 import Language.SMTLib2.Internals.Type hiding (Constr,Field)
 
 import Data.Typeable
@@ -64,4 +63,4 @@ instance GShow PValue where
 assignEq :: (Embed m e,GetType e) => e t -> ConcreteValue t -> m (e BoolType)
 assignEq var c = do
   val <- embedConst c
-  embed $ App (Eq (getType val) (Succ (Succ Zero))) (var ::: val ::: Nil)
+  embed $ Eq (var ::: val ::: Nil)
