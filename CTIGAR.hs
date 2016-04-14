@@ -23,16 +23,13 @@ import Language.SMTLib2.Internals.Backend (SMTMonad,LVar)
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
-import Language.SMTLib2.Internals.Type
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Embed
 
 import qualified Data.Map as Map
-import qualified Data.Set as Set
 import qualified Data.Vector as Vec
 import qualified Data.IntSet as IntSet
 import qualified Data.Yaml as Y
---import GHC.Generics
 import Data.IORef
 import Control.Monad (when)
 import Data.Functor.Identity
@@ -82,6 +79,8 @@ data IC3Config mdl
            , ic3MaxCTGs :: Int
            , ic3CollectStats :: Bool
            , ic3DumpDomainFile :: Maybe String
+           , ic3DumpStatsFile :: Maybe String
+           , ic3DumpStatesFile :: Maybe String
            }
 
 data IC3Env mdl
@@ -192,7 +191,7 @@ k = do
   return $ frontier cons
 
 ic3Debug :: Int -> String -> IC3 mdl ()
-ic3Debug lvl txt = ic3DebugAct lvl (liftIO $ hPutStrLn stdout txt)
+ic3Debug lvl txt = ic3DebugAct lvl (liftIO $ hPutStrLn stderr txt)
 
 ic3DebugAct :: Int -> IC3 mdl () -> IC3 mdl ()
 ic3DebugAct lvl act = do
@@ -210,8 +209,10 @@ mkIC3Config :: mdl -> BackendOptions
             -> Int -- ^ Verbosity
             -> Bool -- ^ Dump stats?
             -> Maybe String -- ^ Dump domain?
+            -> Maybe String -- ^ Dump stats?
+            -> Maybe String -- ^ Dump states?
             -> IC3Config mdl
-mkIC3Config mdl opts verb stats dumpDomain
+mkIC3Config mdl opts verb stats dumpDomain dumpStats dumpStates
   = IC3Cfg { ic3Model = mdl
            , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
                                      (fmap (\t -> ("cons",t)) $ Map.lookup ConsecutionBackend (optDebugBackend opts))
@@ -234,6 +235,8 @@ mkIC3Config mdl opts verb stats dumpDomain
            , ic3MaxCTGs = 3
            , ic3CollectStats = stats
            , ic3DumpDomainFile = dumpDomain
+           , ic3DumpStatsFile = dumpStats
+           , ic3DumpStatesFile = dumpStates
            }
   where
     mkPipe :: BackendUse -> Maybe (String,BackendDebug) -> AnyBackend IO
@@ -918,13 +921,15 @@ check :: TR.TransitionRelation mdl
          -> Int -- ^ Verbosity
          -> Bool -- ^ Dump stats?
          -> Maybe String -- ^ Dump domain?
+         -> Maybe String -- ^ Dump stats?
+         -> Maybe String -- ^ Dump states?
          -> IO (Either [(Unpacked (TR.State mdl),
                          Unpacked (TR.Input mdl))]
                        (CompositeExpr (TR.State mdl) BoolType))
-check st opts verb stats dumpDomain = do
+check st opts verb stats dumpDomain dumpstats dumpstates = do
   tr <- createBackend (optBackend opts Map.! Base) $
         \b -> withBackendExitCleanly b (baseCases st)
-  runIC3 (mkIC3Config st opts verb stats dumpDomain) $ do
+  runIC3 (mkIC3Config st opts verb stats dumpDomain dumpstats dumpstates) $ do
     case tr of
       Just tr' -> do
         ic3DumpStats Nothing
@@ -1133,15 +1138,17 @@ elimSpuriousTrans st level = do
   rst <- liftIO $ readIORef st
   backend <- asks ic3BaseBackend
   extr <- gets ic3PredicateExtractor
+  mbDumpStatesFile <- asks ic3DumpStatesFile
   (nextr,props) <- TR.extractPredicates mdl extr
                    (stateFull rst)
                    (stateLifted rst)
+                   mbDumpStatesFile
   modify $ \env -> env { ic3PredicateExtractor = nextr }
   updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
                                , numAddPreds = (numAddPreds stats)+(length props) })
   interp <- interpolateState level (stateLifted rst) (stateLiftedInputs rst)
-  ic3Debug 0 $ "mined new predicates: " ++ (show (length props))
-  ic3Debug 0 $ "computed interpolant: " ++ (show interp)
+  ic3Debug 4 $ "mined new predicates: " ++ (show (length props))
+  ic3Debug 4 $ "computed interpolant: " ++ (show interp)
   domain <- gets ic3Domain
   order <- gets ic3LitOrder
   (ndomain,norder) <- foldlM (\(cdomain,corder) trm
@@ -1654,30 +1661,34 @@ ic3DumpStats fp = do
          (show $ (round $ 100*(fromIntegral $ numUnliftedErased stats) /
                   (fromIntegral $ numErased stats) :: Int))
 
-       let mrsStats =
-               IC3MachineReadableStats { mrs_totalTime = realToFrac totalRuntime
-                                       , mrs_consecutionTime = realToFrac consTime
-                                       , mrs_consecutionNum = consNum
-                                       , mrs_domainTime = realToFrac domTime
-                                       , mrs_domainNum = domNum
-                                       , mrs_interpolationTime = realToFrac interpTime
-                                       , mrs_interpolationNum = interpNum
-                                       , mrs_liftingTime = realToFrac liftTime
-                                       , mrs_liftingNum = liftNum
-                                       , mrs_initiationTime = realToFrac initTime
-                                       , mrs_initiationNum = initNum
-                                       , mrs_numErased = numErased stats
-                                       , mrs_numCTI = numCTI stats
-                                       , mrs_numUnliftedErased = numUnliftedErased stats
-                                       , mrs_numCTG = numCTG stats
-                                       , mrs_numMIC = numMIC stats
-                                       , mrs_numCoreReduced = numCoreReduced stats
-                                       , mrs_numAbortJoin = numAbortJoin stats
-                                       , mrs_numAbortMic = numAbortMic stats
-                                       , mrs_numRefinements = numRefinements stats
-                                       , mrs_numAddPreds = numAddPreds stats
-                                       , mrs_numPreds = numPreds}
-       Y.encodeFile "./stats.yaml" mrsStats
+     dumpStats <- asks ic3DumpStatsFile
+     case dumpStats of
+       Nothing -> return ()
+       Just file ->
+           let mrsStats = IC3MachineReadableStats
+                          { mrs_totalTime = realToFrac totalRuntime
+                          , mrs_consecutionTime = realToFrac consTime
+                          , mrs_consecutionNum = consNum
+                          , mrs_domainTime = realToFrac domTime
+                          , mrs_domainNum = domNum
+                          , mrs_interpolationTime = realToFrac interpTime
+                          , mrs_interpolationNum = interpNum
+                          , mrs_liftingTime = realToFrac liftTime
+                          , mrs_liftingNum = liftNum
+                          , mrs_initiationTime = realToFrac initTime
+                          , mrs_initiationNum = initNum
+                          , mrs_numErased = numErased stats
+                          , mrs_numCTI = numCTI stats
+                          , mrs_numUnliftedErased = numUnliftedErased stats
+                          , mrs_numCTG = numCTG stats
+                          , mrs_numMIC = numMIC stats
+                          , mrs_numCoreReduced = numCoreReduced stats
+                          , mrs_numAbortJoin = numAbortJoin stats
+                          , mrs_numAbortMic = numAbortMic stats
+                          , mrs_numRefinements = numRefinements stats
+                          , mrs_numAddPreds = numAddPreds stats
+                          , mrs_numPreds = numPreds}
+           in liftIO $ Y.encodeFile file mrsStats
    Nothing -> return ()
   dumpDomain <- asks ic3DumpDomainFile
   case dumpDomain of

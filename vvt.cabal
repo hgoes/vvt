@@ -109,5 +109,5 @@ executable vvt-svcomp
 
 executable bench
   Main-Is:              bench/Main.hs
-  Build-Depends:        base, text, bytestring, turtle, yaml, system-filepath, time
+  Build-Depends:        base, text, bytestring, turtle, yaml, system-filepath, time, optparse-applicative
   GHC-Options:          -Wall
