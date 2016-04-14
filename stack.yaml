@@ -6,7 +6,7 @@ packages:
 #smtlib2 1.0
 - location:
     git: https://github.com/hguenther/smtlib2.git
-    commit: b6fd04bc3987197eaf4d0a912d90ea88d3ae6916
+    commit: 937920a87e82ed993851908d40fa297f62f1f7e3
   subdirs:
     - '.'
     - backends/debug
@@ -16,8 +16,8 @@ packages:
   extra-dep: true
 #bindings-llvm
 - location:
-    git: https://github.com/simonjantsch/bindings-llvm.git
-    commit: bb17f7c31bef683feda4c777378cd25602cc5815
+    git: https://github.com/hguenther/bindings-llvm
+    commit: c486e76e6c28ae5f4c9718611767789be9eec158
   extra-dep: true
 
 extra-deps:
