@@ -22,6 +22,8 @@ data Options = Options { optBackends :: BackendOptions
                        , optStats :: Bool
                        , optDumpDomain :: Maybe String
                        , optPrintFixpoint :: Bool
+                       , optDumpStats :: Maybe String
+                       , optDumpStates :: Maybe String
                        }
 
 defaultOptions :: Options
@@ -31,6 +33,8 @@ defaultOptions = Options { optBackends = defaultBackendOptions
                          , optVerbosity = 0
                          , optStats = False
                          , optDumpDomain = Nothing
+                         , optDumpStats = Nothing
+                         , optDumpStates = Nothing
                          , optPrintFixpoint = False
                          }
 
@@ -64,6 +68,12 @@ allOpts
     ,Option [] ["dump-domain"]
      (ReqArg (\file opt -> opt { optDumpDomain = Just file }) "file")
      "Dump the domain graph into a file."
+    ,Option [] ["dump-stats-to"]
+     (ReqArg (\file opt -> opt { optDumpStats = Just file }) "file")
+     "Dump the stats that IC3 produces to a file."
+    ,Option [] ["dump-states-to"]
+     (ReqArg (\file opt -> opt { optDumpStates = Just file }) "file")
+     "Dump the states that IC3 collects during refinement to a file. The states will be printed in csv format."
     ,Option [] ["print-fixpoint"]
      (NoArg $ \opt -> opt { optPrintFixpoint = True }) "If the program can be proven correct, output the fixpoint."
     ]
@@ -126,6 +136,8 @@ main = do
                        (optVerbosity opts)
                        (optStats opts)
                        (optDumpDomain opts)
+                       (optDumpStats opts)
+                       (optDumpStates opts)
             Just to -> do
               mainThread <- myThreadId
               timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
@@ -135,6 +147,8 @@ main = do
                                       (optVerbosity opts)
                                       (optStats opts)
                                       (optDumpDomain opts)
+                                      (optDumpStats opts)
+                                      (optDumpStates opts)
                                killThread timeoutThread
                                return (Just res)
                            )

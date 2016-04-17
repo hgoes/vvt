@@ -17,6 +17,9 @@ import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface as I
 import qualified Language.SMTLib2.Internals.Expression as E
+import qualified Data.Aeson as A
+import qualified Data.ByteString as BS
+import qualified Data.Csv as C
 import Data.Dependent.Map (DMap)
 import qualified Data.Dependent.Map as DMap
 import Data.Dependent.Sum
@@ -31,7 +34,8 @@ import Data.Typeable
 import qualified Data.AttoLisp as L
 import qualified Data.Attoparsec.Number as L
 import System.IO (Handle)
-import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Lazy.UTF8 as BSL
 import Data.Attoparsec
 import Control.Exception
 import Control.Monad.Trans.Except
@@ -802,8 +806,12 @@ instance GetType LispRev where
   getType (LispRev (LispName sz tps _) (RevSize i))
     = List.index (sizeListType sz) i
 
+instance (Show a, Show b) => C.ToField (Either a b) where
+    toField (Right r) = BSL.toStrict $ BSL.fromString (show r)
+    toField (Left l) = BSL.toStrict $ BSL.fromString (show l)
+
 instance TransitionRelation LispProgram where
-  type State LispProgram = LispState 
+  type State LispProgram = LispState
   type Input LispProgram = LispState
   type RealizationProgress LispProgram = LispState
   type PredicateExtractor LispProgram = RSMState (Set T.Text) (LispRev IntType)
@@ -854,12 +862,30 @@ instance TransitionRelation LispProgram where
                           ) (programState prog))
       | expr <- programPredicates prog ]
   defaultPredicateExtractor _ = return emptyRSM
-  extractPredicates prog rsm (LispConcr full) (LispPart part) = liftIO $ do
+  extractPredicates prog rsm (LispConcr full) (LispPart part) mDumpStates = liftIO $ do
     (rsm2,lines) <- mineStates (createPipe "z3" ["-smt2","-in"]) rsm1
+    case mDumpStates of
+      Nothing -> return ()
+      Just file ->
+          let pcAndStates = Map.toList . unpackCollectedStates $ rsmStates rsm2
+              pcStatePairs =
+                  concatMap (\(pc, states) -> map (\state -> (pc,state)) states) pcAndStates
+          in BSL.writeFile file $
+             C.encode (map (\(pc,states) -> (C.toField pc) : (map C.toField states)) pcStatePairs)
     return (rsm2,concat $ fmap (\ln -> [mkLine E.Ge ln
                                        ,mkLine E.Gt ln]) lines)
     where
-      rsm1 = addRSMState activePc ints rsm
+      getStateFromDmap :: DMap LispName LispUVal -> [Either Bool Integer]
+      getStateFromDmap full =
+          map extrVal (DMap.toList full)
+          where
+            extrVal :: DSum LispName LispUVal -> Either Bool Integer
+            extrVal ((LispName _ _ name) :=> (LispU (Singleton (BoolValueC bool)))) =
+                Left bool
+            extrVal ((LispName _ _ name) :=> (LispU (Singleton (IntValueC int)))) =
+                Right int
+
+      rsm1 = addRSMState activePc ints (activePc, getStateFromDmap full) rsm
       pcs = DMap.filterWithKey (\name val -> case DMap.lookup name (programState prog) of
                                    Just (Annotation ann) -> case Map.lookup "pc" ann of
                                      Just (L.Symbol "true") -> True

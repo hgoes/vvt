@@ -11,7 +11,6 @@ import qualified Realization.Lisp as L
 import qualified Realization.Lisp.Array as L
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Interface
 import Language.SMTLib2.Internals.Type
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))

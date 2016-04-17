@@ -6,7 +6,6 @@ import Realization.Lisp.Value
 import Realization.Lisp.Array
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Type
 import qualified Language.SMTLib2.Internals.Type.List as List
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import qualified Language.SMTLib2.Internals.Expression as E

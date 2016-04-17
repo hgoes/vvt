@@ -7,7 +7,6 @@ import Realization.Lisp.Value
 import Karr
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type

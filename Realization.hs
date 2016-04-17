@@ -5,7 +5,6 @@ import Args
 import PartialArgs
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Monad (embedSMT)
 import qualified Language.SMTLib2.Internals.Backend as B
@@ -61,6 +60,8 @@ class (PartialComp (State t),PartialComp (Input t))
   extractPredicates :: (MonadIO m) => t -> PredicateExtractor t
                     -> Unpacked (State t)
                     -> Partial (State t)
+                    -> Maybe String
+                    -- ^ Dump collected states to a file?
                     -> m (PredicateExtractor t,
                           [CompositeExpr (State t) BoolType])
   startingProgress :: t -> RealizationProgress t e
