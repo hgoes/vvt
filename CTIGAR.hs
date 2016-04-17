@@ -927,9 +927,9 @@ check :: TR.TransitionRelation mdl
                          Unpacked (TR.Input mdl))]
                        (CompositeExpr (TR.State mdl) BoolType))
 check st opts verb stats dumpDomain dumpstats dumpstates = do
-  tr <- createBackend (optBackend opts Map.! Base) $
-        \b -> withBackendExitCleanly b (baseCases st)
   runIC3 (mkIC3Config st opts verb stats dumpDomain dumpstats dumpstates) $ do
+    backend <- asks ic3BaseBackend
+    tr <- liftIO $ withAnyBackend backend (baseCases st)
     case tr of
       Just tr' -> do
         ic3DumpStats Nothing

@@ -2210,7 +2210,7 @@ computeTransitionRelation = do
                                       Just th' -> ThreadState' th' tRev
                                 in return $ RState pRev
                      ) tp
-              case Map.lookup (th,instr) (instructions st) of
+              new <- case Map.lookup (th,instr) (instructions st) of
                 Just (act,val) -> do
                   alwaysDefined <- foldlM (\allEdgesDefine edge
                                            -> case Map.lookup (th,instr) (edgeValues edge) of
@@ -2225,16 +2225,16 @@ computeTransitionRelation = do
                     else do
                     cond <- rstep .&. act
                     symITE cond (symbolicValue val) old-}
-                Nothing -> do
-                  ctrue <- true
-                  symITEs $ [ (phiVal,edgeActivation cond)
-                            | edge <- Map.elems (edges st)
-                            , cond <- edgeConditions edge
-                            , phiVal <- case Map.lookup (th,instr)
-                                             (edgePhis cond) of
-                                        Just rval -> [symbolicValue rval]
-                                        Nothing -> [] ]++
-                    [(old,ctrue)]
+                Nothing -> return old
+              ctrue <- true
+              symITEs $ [ (phiVal,edgeActivation cond)
+                        | edge <- Map.elems (edges st)
+                        , cond <- edgeConditions edge
+                        , phiVal <- case Map.lookup (th,instr)
+                                         (edgePhis cond) of
+                            Just rval -> [symbolicValue rval]
+                            Nothing -> [] ]++
+                [(new,ctrue)]
           ) (latchValueDesc desc)
       nxtThread th desc = do
         let Just rstep = Map.lookup th rsteps

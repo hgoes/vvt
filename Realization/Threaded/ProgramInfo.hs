@@ -8,6 +8,8 @@ import LLVM.FFI
 import Foreign.Ptr (Ptr)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Text.Show
+import System.IO.Unsafe
 
 data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , entryPoints :: Map (Ptr BasicBlock,Int) ()
@@ -15,7 +17,7 @@ data ThreadInfo = ThreadInfo { blockOrder :: [(Ptr BasicBlock,Int)]
                              , threadArg :: Maybe (Ptr Argument,Either (Ptr Type) (Ptr IntegerType))
                              , threadSliceMapping :: Map Integer [(Ptr BasicBlock,Int)]
                              , spawnQuantity :: Quantity
-                             } deriving Show
+                             }
 
 data AllocInfo = AllocInfo { allocQuantity :: Quantity
                            , allocType :: AllocKind
@@ -78,3 +80,30 @@ getProgramInfo mod mainFun = do
                                                fun tp
                                                (functionReturns pi)
                            })
+
+instance Show ThreadInfo where
+  showsPrec p ti = showParen (p>10) $
+    showString "ThreadInfo {blockOrder = " .
+    showListWith (\(blk,n) -> showChar '(' .
+                              showValue blk .
+                              showChar ',' .
+                              showsPrec 0 n .
+                              showChar ')') (blockOrder ti) .
+    showString ", entryPoints = " .
+    showListWith (\(blk,n) -> showChar '(' .
+                              showValue blk .
+                              showChar ',' .
+                              showsPrec 0 n .
+                              showChar ')') (Map.keys (entryPoints ti)) .
+    showString ", threadFunction = " .
+    showValue (threadFunction ti) .
+    showString ", threadArg = " .
+    showsPrec 1 (threadArg ti) .
+    showString ", threadSliceMapping = " .
+    showsPrec 1 (threadSliceMapping ti) .
+    showString ", spawnQuantity = " .
+    showsPrec 1 (spawnQuantity ti) .
+    showChar '}'
+    where
+      showValue :: ValueC v => Ptr v -> ShowS
+      showValue = showString . unsafePerformIO . getNameString
