@@ -25,7 +25,8 @@ data BenchConf =
     { bc_binDir :: FilePath
     , bc_trDir :: FilePath
     , bc_logDir :: FilePath
-    , bc_createTransitionRelations :: Bool
+    , bc_dontCreateTr :: Bool
+    , bc_optimizeTr :: Bool
     , bc_results :: FilePath
     , bc_benchmarks :: FilePath
     }
@@ -56,8 +57,13 @@ benchConfParser =
       )
     <*>
     OA.flag False True
-      (  long "create-tr"
+      (  long "dont-create-tr"
       <> help "If this option is chosen, a new transition relation will be created if no one is found"
+      )
+    <*>
+    OA.flag True False
+      (  long "no-opt"
+      <> help "If this option is chosen, transition relations will be built without optimization"
       )
     <*>
     OA.option (fmap (fromText . T.pack) str)
@@ -128,29 +134,44 @@ runBench conf = do
           trDir = bc_trDir conf
           binDir = bc_binDir conf
           logDir = bc_logDir conf
-      case bc_createTransitionRelations conf of
-        False -> return ()
-        True ->
+      case bc_dontCreateTr conf of
+        True -> return ()
+        False ->
             mapM_ (\(Benchmark bench) -> do
                      trExists <- testfile (trDir </> benchName bench)
                      case trExists of
                        True -> return ()
-                       False -> do
-                         let benchAsTxt = safeToText bench
-                             vvtBinary = safeToText (binDir </> "vvt")
-                             dest = safeToText $ trDir </> (benchName bench)
-                             cmdToExecute =
-                                 vvtBinary
-                                    <> " encode -o " <> dest <> " "
-                                    <> benchAsTxt
-                                    <> " > /dev/null" <> " 2>&1"
-                         echo cmdToExecute
-                         exitCode <- shell cmdToExecute Turtle.empty
-                         case exitCode of
-                           ExitFailure _ ->
-                               echo $ "vvt-verify encode failed on benchmark: "
-                                       <> benchAsTxt
-                           _ -> return ()
+                       False ->
+                           let benchAsTxt = safeToText bench
+                               vvtBinary = safeToText (binDir </> "vvt")
+                               vvtenc = safeToText (binDir </> "vvt-enc")
+                               vvtpreds = safeToText (binDir </> "vvt-predicates")
+                               vvtpp = safeToText (binDir </> "vvt-pp")
+                               dest = safeToText $ trDir </> (benchName bench)
+                               cmdToExecute =
+                                   case bc_optimizeTr conf of
+                                     True ->
+                                         vvtBinary
+                                         <> " encode -o " <> dest <> " "
+                                         <> benchAsTxt
+                                         <> " > /dev/null" <> " 2>&1"
+                                     False ->
+                                         vvtBinary
+                                         <> " show-llvm "
+                                         <> benchAsTxt
+                                         <> " | " <> vvtenc
+                                         <> " 2>/dev/null "
+                                         <> " | " <> vvtpreds <> " -i"
+                                         <> " | " <> vvtpp
+                                         <> " 1> " <> dest
+                           in do
+                             echo cmdToExecute
+                             exitCode <- shell cmdToExecute Turtle.empty
+                             case exitCode of
+                               ExitFailure _ ->
+                                   echo $ "vvt-verify encode failed on benchmark: "
+                                            <> benchAsTxt
+                               _ -> return ()
                   ) benchmarks
       (accumStats, _) <-
           foldM (\(accumulatedStats, n) (Benchmark bench) -> do
