@@ -5,7 +5,6 @@ import Args
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Type hiding (Constr,Field)
 
 import Data.Typeable
 import Data.GADT.Compare

@@ -10,7 +10,6 @@ import Args
 import Language.SMTLib2
 import Language.SMTLib2.Pipe
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Backend (SMTMonad)
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 
 import Data.List

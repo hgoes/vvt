@@ -5,7 +5,6 @@ import Args
 import Realization.Threaded.Value
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Type
 import LLVM.FFI hiding (GetType,getType)
 import Foreign.Ptr (Ptr)
 import Data.Map (Map)

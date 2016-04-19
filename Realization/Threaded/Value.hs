@@ -4,7 +4,6 @@ import Args
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Type.Nat
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Interface as I

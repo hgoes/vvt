@@ -8,7 +8,7 @@ import PartialArgs
 import RSM
 
 import Language.SMTLib2
-import Language.SMTLib2.Pipe hiding (Var)
+import Language.SMTLib2.Pipe.Internals hiding (Var)
 import Language.SMTLib2.Internals.Type.Nat
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree)
@@ -17,7 +17,6 @@ import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Interface as I
 import qualified Language.SMTLib2.Internals.Expression as E
-import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.Csv as C
 import Data.Dependent.Map (DMap)

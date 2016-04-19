@@ -19,7 +19,7 @@ import Language.SMTLib2.Pipe (createPipe)
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
 import Language.SMTLib2.ModulusEmulator
-import Language.SMTLib2.Internals.Backend (SMTMonad,LVar)
+import Language.SMTLib2.Internals.Backend (LVar)
 import qualified Language.SMTLib2.Internals.Backend as B
 import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
