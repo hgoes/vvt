@@ -1,0 +1,37 @@
+sudo: false
+language: c
+
+cache:
+  directories:
+  - $HOME/.stack
+
+matrix:
+  include:
+    - env: CABALVER=1.22 GHCVER=7.10.3 HAPPYVER=1.19.5
+      addons:
+        apt:
+          sources:
+            - hvr-ghc
+            - ubuntu-toolchain-r-test
+            - llvm-toolchain-precise-3.5
+          packages:
+            - ghc-7.10.3
+            - cabal-install-1.22
+            - happy-1.19.5
+            - g++-4.9
+            - libedit-dev
+            - llvm-3.5-dev
+
+before_install:
+  # Download and unpack the stack executable
+  - mkdir -p ~/.local/bin
+  - export PATH=$HOME/.local/bin:$PATH
+  - travis_retry curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack'
+  # Export GHC paths
+  - export PATH=/opt/ghc/$GHCVER/bin:/opt/cabal/$CABALVER/bin:/opt/happy/$HAPPYVER/bin:$PATH
+  # Setup llvm symlink
+  - ln -s /usr/bin/llvm-config-3.5 ~/.local/bin/llvm-config
+  - llvm-config --version
+
+script:
+  - stack --no-terminal --skip-ghc-check build --ghc-options "-pgmc g++-4.9 -optc=-std=gnu++11"
