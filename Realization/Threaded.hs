@@ -2215,31 +2215,31 @@ computeTransitionRelation = do
                                       Just th' -> ThreadState' th' tRev
                                 in return $ RState pRev
                      ) tp
-              new <- case Map.lookup (th,instr) (instructions st) of
-                Just (act,val) -> do
-                  alwaysDefined <- foldlM (\allEdgesDefine edge
-                                           -> case Map.lookup (th,instr) (edgeValues edge) of
-                                           Just AlwaysDefined -> return allEdgesDefine
-                                           Just SometimesDefined -> return False
-                                           _ -> return False
-                                          ) True (edges st)
-                  cond <- rstep .&. act
-                  symITE cond (symbolicValue val) old
-                  {-if alwaysDefined
-                    then symITE rstep (symbolicValue val) old
-                    else do
+              alwaysDefined <- foldlM (\allEdgesDefine edge
+                                       -> case Map.lookup (th,instr) (edgeValues edge) of
+                                          Just AlwaysDefined -> return allEdgesDefine
+                                          Just SometimesDefined -> return False
+                                          _ -> return False
+                                      ) True (edges st)
+              let phis = [ (phiVal,edgeActivation cond)
+                         | edge <- Map.elems (edges st)
+                         , cond <- edgeConditions edge
+                         , phiVal <- case Map.lookup (th,instr)
+                                          (edgePhis cond) of
+                             Just rval -> [symbolicValue rval]
+                             Nothing -> [] ]
+              case phis of
+                [] -> case Map.lookup (th,instr) (instructions st) of
+                  Just (act,val) -> if alwaysDefined
+                                    then symITE rstep (symbolicValue val) old
+                                    else do
                     cond <- rstep .&. act
-                    symITE cond (symbolicValue val) old-}
-                Nothing -> return old
-              ctrue <- true
-              symITEs $ [ (phiVal,edgeActivation cond)
-                        | edge <- Map.elems (edges st)
-                        , cond <- edgeConditions edge
-                        , phiVal <- case Map.lookup (th,instr)
-                                         (edgePhis cond) of
-                            Just rval -> [symbolicValue rval]
-                            Nothing -> [] ]++
-                [(new,ctrue)]
+                    symITE cond (symbolicValue val) old
+                _ -> if alwaysDefined
+                     then symITEs phis
+                     else do
+                  ctrue <- true
+                  symITEs (phis++[(old,ctrue)])
           ) (latchValueDesc desc)
       nxtThread th desc = do
         let Just rstep = Map.lookup th rsteps
