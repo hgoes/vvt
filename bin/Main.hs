@@ -170,7 +170,6 @@ progOptimize opt = return (llvmExec "opt" opt,
                            ,"-always-inline"
                            ,"-loops"
                            ,"-loop-simplify"
-                           ,"-loop-rotate"
                            ,"-lcssa"
                            ,"-instsimplify"
                            ,"-instcombine"]++
@@ -190,7 +189,6 @@ progOptimizePreLipton opts
             ,"-always-inline"
             ,"-loops"
             ,"-loop-simplify"
-            ,"-loop-rotate"
             ,"-lcssa"]++
             (if unroll opts
              then ["-loop-unroll"]
