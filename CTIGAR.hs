@@ -1233,13 +1233,15 @@ interpolateState j s inp = do
         Arith op (x ::: Nil)
           -> cleanInterpolant mp x
         Ord op x@(getType -> RealRepr) y -> do
-          nx <- removeToReal x
+          rx <- cleanInterpolant mp x
+          ry <- cleanInterpolant mp y
+          nx <- removeToReal rx
           case nx of
-            Nothing -> return e
+            Nothing -> embed (Ord op rx ry)
             Just x' -> do
-              ny <- removeToReal y
+              ny <- removeToReal ry
               case ny of
-                Nothing -> return e
+                Nothing -> embed (Ord op rx ry)
                 Just y' -> embed (Ord op x' y')
         E.App fun args -> do
           nargs <- List.mapM (cleanInterpolant mp) args
