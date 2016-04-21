@@ -106,7 +106,7 @@ main = do
              let pipe = createPipe (solver opts) (solverArgs opts)
              --let pipe = z3Solver
              let act :: forall b. (Backend b,MonadIO (B.SMTMonad b))
-                     => SMT b (Either Bool [Unpacked (State LispProgram)])
+                     => SMT b (Either Bool [(Unpacked (State LispProgram),Unpacked (Input LispProgram))])
                  act = do
                    st0 <- createState prog
                    inp0 <- createInput prog
@@ -133,26 +133,32 @@ main = do
               Left compl -> putStrLn $ "No bug found ("++
                             (if compl then "Complete" else "Incomplete")++")"
               Right bug -> do
-                mapM_ (\p -> putStrLn $ showsPrec 0 p "") bug)
+                mapM_ (\(st,inp) -> do
+                          putStrLn $ showsPrec 0 st ""
+                          putStrLn $ showsPrec 0 inp ""
+                      ) (reverse bug))
   where
     bmc :: (TransitionRelation t,Backend b,MonadIO (B.SMTMonad b))
         => t -> Bool -> Bool -> Maybe Integer -> Integer
         -> Maybe UTCTime
         -> State t (B.Expr b) -> Input t (B.Expr b)
-        -> [(State t (B.Expr b),B.Expr b BoolType)]
-        -> SMT b (Either Bool [Unpacked (State t)])
+        -> [(State t (B.Expr b),Input t (B.Expr b),B.Expr b BoolType)]
+        -> SMT b (Either Bool [(Unpacked (State t),Unpacked (Input t))])
     bmc prog compl inc (Just l) n startTime st inp sts
       | n>=l = do
           if compl
             then push
             else return ()
           if inc
-            then not' (snd $ head sts) >>= assert
-            else not' (or' $ fmap snd sts) >>= assert
+            then let (_,_,prop) = head sts in assert $ not' prop
+            else assert $ not' (or' $ fmap (\(_,_,prop) -> prop) sts)
           res <- checkSat
           case res of
             Sat -> do
-              bug <- mapM (\(st,_) -> unliftComp getValue st
+              bug <- mapM (\(st,inp,_) -> do
+                              rst <- unliftComp getValue st
+                              rinp <- unliftComp getValue inp
+                              return (rst,rinp)
                           ) sts
               if compl
                 then pop
@@ -169,11 +175,15 @@ main = do
       assert invar
       let gts0 = startingProgress prog
       (assumps,gts1) <- declareAssumptions
-                        (\name e -> defineVar e)
+                        (\name e -> case name of
+                            Nothing -> defineVar e
+                            Just name' -> defineVarNamed name' e)
                         prog st inp gts0
       mapM_ assert assumps
       (asserts,gts2) <- declareAssertions
-                        (\name e -> defineVar e)
+                        (\name e -> case name of
+                            Nothing -> defineVar e
+                            Just name' -> defineVarNamed name' e)
                         prog st inp gts1
       res <- if inc
              then do
@@ -191,8 +201,11 @@ main = do
                r <- checkSat
                case r of
                  Sat -> do
-                          vals <- mapM (\st -> unliftComp getValue st
-                                       ) (st:(fmap fst sts))
+                          vals <- mapM (\(st,inp,prop) -> do
+                                           rst <- unliftComp getValue st
+                                           rinp <- unliftComp getValue inp
+                                           return (rst,rinp)
+                                       ) ((st,inp,negProp):sts)
                           pop
                           return $ Right vals
                  Unsat -> do
@@ -205,10 +218,11 @@ main = do
        Left True -> return $ Left True
        Left False -> do
          (nxt,gts3) <- declareNextState
-                       (\name e -> defineVar e)
+                       (\name e -> case name of
+                           Nothing -> defineVar e
+                           Just name' -> defineVarNamed name' e)
                        prog st inp gts2
-         ninp <- createComposite (\tp rev -> declareVar tp
-                                 ) (inputAnnotation prog)
+         ninp <- declareComposite declareVarNamed (inputAnnotation prog)
          if compl
            then do
            noProgress <- eqComposite st nxt
@@ -216,7 +230,7 @@ main = do
            assert progress
            else return ()
          conjAss <- and' asserts
-         bmc prog compl inc l (n+1) startTime nxt ninp ((st,conjAss):sts)
+         bmc prog compl inc l (n+1) startTime nxt ninp ((st,inp,conjAss):sts)
 
     checkCompleteness prog st = stack $ do
       end <- isEndState prog st

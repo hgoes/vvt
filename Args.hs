@@ -64,6 +64,14 @@ instance Composite a => GetType (CompositeExpr a) where
       (return.getType) (return.getFunType) (return.getConType)
       (return.getFieldType) (return.getType) (return.getType) (return.getType) e
 
+declareComposite :: forall arg m e.
+                    (Composite arg,Monad m)
+                 => (forall t. Repr t -> String -> m (e t))
+                 -> CompDescr arg
+                 -> m (arg e)
+declareComposite f descr
+  = createComposite (\tp rev -> f tp (revName (Proxy::Proxy arg) rev)) descr
+
 createRevComp :: (Composite arg,Embed m e,GetType e)
               => (forall t. Repr t -> RevComp arg t -> m (EmVar m e t))
               -> CompDescr arg
