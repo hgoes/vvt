@@ -2481,6 +2481,13 @@ getConstant opts (castDown -> Just czero) = do
        num <- arrayTypeGetNumElements arrTp
        zeroEl <- zeroInit stp
        return (Struct $ genericReplicate num zeroEl)
+     zeroInit (castDown -> Just (ptp::Ptr PointerType)) = do
+       ptp' <- sequentialTypeGetElementType ptp
+               >>= translateType0 opts
+       return $ Singleton $ ValPtr Map.empty ptp'
+     zeroInit tp = do
+       typeDump tp
+       error "No zero init."
 getConstant opts (castDown -> Just cstruct) = do
   tp <- LLVM.getType (cstruct::Ptr ConstantStruct)
   num <- structTypeGetNumElements tp
