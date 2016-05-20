@@ -375,7 +375,7 @@ updateLatchTypes real start
                                           -> case Map.lookup (th,instr) (instructions real) of
                                           Just (_,val) -> case typeUnion tp (symbolicType val) of
                                             Just rtp -> rtp
-                                            Nothing -> tp
+                                            Nothing -> trace ("Warning: Type error, cannot union "++show tp++" and "++show (symbolicType val)) tp
                                           Nothing -> tp
                                          ) (latchValueDesc st)
                       }
@@ -1941,7 +1941,9 @@ realizeBlock thread blk sblk info = do
                      nval <- symITE (edgeActivation cond)
                              (symbolicValue rv1)
                              (symbolicValue rv2)
-                     return $ InstructionValue { symbolicType = symbolicType rv1
+                     return $ InstructionValue { symbolicType = case typeUnion (symbolicType rv1) (symbolicType rv2) of
+                                                   Just rtp -> rtp
+                                                   Nothing -> trace ("Warning: Type error in phi, cannot union "++show (symbolicType rv1)++" and "++show (symbolicType rv2)) (symbolicType rv1)
                                                , symbolicValue = nval
                                                , alternative = Nothing }
                  ) (fmap return $ edgePhis cond) cmp
@@ -2215,12 +2217,15 @@ computeTransitionRelation = do
                                       Just th' -> ThreadState' th' tRev
                                 in return $ RState pRev
                      ) tp
-              alwaysDefined <- foldlM (\allEdgesDefine edge
-                                       -> case Map.lookup (th,instr) (edgeValues edge) of
-                                          Just AlwaysDefined -> return allEdgesDefine
-                                          Just SometimesDefined -> return False
-                                          _ -> return False
-                                      ) True (edges st)
+              alwaysDefined <- if Map.null (yieldEdges st) &&
+                                  Map.null (internalYieldEdges st)
+                               then foldlM (\allEdgesDefine edge
+                                            -> case Map.lookup (th,instr) (edgeValues edge) of
+                                               Just AlwaysDefined -> return allEdgesDefine
+                                               Just SometimesDefined -> return False
+                                               _ -> return False
+                                           ) True (edges st)
+                               else return False
               let phis = [ (phiVal,edgeActivation cond)
                          | edge <- Map.elems (edges st)
                          , cond <- edgeConditions edge
@@ -2481,6 +2486,13 @@ getConstant opts (castDown -> Just czero) = do
        num <- arrayTypeGetNumElements arrTp
        zeroEl <- zeroInit stp
        return (Struct $ genericReplicate num zeroEl)
+     zeroInit (castDown -> Just (ptp::Ptr PointerType)) = do
+       ptp' <- sequentialTypeGetElementType ptp
+               >>= translateType0 opts
+       return $ Singleton $ ValPtr Map.empty ptp'
+     zeroInit tp = do
+       typeDump tp
+       error "No zero init."
 getConstant opts (castDown -> Just cstruct) = do
   tp <- LLVM.getType (cstruct::Ptr ConstantStruct)
   num <- structTypeGetNumElements tp
@@ -2505,6 +2517,15 @@ getConstant opts (castDown -> Just (cvec::Ptr ConstantDataArray)) = do
                  getConstant opts c
               ) [0..sz-1]
   return $ Struct els
+getConstant opts (castDown -> Just (cvec::Ptr ConstantDataVector)) = do
+  sz <- constantDataSequentialGetNumElements cvec
+  els <- mapM (\i -> do
+                 c <- constantDataSequentialGetElementAsConstant cvec i
+                 getConstant opts c
+              ) [0..sz-1]
+  return $ Struct els
+getConstant _ (castDown -> Just (_::Ptr ConstantArray)) = error "getConstant: ConstantArray"
+getConstant _ (castDown -> Just (_::Ptr ConstantVector)) = error "getConstant: ConstantVector"
 getConstant _ c = do
   str <- valueToString c
   error $ "getConstant: "++str
