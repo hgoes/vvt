@@ -2517,6 +2517,15 @@ getConstant opts (castDown -> Just (cvec::Ptr ConstantDataArray)) = do
                  getConstant opts c
               ) [0..sz-1]
   return $ Struct els
+getConstant opts (castDown -> Just (cvec::Ptr ConstantDataVector)) = do
+  sz <- constantDataSequentialGetNumElements cvec
+  els <- mapM (\i -> do
+                 c <- constantDataSequentialGetElementAsConstant cvec i
+                 getConstant opts c
+              ) [0..sz-1]
+  return $ Struct els
+getConstant _ (castDown -> Just (_::Ptr ConstantArray)) = error "getConstant: ConstantArray"
+getConstant _ (castDown -> Just (_::Ptr ConstantVector)) = error "getConstant: ConstantVector"
 getConstant _ c = do
   str <- valueToString c
   error $ "getConstant: "++str
