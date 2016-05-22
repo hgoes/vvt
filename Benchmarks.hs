@@ -96,7 +96,7 @@ _DEFAULT_LOGDIR_ :: FilePath
 _DEFAULT_LOGDIR_ = "log/"
 
 _VERIFY_OPTS_ :: T.Text
-_VERIFY_OPTS_ = " -v5 --stats --timeout=100s"
+_VERIFY_OPTS_ = " -v5 --stats --timeout=200s"
 
 getAllBenchmarks :: BenchConf -> IO [Benchmark]
 getAllBenchmarks conf =
