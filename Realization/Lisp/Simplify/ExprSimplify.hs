@@ -77,7 +77,7 @@ simplifyExpr (AtMostOne []) = LispExpr (E.Const (BoolValue True))
 simplifyExpr (AtMostOne [x]) = LispExpr (E.Const (BoolValue True))
 simplifyExpr (AtMostOne xs) = AtMostOne (fmap simplifyExpr xs)
 
-optimizeFun :: E.Function NoRef NoRef NoRef '(arg,res) -> List LispExpr arg -> LispExpr res
+optimizeFun :: E.Function NoRef '(arg,res) -> List LispExpr arg -> LispExpr res
 optimizeFun (E.ITE tp) args@(cond ::: lhs ::: rhs ::: Nil)
   | defaultEq lhs rhs = lhs
   | otherwise = case cond of

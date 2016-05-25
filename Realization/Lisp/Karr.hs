@@ -159,13 +159,13 @@ getKarrTrans prog = do
                   (\rev _ -> do
                       let Linear coeff c = accessComposite rev nxtLin
                       rcoeff <- mapM (\e -> do
-                                         IntValueC v <- lin (getValue e)
-                                         cv <- lin $ embedConst (IntValueC v)
+                                         IntValue v <- lin (getValue e)
+                                         cv <- lin $ cint v
                                          cond <- lin (e .==. cv)
                                          return (v,cond)
                                      ) coeff
-                      IntValueC rc <- lin (getValue c)
-                      crc <- lin $ embedConst (IntValueC rc)
+                      IntValue rc <- lin (getValue c)
+                      crc <- lin $ cint rc
                       cond <- lin (c .==. crc)
                       return ((fmap fst rcoeff,rc),cond : Map.elems (fmap snd rcoeff))
                   ) allLinear
@@ -249,7 +249,7 @@ makeInitLins prog extr
                                                        (nonlinState extr)
                                                        (nonlinInput extr) val
                                                let Linear _ rval' = accessComposite idx rval
-                                               IntValueC v <- lift $ lin $ getValue rval'
+                                               IntValue v <- lift $ lin $ getValue rval'
                                                put ((rev,Just v):lst)
                                                return IntRepr
                                              Nothing -> do
@@ -395,16 +395,8 @@ instance (Backend b,e ~ Expr b) => Embed (LinearM b) (LinearExpr e) where
   type EmVar (LinearM b) (LinearExpr e) = B.Var b
   type EmQVar (LinearM b) (LinearExpr e) = B.QVar b
   type EmFun (LinearM b) (LinearExpr e) = B.Fun b
-  type EmConstr (LinearM b) (LinearExpr e) = B.Constr b
-  type EmField (LinearM b) (LinearExpr e) = B.Field b
   type EmFunArg (LinearM b) (LinearExpr e) = B.FunArg b
   type EmLVar (LinearM b) (LinearExpr e) = B.LVar b
-  embedConst (IntValueC n) = do
-    c <- lin $ embedConst (IntValueC n)
-    return (Linear Map.empty c)
-  embedConst n = do
-    c <- lin $ embedConst n
-    return (NonLinear c)
   embed (ConstInt n) = do
     c <- lin (embed (ConstInt n))
     return (Linear Map.empty c)

@@ -11,7 +11,6 @@ import qualified Language.SMTLib2.Internals.Backend as B
 
 import Control.Monad.State (MonadIO)
 import Data.Proxy
-import Data.Typeable
 import Data.Dependent.Map (DMap)
 
 class (PartialComp (State t),PartialComp (Input t))
@@ -22,26 +21,26 @@ class (PartialComp (State t),PartialComp (Input t))
   type RealizationProgress t :: (Type -> *) -> *
   stateAnnotation :: t -> CompDescr (State t)
   inputAnnotation :: t -> CompDescr (Input t)
-  initialState :: (Embed m e,GetType e,Typeable (EmConstr m e))
+  initialState :: (Embed m e,GetType e)
                => t
                -> State t e
                -> m (e BoolType)
-  stateInvariant :: (Embed m e,GetType e,Typeable (EmConstr m e))
+  stateInvariant :: (Embed m e,GetType e)
                  => t -> State t e -> Input t e
                  -> m (e BoolType)
-  declareNextState :: (Embed m e,GetType e,Typeable (EmConstr m e))
+  declareNextState :: (Embed m e,GetType e)
                    => (forall t. Maybe String -> e t -> m (e t))
                    -> t
                    -> State t e -> Input t e
                    -> RealizationProgress t e
                    -> m (State t e,RealizationProgress t e)
-  declareAssumptions :: (Embed m e,GetType e,Typeable (EmConstr m e))
+  declareAssumptions :: (Embed m e,GetType e)
                      => (forall t. Maybe String -> e t -> m (e t))
                      -> t
                      -> State t e -> Input t e
                      -> RealizationProgress t e
                      -> m ([e BoolType],RealizationProgress t e)
-  declareAssertions :: (Embed m e,GetType e,Typeable (EmConstr m e))
+  declareAssertions :: (Embed m e,GetType e)
                     => (forall t. Maybe String -> e t -> m (e t))
                     -> t
                     -> State t e -> Input t e

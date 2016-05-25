@@ -188,7 +188,7 @@ replaceVarWith (LispRev rname@(LispName sz tps name) val) nexpr prog = case val 
                   -> LispExpr tp
                   -> LispExpr tp
     replaceInExpr rname ridx nname nexpr (LispExpr e)
-      = LispExpr (runIdentity $ mapExpr return return return return return return return
+      = LispExpr (runIdentity $ mapExpr return return return return return
                   (return.replaceInExpr rname ridx nname nexpr) e)
     replaceInExpr rname ridx nname nexpr e@(LispRef var idx)
       = case replaceInVar rname ridx nname nexpr var of
@@ -295,7 +295,7 @@ fsck prog = [ "In gate definition of "++show gtName++"("++show def++"): "++defEr
   where
     fsckExpr :: LispExpr tp -> [String]
     fsckExpr (LispExpr e) = execState
-                            (mapExpr return return return return return return return
+                            (mapExpr return return return return return
                              (\e' -> do
                                  errs <- get
                                  let nerrs = fsckExpr e'

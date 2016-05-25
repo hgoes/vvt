@@ -6,7 +6,6 @@ import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type.Nat
 import qualified Language.SMTLib2.Internals.Type.List as List
-import Language.SMTLib2.Internals.Interface as I
 import Data.Map (Map)
 import qualified Data.Map as Map
 import LLVM.FFI hiding (Type,Value,Vector,ArrayType,GetType,getType,Select,Store)
@@ -186,22 +185,22 @@ zipStruct f (Singleton x) (Singleton y) = Singleton (f x y)
 zipStruct f (Struct xs) (Struct ys)
   = Struct (zipWith (zipStruct f) xs ys)
 
-defaultConst :: SymType -> SymVal ConcreteValue
-defaultConst TpBool = ValBool (BoolValueC False)
-defaultConst TpInt = ValInt (IntValueC 0)
-defaultConst (TpBounded bw) = ValBounded (BitVecValueC 0 bw)
+defaultConst :: SymType -> SymVal Value
+defaultConst TpBool = ValBool (BoolValue False)
+defaultConst TpInt = ValInt (IntValue 0)
+defaultConst (TpBounded bw) = ValBounded (BitVecValue 0 bw)
 defaultConst (TpPtr mp tp)
-  = ValPtr (Map.mapWithKey (\trg _ -> (BoolValueC False,[IntValueC 0
-                                                        | DynamicAccess <- offsetPattern trg ])
+  = ValPtr (Map.mapWithKey (\trg _ -> (BoolValue False,[IntValue 0
+                                                       | DynamicAccess <- offsetPattern trg ])
                            ) mp) tp
 defaultConst (TpThreadId mp)
-  = ValThreadId (fmap (const (BoolValueC False)) mp)
+  = ValThreadId (fmap (const (BoolValue False)) mp)
 defaultConst (TpCondition mp)
-  = ValCondition (fmap (const (BoolValueC False)) mp)
+  = ValCondition (fmap (const (BoolValue False)) mp)
 defaultConst (TpVector tps) = ValVector (fmap defaultConst tps)
 
 defaultValue :: Embed m e => SymType -> m (SymVal e)
-defaultValue tp = foldExprs (\_ -> embedConst) (defaultConst tp)
+defaultValue tp = foldExprs (\_ -> constant) (defaultConst tp)
 
 valEq :: (Embed m e,GetType e) => SymVal e -> SymVal e -> m (e BoolType)
 valEq (ValBool x) (ValBool y) = embed $ x :==: y
@@ -212,15 +211,15 @@ valEq (ValBounded e1) (ValBounded e2) = case (getType e1,getType e2) of
 valEq (ValPtr x _) (ValPtr y _) = do
   mp <- sequence $ Map.intersectionWith ptrEq x y
   case catMaybes $ Map.elems mp of
-    [] -> embedConst (BoolValueC False)
+    [] -> false
     [x] -> return x
-    xs -> embed $ OrLst xs
+    xs -> or' xs
   where
     ptrEq (c1,i1) (c2,i2) = do
       conds <- idxEq i1 i2
       case conds of
         Just conds' -> do
-          res <- embed $ AndLst (c1:c2:conds')
+          res <- and' (c1:c2:conds')
           return $ Just res
         Nothing -> return Nothing
     idxEq [] [] = return (Just [])
@@ -229,27 +228,27 @@ valEq (ValPtr x _) (ValPtr y _) = do
       case rest of
         Nothing -> return Nothing
         Just rest' -> do
-          c <- embed $ x :==: y
+          c <- x .==. y
           return $ Just (c:rest')
 valEq (ValThreadId x) (ValThreadId y) = do
   mp <- sequence $ Map.intersectionWith condEq x y
   case Map.elems mp of
-    [] -> embedConst (BoolValueC False)
+    [] -> false
     [x] -> return x
-    xs -> embed $ OrLst xs
+    xs -> or' xs
   where
-    condEq c1 c2 = embed $ c1 :&: c2
+    condEq c1 c2 = c1 .&. c2
 valEq (ValCondition x) (ValCondition y) = do
   mp <- sequence $ Map.intersectionWith condEq x y
   case Map.elems mp of
-    [] -> embedConst (BoolValueC False)
+    [] -> false
     [x] -> return x
-    xs -> embed $ OrLst xs
+    xs -> or' xs
   where
-    condEq c1 c2 = embed $ c1 :&: c2
+    condEq c1 c2 = c1 .&. c2
 valEq (ValVector xs) (ValVector ys) = do
   lst <- sequence $ zipWith valEq xs ys
-  embed $ AndLst lst
+  and' lst
 
 idxList :: [AccessPattern] -> [e IntType] -> [Either Integer (e IntType)]
 idxList [] [] = []
@@ -293,19 +292,19 @@ derefPointer idx mp
     deref [StaticAccess n] [] (Right i:is)
       = let (restPat,restDyn) = toAccess is
         in (DynamicAccess:restPat,do
-               nn <- embedConst (IntValueC n)
-               ni <- embed $ i :+: nn
+               nn <- cint n
+               ni <- i .+. nn
                return $ nn:restDyn)
     deref [DynamicAccess] [n] (Left i:is)
       = let (restPat,restDyn) = toAccess is
         in (DynamicAccess:restPat,do
-               ri <- embedConst (IntValueC i)
-               ni <- embed $ ri :+: n
+               ri <- cint i
+               ni <- ri .+. n
                return (ni:restDyn))
     deref [DynamicAccess] [n] (Right i:is)
       = let (restPat,restDyn) = toAccess is
         in (DynamicAccess:restPat,do
-               ni <- embed $ n :+: i
+               ni <- n .+. i
                return (ni:restDyn))
     deref (StaticAccess n:pat) dyn idx
       = let (restPat,restDyn) = deref pat dyn idx
@@ -445,7 +444,7 @@ withDynOffset ite f n xs st = with (0::Integer) xs st
     with i (x:xs) st = do
       (res,nx,st1) <- f x st
       (ress,nxs,st2) <- with (i+1) xs st1
-      cond <- n .==. (I.constant i)
+      cond <- n .==. (cint i)
       nx' <- structITE ite cond nx x
       return (CondAccess cond res ress,
               nx':nxs,
@@ -549,14 +548,14 @@ accessAlloc f [] (ValStatic (x:xs)) st = do
   return (res,ValStatic $ nx:xs,nst)
 accessAlloc f (i:is) (ValDynamic arrs sz) st = do
   i' <- case i of
-    Left i -> embedConst (IntValueC i)
+    Left i -> cint i
     Right i -> return i
   (res,narrs,nst) <- accessStruct arrITE (accessArray (nf i') i') is arrs st
   return (res,ValDynamic narrs sz,nst)
   where
     nf i val st = do
       (acc,res,nst) <- f val st
-      cond <- embed $ i :>=: sz
+      cond <- i .>=. sz
       return (CondAccess cond Invalid acc,res,nst)
     
 accessAllocTyped :: (Embed m e,GetType e,GShow e)
@@ -688,14 +687,14 @@ patternMatch (DynamicAccess:xs) (StaticAccess y:ys) (ix:ixs) iy = do
   case rest of
     Nothing -> return Nothing
     Just rest' -> do
-      c <- ix .==. (I.constant y)
+      c <- ix .==. cint y
       return $ Just $ c:rest'
 patternMatch (StaticAccess x:xs) (DynamicAccess:ys) ix (iy:iys) = do
   rest <- patternMatch xs ys ix iys
   case rest of
     Nothing -> return Nothing
     Just rest' -> do
-      c <- iy .==. (I.constant x)
+      c <- iy .==. cint x
       return $ Just $ c:rest'
 patternMatch (DynamicAccess:xs) (DynamicAccess:ys) (ix:ixs) (iy:iys) = do
   rest <- patternMatch xs ys ixs iys

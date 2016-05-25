@@ -11,7 +11,6 @@ import qualified Realization.Lisp as L
 import qualified Realization.Lisp.Array as L
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Type
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
@@ -569,7 +568,7 @@ translateExpr :: Monad m
               -> RExpr inp st tp
               -> m (L.LispExpr tp)
 translateExpr f g h (RExpr e) = do
-  ne <- E.mapExpr undefined undefined undefined undefined undefined undefined undefined
+  ne <- E.mapExpr undefined undefined undefined undefined undefined
         (translateExpr f g h) e
   return $ L.LispExpr ne
 translateExpr f g h (RInput rev) = f rev

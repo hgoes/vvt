@@ -7,9 +7,7 @@ import qualified Language.SMTLib2 as SMT (simplify)
 import qualified Language.SMTLib2.Internals.Backend as SMTB
 import Language.SMTLib2.Internals.Monad (embedSMT)
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
-import Language.SMTLib2.Internals.Type
 import qualified Language.SMTLib2.Internals.Type.List as List
 
 simplify :: forall i e tp m.
@@ -18,8 +16,6 @@ simplify :: forall i e tp m.
              EmVar m e ~ ExVar i e,
              EmQVar m e ~ ExQVar i e,
              EmFun m e ~ ExFun i e,
-             EmConstr m e ~ ExConstr i e,
-             EmField m e ~ ExField i e,
              EmFunArg m e ~ ExFunArg i e,
              EmLVar m e ~ ExLVar i e)
             => i -> e tp -> m (e tp)

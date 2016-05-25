@@ -16,9 +16,7 @@ module Domain
 import Language.SMTLib2 hiding (simplify)
 import Language.SMTLib2.Internals.Interface
 import Language.SMTLib2.Internals.Expression (NoVar)
-import Language.SMTLib2.Internals.Type
 import Language.SMTLib2.Internals.Embed
-import Language.SMTLib2.Internals.Backend (SMTMonad)
 
 import Args
 import SMTPool
@@ -347,7 +345,7 @@ domainAbstract expr mustUse dom = do
                  -- Only use predicates which have only variables that appear in the expression
                  if nd==mustUse || (DMap.null $ DMap.difference predVars exprVars)
                    then (do
-                            BoolValueC c <- getValue repr
+                            BoolValue c <- getValue repr
                             return $ Just (nd,c))
                    else return Nothing
              ) reprs

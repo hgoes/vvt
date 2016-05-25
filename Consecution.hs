@@ -6,8 +6,6 @@ import Domain
 import Args
 
 import Language.SMTLib2
-import Language.SMTLib2.Internals.Backend (SMTMonad)
-import Language.SMTLib2.Internals.Interface
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
 import Data.Vector (Vector)

@@ -119,8 +119,8 @@ liftSizes :: (Embed m e,GetType e)
           -> [Size e szs]
           -> m (Size e (sz ': szs))
 liftSizes tp tps vals = do
-  sz <- embedConst len
-  rangeR <- mapM embedConst range
+  sz <- constant len
+  rangeR <- mapM constant range
   szs <- buildSize sz tps (zip rangeR (fmap (\(Size _ sz) -> sz) vals))
   return (Size (tp ::: tps) szs)
   where
@@ -150,53 +150,53 @@ liftSizes tp tps vals = do
       narrs <- zipArr idx arrs els
       return (narr ::: narrs)
     
-unliftSize :: (Embed m e,GetType e) => (forall t. e t -> m (ConcreteValue t))
+unliftSize :: (Embed m e,GetType e) => (forall t. e t -> m (Value t))
            -> Size e (sz ': szs)
            -> m [Size e szs]
 unliftSize f sz@(Size (_ ::: _) (s ::: _)) = do
   x <- f s
   mapM (\i -> do
-           i' <- embedConst i
+           i' <- constant i
            indexSize sz i'
        ) (sizeRange x)
 
-sizeRange :: ConcreteValue tp -> [ConcreteValue tp]
-sizeRange (BoolValueC False) = []
-sizeRange (BoolValueC True) = [BoolValueC False]
-sizeRange (IntValueC n) = [IntValueC i | i <- [0..n-1] ]
-sizeRange (RealValueC _) = error "sizeRange: Cannot generate size range for real type."
-sizeRange (BitVecValueC v bw) = [BitVecValueC i bw | i <- [0..v-1] ]
-sizeRange (ConstrValueC _) = error "sizeRange: Cannot generate size range for user defined type."
+sizeRange :: Value tp -> [Value tp]
+sizeRange (BoolValue False) = []
+sizeRange (BoolValue True) = [BoolValue False]
+sizeRange (IntValue n) = [IntValue i | i <- [0..n-1] ]
+sizeRange (RealValue _) = error "sizeRange: Cannot generate size range for real type."
+sizeRange (BitVecValue v bw) = [BitVecValue i bw | i <- [0..v-1] ]
+sizeRange (DataValue _) = error "sizeRange: Cannot generate size range for user defined type."
 
 defaultValue :: (Embed m e,GetType e) => Repr tp -> m (e tp)
-defaultValue BoolRepr = embedConst $ BoolValueC False
-defaultValue IntRepr = embedConst $ IntValueC 0
-defaultValue RealRepr = embedConst $ RealValueC 0
-defaultValue (BitVecRepr bw) = embedConst $ BitVecValueC 0 bw
+defaultValue BoolRepr = false
+defaultValue IntRepr = cint 0
+defaultValue RealRepr = creal 0
+defaultValue (BitVecRepr bw) = cbv 0 bw
 defaultValue (ArrayRepr idx tp) = do
   def <- defaultValue tp
   embed $ ConstArray idx def
 defaultValue (DataRepr _) = error "defaultValue: User defined types don't have default values."
 
-lengthValue :: Repr tp -> Integer -> ConcreteValue tp
-lengthValue BoolRepr 0 = BoolValueC False
-lengthValue BoolRepr 1 = BoolValueC True
+lengthValue :: Repr tp -> Integer -> Value tp
+lengthValue BoolRepr 0 = BoolValue False
+lengthValue BoolRepr 1 = BoolValue True
 lengthValue BoolRepr n = error $ "lengthValue: length of "++show n++" invalid for bool type."
-lengthValue IntRepr n = IntValueC n
-lengthValue RealRepr n = RealValueC (fromInteger n)
+lengthValue IntRepr n = IntValue n
+lengthValue RealRepr n = RealValue (fromInteger n)
 lengthValue (BitVecRepr bw) n
-  | n < 2^(naturalToInteger bw) = BitVecValueC n bw
+  | n < 2^(naturalToInteger bw) = BitVecValue n bw
   | otherwise = error $ "lengthValue: length of "++show n++" invalid for bitvector "++
                 show (naturalToInteger bw)++" type."
 lengthValue (DataRepr _) n = error "lengthValue: Cannot represent length as user defined data type."
 
 eqSize :: (Embed m e,GetType e) => Size e sz -> Size e sz -> m [e BoolType]
 eqSize (Size _ sz1) (Size _ sz2)
-  = List.zipToListM (\x y -> embed $ x :==: y) sz1 sz2
+  = List.zipToListM (.==.) sz1 sz2
 
 iteSize :: (Embed m e,GetType e) => e BoolType -> Size e sz -> Size e sz -> m (Size e sz)
 iteSize c (Size tps sz1) (Size _ sz2) = do
-  nsz <- List.zipWithM (\x y -> embed $ ITE c x y) sz1 sz2
+  nsz <- List.zipWithM (ite c) sz1 sz2
   return (Size tps nsz)
 
 parseSize' :: GetType e => (forall r. L.Lisp -> (forall tp. e tp -> r) -> r)
@@ -320,7 +320,7 @@ liftSized sz szs tp vals = do
   def <- defaultValue arrTp
   arr <- embed $ ConstArray (sz ::: Nil) def
   ne <- foldlM (\carr (idx,Sized e) -> do
-                   idx' <- embedConst idx
+                   idx' <- constant idx
                    embed $ Store carr (idx' ::: Nil) e
                ) arr (zip range vals)
   return (Sized ne)
