@@ -6,13 +6,12 @@ packages:
 #smtlib2 1.0
 - location:
     git: https://github.com/hguenther/smtlib2.git
-    commit: 5a7f14236ce42e480991dc0c5f2087732fb8b857
+    commit: d814d50a9940efcbc89b7945877648298c76c494
   subdirs:
     - '.'
     - backends/debug
     - backends/pipe
     - backends/timing
-    - extras/emulated-modulus
   extra-dep: true
 #bindings-llvm
 - location:
