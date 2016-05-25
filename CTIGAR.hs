@@ -18,10 +18,8 @@ import Language.SMTLib2 hiding (simplify)
 import Language.SMTLib2.Pipe (createPipe)
 import Language.SMTLib2.Debug
 import Language.SMTLib2.Timing
-import Language.SMTLib2.ModulusEmulator
 import Language.SMTLib2.Internals.Backend (LVar)
 import qualified Language.SMTLib2.Internals.Backend as B
-import Language.SMTLib2.Internals.Interface
 import qualified Language.SMTLib2.Internals.Expression as E
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Language.SMTLib2.Internals.Embed
@@ -224,8 +222,7 @@ mkIC3Config mdl opts verb stats dumpDomain dumpStats dumpStates
                               (fmap (\t -> ("base",t)) $ Map.lookup Base (optDebugBackend opts))
            , ic3InitBackend = mkPipe (optBackend opts Map.! Initiation)
                               (fmap (\t -> ("init",t)) $ Map.lookup Initiation (optDebugBackend opts))
-           , ic3InterpolationBackend = addModulusEmulation $
-                                       mkPipe (optBackend opts Map.! Interpolation)
+           , ic3InterpolationBackend = mkPipe (optBackend opts Map.! Interpolation)
                                        (fmap (\t -> ("interp",t)) $ Map.lookup Interpolation (optDebugBackend opts))
            , ic3DebugLevel = verb
            , ic3MaxSpurious = 0
@@ -279,9 +276,6 @@ runIC3 cfg act = do
         Nothing -> ic3InterpolationBackend cfg -- >>= namedDebugBackend "interp"
         Just stats -> addTiming (interpolationTime stats) (interpolationNum stats)
                       (ic3InterpolationBackend cfg)
-      interpBackend'' = if interpolationIsMathSAT
-                        then addModulusEmulation interpBackend'
-                        else interpBackend'
   cons <- case consBackend of
     AnyBackend cr
       -> consecutionNew cr
@@ -332,7 +326,7 @@ runIC3 cfg act = do
       TR.initialState mdl cur >>= assert
       --assert $ TR.stateInvariant mdl inp cur
       return (PoolVars cur)
-  interpolation <- case interpBackend'' of
+  interpolation <- case interpBackend' of
     AnyBackend cr -> createSMTPool cr $ do
       setOption (SMTLogic "QF_AUFLIA")
       setOption (ProduceInterpolants True)
@@ -859,7 +853,7 @@ baseCases st = do
   if res==Sat
     then (do
              succ0 <- mapM getValue asserts0
-             if not $ and [ v | BoolValueC v <- succ0 ]
+             if not $ and [ v | BoolValue v <- succ0 ]
                then (do
                         rcur0 <- unliftComp getValue cur0
                         rinp0 <- unliftComp getValue inp0
@@ -1050,7 +1044,7 @@ renderFixpoint dom fp = runReader (getFixpoint dom fp arg >>= simplify ()) descr
   where
     descr = Dom.domainDescr dom
     arg = runIdentity $ createComposite
-          (\_ rev -> return (CompositeExpr descr (Var rev))) descr
+          (\_ rev -> return (CompositeExpr descr (E.Var rev))) descr
 
 getAbstractFixpoint :: Int -> IC3 mdl [Dom.AbstractState (TR.State mdl)]
 getAbstractFixpoint level = do
@@ -1229,7 +1223,7 @@ interpolateState j s inp = do
           (mod' nx (cint n)) .==. (cint 0)
         Neg x -> do
           nx <- cleanInterpolant mp x
-          embed (Neg nx)
+          neg nx
         Arith op (x ::: Nil)
           -> cleanInterpolant mp x
         Ord op x@(getType -> RealRepr) y -> do
@@ -1237,15 +1231,15 @@ interpolateState j s inp = do
           ry <- cleanInterpolant mp y
           nx <- removeToReal rx
           case nx of
-            Nothing -> embed (Ord op rx ry)
+            Nothing -> ord op rx ry
             Just x' -> do
               ny <- removeToReal ry
               case ny of
-                Nothing -> embed (Ord op rx ry)
-                Just y' -> embed (Ord op x' y')
+                Nothing -> ord op rx ry
+                Just y' -> ord op x' y'
         E.App fun args -> do
           nargs <- List.mapM (cleanInterpolant mp) args
-          embed (E.App fun nargs)
+          app fun nargs
         _ -> return e
 
     removeToReal :: (Backend b) => Expr b RealType -> SMT b (Maybe (Expr b IntType))
@@ -1711,8 +1705,3 @@ addDebugging :: String -> AnyBackend IO -> AnyBackend IO
 addDebugging name (AnyBackend act) = AnyBackend $ do
   b <- act
   return $ namedDebugBackend name b
-
-addModulusEmulation :: AnyBackend IO -> AnyBackend IO
-addModulusEmulation (AnyBackend act) = AnyBackend $ do
-  b <- act
-  return $ modulusEmulator True b

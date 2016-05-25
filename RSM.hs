@@ -142,9 +142,9 @@ extractLine :: (Backend b,Ord var) => Coeffs b var
             -> SMT b (Integer,[(var,Integer)])
 extractLine coeffs = do
   rcoeffs <- mapM getValue (coeffsVar coeffs)
-  IntValueC rconst <- getValue (coeffsConst coeffs)
+  IntValue rconst <- getValue (coeffsConst coeffs)
   return (rconst,[ (var,val)
-                 | (var,IntValueC val) <- Map.toList rcoeffs
+                 | (var,IntValue val) <- Map.toList rcoeffs
                  , val/=0 ])
 
 mineStates :: (Backend b,SMTMonad b ~ IO,Ord var) => IO b -> RSMState loc var

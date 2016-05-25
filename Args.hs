@@ -45,9 +45,9 @@ class (Ord (CompDescr arg),GCompare (RevComp arg),GShow (RevComp arg))
                tell [c]
                return x) e1
     case eqs of
-      [] -> embedConst (BoolValueC True)
+      [] -> true
       [x] -> return x
-      _ -> embed $ AndLst eqs
+      _ -> and' eqs
   revName :: Proxy arg -> RevComp arg tp -> String
   revName _ _ = "rev"
   revType :: Proxy arg -> CompDescr arg -> RevComp arg tp -> Repr tp
@@ -55,14 +55,14 @@ class (Ord (CompDescr arg),GCompare (RevComp arg),GShow (RevComp arg))
 
 data CompositeExpr a t
   = CompositeExpr { compositeDescr :: CompDescr a
-                  , compositeExpr :: E.Expression (RevComp a) E.NoVar E.NoFun E.NoCon E.NoField E.NoVar E.NoVar (CompositeExpr a) t }
+                  , compositeExpr :: E.Expression (RevComp a) E.NoVar E.NoFun E.NoVar E.NoVar (CompositeExpr a) t }
 
 instance Composite a => GetType (CompositeExpr a) where
   getType (CompositeExpr descr e :: CompositeExpr a t)
     = runIdentity $ E.expressionType
       (return . revType (Proxy::Proxy a) descr)
-      (return.getType) (return.getFunType) (return.getConType)
-      (return.getFieldType) (return.getType) (return.getType) (return.getType) e
+      (return.getType) (return.getFunType) (return.getType)
+      (return.getType) (return.getType) e
 
 declareComposite :: forall arg m e.
                     (Composite arg,Monad m)
@@ -111,28 +111,18 @@ instance (Composite a,d ~ CompDescr a) => Embed (Reader d) (CompositeExpr a) whe
   type EmVar (Reader d) (CompositeExpr a) = RevComp a
   type EmQVar (Reader d) (CompositeExpr a) = E.NoVar
   type EmFun (Reader d) (CompositeExpr a) = E.NoFun
-  type EmConstr (Reader d) (CompositeExpr a) = E.NoCon
-  type EmField (Reader d) (CompositeExpr a) = E.NoField
   type EmFunArg (Reader d) (CompositeExpr a) = E.NoVar
   type EmLVar (Reader d) (CompositeExpr a) = E.NoVar
   embed e = do
     descr <- ask
     return (CompositeExpr descr e)
   embedQuantifier _ _ = error "CompositeExpr does not support quantifier"
-  embedConstrTest _ _ _ = error "CompositeExpr does not support datatypes"
-  embedGetField _ _ _ _ _ = error "CompositeExpr does not support datatypes"
-  embedConst c = do
-    descr <- ask
-    v <- valueFromConcrete (\_ _ -> error "CompositeExpr does not support datatypes") c
-    return (CompositeExpr descr (E.Const v))
   embedTypeOf = return.getType
 
 instance Composite a => Extract () (CompositeExpr a) where
   type ExVar () (CompositeExpr a) = RevComp a
   type ExQVar () (CompositeExpr a) = E.NoVar
   type ExFun () (CompositeExpr a) = E.NoFun
-  type ExConstr () (CompositeExpr a) = E.NoCon
-  type ExField () (CompositeExpr a) = E.NoField
   type ExFunArg () (CompositeExpr a) = E.NoVar
   type ExLVar () (CompositeExpr a) = E.NoVar
   extract _ (CompositeExpr _ x) = Just x
@@ -153,14 +143,12 @@ concretizeExpr :: (Embed m e,GetType e,Composite arg)
 concretizeExpr arg (CompositeExpr _ (E.Var rev))
   = return (accessComposite rev arg)
 concretizeExpr arg (CompositeExpr _ (E.App fun args)) = do
-  nfun <- E.mapFunction undefined undefined undefined fun
+  nfun <- E.mapFunction undefined fun
   nargs <- List.mapM (concretizeExpr arg) args
   embed (E.App nfun nargs)
-concretizeExpr arg (CompositeExpr _ (E.Const c)) = do
-  nc <- mapValue undefined c
-  embed (E.Const nc)
+concretizeExpr arg (CompositeExpr _ (E.Const c)) = constant c
 concretizeExpr arg (CompositeExpr _ (E.AsArray fun)) = do
-  nfun <- E.mapFunction undefined undefined undefined fun
+  nfun <- E.mapFunction undefined fun
   embed (E.AsArray nfun)
 
 relativizeExpr :: (Backend b,Composite arg)
@@ -186,14 +174,12 @@ relativizeExpr' descr mp lmp info e = case extract info e of
   Just (E.LVar v) -> case DMap.lookup v lmp of
     Just e -> e
   Just (E.App fun args)
-    -> let nfun = runIdentity $ E.mapFunction undefined undefined undefined fun
+    -> let nfun = runIdentity $ E.mapFunction undefined fun
            nargs = runIdentity $ List.mapM (return . relativizeExpr' descr mp lmp info) args
        in CompositeExpr descr (E.App nfun nargs)
-  Just (E.Const c)
-    -> let nc = runIdentity $ mapValue undefined c
-       in CompositeExpr descr (E.Const nc)
+  Just (E.Const c) -> CompositeExpr descr (E.Const c)
   Just (E.AsArray fun)
-    -> let nfun = runIdentity $ E.mapFunction undefined undefined undefined fun
+    -> let nfun = runIdentity $ E.mapFunction undefined fun
        in CompositeExpr descr (E.AsArray nfun)
   -- TODO: Find a way not to flatten let bindings
   Just (E.Let bind body) -> relativizeExpr' descr mp nlmp info body

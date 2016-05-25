@@ -7,6 +7,7 @@ import Language.SMTLib2.Internals.Monad
 import Data.Pool
 import Control.Exception
 import Control.Monad.State.Strict
+import qualified Data.Set as Set
 
 data SMTInstance info b = SMTInstance { instanceState :: SMTState b
                                       , instanceInfo :: info b
@@ -25,7 +26,7 @@ createSMTPool createBackend (SMT info)
   = fmap SMTPool $
     createPool (do
                    b <- createBackend
-                   let st0 = SMTState b emptyDatatypeInfo
+                   let st0 = SMTState b Set.empty
                    (info',st1) <- (runStateT info st0) `onException`
                                   (exit b)
                    return $ SMTInstance st1 info')

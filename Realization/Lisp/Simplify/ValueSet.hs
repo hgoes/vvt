@@ -30,7 +30,7 @@ data ValueSet = ValueSet { valueMask :: [Header]
 
 data Header = forall tp. Header (LispRev tp)
 
-data Entry = forall tp. Entry (ConcreteValue tp)
+data Entry = forall tp. Entry (Value tp)
 
 instance Eq Entry where
   (==) (Entry x) (Entry y) = defaultEq x y
@@ -43,7 +43,7 @@ valueSetAnalysis verbosity threshold solver prog = do
   let consts = getConstants vs
   return $ foldl' (\prog' (Header rev,Entry val)
                    -> case geq (getType rev) (getType val) of
-                   Just Refl -> replaceVarWith rev (runIdentity $ embedConst val) prog'
+                   Just Refl -> replaceVarWith rev (runIdentity $ constant val) prog'
                   ) prog consts
 
 deduceValueSet :: Int -> Int -> String -> LispProgram -> IO ValueSet

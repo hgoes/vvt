@@ -45,7 +45,7 @@ import Text.Show
 
 import Debug.Trace
 
-data RExpr inp st tp = RExpr (Expression E.NoVar E.NoVar E.NoFun E.NoCon E.NoField E.NoVar E.NoVar (RExpr inp st) tp)
+data RExpr inp st tp = RExpr (Expression E.NoVar E.NoVar E.NoFun E.NoVar E.NoVar (RExpr inp st) tp)
                      | RInput (RevComp inp tp)
                      | RState (RevComp st tp)
                      | RRef (DefExpr tp)
@@ -149,25 +149,14 @@ instance (Composite inp,Composite st)
                (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoVar
   type EmFun (ReaderT TranslationOptions
               (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoFun
-  type EmConstr (ReaderT TranslationOptions
-                 (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoCon
-  type EmField (ReaderT TranslationOptions
-                (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoField
   type EmFunArg (ReaderT TranslationOptions
                  (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoVar
   type EmLVar (ReaderT TranslationOptions
                (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoVar
   embed e = return (RExpr e)
   embedQuantifier = error "Cannot embed quantifier into RExpr."
-  embedGetField = error "Cannot embed datatypes into RExpr."
-  embedConstrTest = error "Cannot embed datatypes into RExpr."
-  embedConst c = do
-    val <- valueFromConcrete
-           (error "Cannot embed datatypes into RExpr.")
-           c
-    return (RExpr (E.Const val))
-  embedTypeOf (RExpr e) = E.expressionType (return.getType) (return.getType) (return.getFunType)
-                          (return.getConType) (return.getFieldType) (return.getType) (return.getType)
+  embedTypeOf (RExpr e) = E.expressionType (return.getType) (return.getType)
+                          (return.getFunType) (return.getType) (return.getType)
                           embedTypeOf e
   embedTypeOf (RRef (DefExpr _ tp)) = return tp
   embedTypeOf (RInput rev :: RExpr inp st tp) = do
@@ -438,14 +427,14 @@ constantIntValue n = do
   if useBW
     then error "constantIntValue unimplemented for bitvectors"
     else do
-      c <- embedConst (IntValueC n)
+      c <- cint n
       return $ InstructionValue { symbolicType = TpInt
                                 , symbolicValue = ValInt c
                                 , alternative = Just $ IntConst n }
 
 constantBoolValue :: (Composite inp,Composite st) => Bool -> Realization inp st (InstructionValue inp st)
 constantBoolValue n = do
-  c <- embedConst (BoolValueC n)
+  c <- cbool n
   return $ InstructionValue { symbolicType = TpBool
                             , symbolicValue = ValBool c
                             , alternative = Nothing }
@@ -1036,7 +1025,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                           Just r -> r
                     ncond <- act .&. cond
                     return (ncond,idx)) (tpPtr $ symbolicType cond')
-     ncond <- fmap ValCondition $ sequence $ fmap (const (constant False))
+     ncond <- fmap ValCondition $ sequence $ fmap (const false)
               (tpCondition $ symbolicType rcond)
      nedge <- addEvent (WriteEvent { target = ntarget
                                    , writeContent = rcond { symbolicValue = ncond
@@ -1150,10 +1139,10 @@ realizeInstruction thread blk sblk act (castDown -> Just sw) edge = do
                                                                          , edgePhis = phis }]
                                        }) (edges s) }
       return (Nothing,act)
-    mkSwitch cond ((cint,blk):trgs) srcBlk defBlk conds = do
-      APInt _ rval <- liftIO $ constantIntGetValue cint >>= peek
+    mkSwitch cond ((c,blk):trgs) srcBlk defBlk conds = do
+      APInt _ rval <- liftIO $ constantIntGetValue c >>= peek
       phis <- realizePhis thread srcBlk blk edge
-      constRVal <- embedConst (IntValueC rval)
+      constRVal <- cint rval
       rcond <- act .&. (cond .==. constRVal)
       modify $ \s -> s { edges = Map.insertWith mappend (thread,blk,0)
                                  (edge { edgeConditions = [EdgeCondition { edgeActivation = rcond
@@ -1278,7 +1267,7 @@ realizeDefInstruction thread (castDown -> Just opInst) edge = do
                  Just (IntConst vr)
                    -> (TpInt,let ValInt vl = symbolicValue valL
                              in do
-                               c <- embedConst $ IntValueC $ 2^vr
+                               c <- cint $ 2^vr
                                e <- vl .*. c
                                return $ ValInt e)
         SDiv -> (TpInt,let ValInt v1 = symbolicValue valL
@@ -1335,7 +1324,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge = do
          tp <- case Map.lookup (Left i) mem of
            Just (TpStatic _ tp') -> return tp'
            Just (TpDynamic tp') -> return tp'
-         cond <- constant True
+         cond <- true
          return InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
                                  , symbolicValue = ValPtr (Map.singleton ptrLoc (cond,[])) tp
                                  , alternative = Nothing }
@@ -1347,7 +1336,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge = do
          tp <- case Map.lookup (Left i) mem of
            Just (TpStatic _ tp') -> return tp'
            Just (TpDynamic tp') -> return tp'
-         cond <- constant True
+         cond <- true
          i0 <- 0
          return InstructionValue { symbolicType = TpPtr (Map.singleton ptrLocDyn ()) tp
                                  , symbolicValue = ValPtr (Map.singleton ptrLocDyn (cond,[i0])) tp
@@ -1371,7 +1360,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge = do
                          Nothing -> MainState (LatchBlock blk sblk)
                          Just th' -> ThreadState' th' (LatchBlock blk sblk)
                  ] of
-            [] -> constant True
+            [] -> true
             xs -> mkOr xs
      return InstructionValue { symbolicType = TpBool
                              , symbolicValue = ValBool res
@@ -1508,7 +1497,7 @@ realizeDefInstruction thread i@(castDown -> Just (_::Ptr AllocaInst)) edge = do
   tp <- case Map.lookup (Left i) memDesc of
     Just (TpStatic _ tp') -> return tp'
     Just (TpDynamic tp') -> return tp'
-  cond <- constant True
+  cond <- true
   return InstructionValue { symbolicType = TpPtr (Map.singleton ptrLoc ()) tp
                           , symbolicValue = ValPtr (Map.singleton ptrLoc (cond,[])) tp
                           , alternative = Nothing }
@@ -1677,7 +1666,7 @@ memoryWrite th origin act ptr val edge = do
                  (cond,idx) <- case Map.lookup loc (valPtr $ symbolicValue ptr) of
                        Just r -> return r
                        Nothing -> do
-                         c <- constant False
+                         c <- false
                          i <- sequence [ 0 | DynamicAccess <- offsetPattern loc ]
                          return (c,i)
                  ncond <- act .&. cond
@@ -1728,7 +1717,7 @@ realizeValue thread (castDown -> Just i) edge = do
   rv <- liftIO $ apIntGetSExtValue v
   if bw==1
     then do
-    val <- embedConst $ BoolValueC $ rv/=0
+    val <- cbool $ rv/=0
     return InstructionValue { symbolicType = TpBool
                             , symbolicValue = ValBool val
                             , alternative = Just (IntConst $ fromIntegral rv) }
@@ -1737,13 +1726,13 @@ realizeValue thread (castDown -> Just i) edge = do
     if useBW
       then reifyNat (fromIntegral bw) $
            \bw' -> do
-             val <- embedConst $ BitVecValueC (fromIntegral rv) bw'
+             val <- cbv (fromIntegral rv) bw'
              return InstructionValue { symbolicType = TpBounded bw'
                                      , symbolicValue = ValBounded val
                                      , alternative = Just (IntConst $ fromIntegral rv)
                                      }
       else do
-        val <- embedConst $ IntValueC $ fromIntegral rv
+        val <- cint $ fromIntegral rv
         return InstructionValue { symbolicType = TpInt
                                 , symbolicValue = ValInt val
                                 , alternative = Just (IntConst $ fromIntegral rv)
@@ -1777,7 +1766,7 @@ realizeValue thread (castDown -> Just glob) edge = do
           return $ case Map.lookup (Right glob) globs of
             Just (TpStatic _ t) -> t
             Just (TpDynamic t) -> t
-  cond <- constant True
+  cond <- true
   return InstructionValue { symbolicType = TpPtr (Map.singleton ptr ()) tp
                           , symbolicValue = ValPtr (Map.singleton ptr (cond,[])) tp
                           , alternative = Nothing
@@ -1800,12 +1789,12 @@ defaultSymValue (castDown -> Just itp) = do
   bw <- liftIO $ getBitWidth itp
   if bw==1
     then do
-    val <- constant False
+    val <- false
     return InstructionValue { symbolicType = TpBool
                             , symbolicValue = ValBool val
                             , alternative = Just (IntConst 0) }
     else do
-    val <- 0
+    val <- cint 0
     return InstructionValue { symbolicType = TpInt
                             , symbolicValue = ValInt val
                             , alternative = Just (IntConst 0) }
@@ -2154,20 +2143,20 @@ computeTransitionRelation = do
       th desc start = do
         blks <- sequence $ Map.mapWithKey
                 (\(blk,sblk) _ -> fmap Init $
-                                  constant (blk==start && sblk==0)
+                                  cbool (blk==start && sblk==0)
                 ) (latchBlockDesc desc)
-        vals <- mapM (\tp -> foldExprs (\_ -> fmap Init . embedConst) (defaultConst tp)
+        vals <- mapM (\tp -> foldExprs (\_ -> fmap Init . constant) (defaultConst tp)
                      ) (latchValueDesc desc)
         arg <- case threadArgumentDesc desc of
           Nothing -> return Nothing
           Just (arg,tp) -> do
-            v <- foldExprs (\_ -> fmap Init . embedConst) (defaultConst tp)
+            v <- foldExprs (\_ -> fmap Init . constant) (defaultConst tp)
             return (Just (arg,v))
         lmem <- mapM (\el -> foldExprs (\_ e -> return $ Init e) el) $
                 Map.intersection (memoryInit st) (threadGlobalDesc desc)
         ret <- case threadReturnDesc desc of
           Nothing -> return Nothing
-          Just tp -> fmap Just $ foldExprs (\_ -> fmap Init . embedConst) (defaultConst tp)
+          Just tp -> fmap Just $ foldExprs (\_ -> fmap Init . constant) (defaultConst tp)
         return ThreadState { latchBlocks = blks
                            , latchValues = vals
                            , threadArgument = arg
@@ -2179,7 +2168,7 @@ computeTransitionRelation = do
              (\thId thd -> do
                  let Just start = Map.lookup thId (threadBlocks st)
                  st <- th thd start
-                 running <- constant False
+                 running <- false
                  return (Init running,st)
              ) (threadStateDesc $ stateAnnotation st)
   memInit <- sequence $ Map.mapWithKey
@@ -2280,7 +2269,7 @@ computeTransitionRelation = do
               case Map.lookup th' (termEvents st) of
                 Nothing -> return (Just old)
                 Just terms -> do
-                  lcond <- constant True
+                  lcond <- true
                   new <- symITEs $ [ (symbolicValue ret,act)
                                    | (act,Just ret) <- terms ]++
                          [(old,lcond)]
