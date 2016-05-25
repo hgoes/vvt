@@ -51,7 +51,7 @@ Library
     Stats
   GHC-Options: -fwarn-unused-imports
   Build-Depends:
-    base,mtl,linear,containers,vector,transformers,attoparsec,bytestring,atto-lisp,text,dependent-sum,smtlib2 >= 1.0 && < 1.1,smtlib2-pipe >= 1.0 && < 1.1,smtlib2-debug >= 1.0 && < 1.1,smtlib2-timing >= 1.0 && < 1.1,smtlib2-emulated-modulus >= 1.0 && < 1.1,bindings-llvm,fgl,dependent-map,resource-pool,pqueue,time,yaml,aeson,aeson-pretty,cassava,utf8-string
+    base,mtl,linear,containers,vector,transformers,attoparsec,bytestring,atto-lisp,text,dependent-sum,smtlib2 >= 1.0 && < 1.1,smtlib2-pipe >= 1.0 && < 1.1,smtlib2-debug >= 1.0 && < 1.1,smtlib2-timing >= 1.0 && < 1.1,bindings-llvm,fgl,dependent-map,resource-pool,pqueue,time,yaml,aeson,aeson-pretty,cassava,utf8-string
   Extensions:
     RankNTypes,KindSignatures,DataKinds,TypeOperators,TypeFamilies,GADTs,ScopedTypeVariables,FlexibleContexts,MultiParamTypeClasses,TypeSynonymInstances,FlexibleInstances,StandaloneDeriving,PolyKinds,ViewPatterns,OverloadedStrings,GeneralizedNewtypeDeriving,DeriveFunctor,DeriveFoldable,DeriveTraversable,CPP
   if flag(Native-Z3)
