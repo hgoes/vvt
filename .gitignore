@@ -11,3 +11,9 @@ dist
 *.s
 test/svcomp/*.l
 test/svcomp/*.ll
+test/*
+*.log
+.stack-work/*
+trcache/*
+log/*
+TAGS

@@ -96,7 +96,10 @@ _DEFAULT_LOGDIR_ :: FilePath
 _DEFAULT_LOGDIR_ = "log/"
 
 _VERIFY_OPTS_ :: T.Text
-_VERIFY_OPTS_ = " -v5 --stats"
+_VERIFY_OPTS_ = " -v5 --stats --timeout=200s"
+
+_ENCODE_OPTS_ :: T.Text
+_ENCODE_OPTS_ = ""
 
 getAllBenchmarks :: BenchConf -> IO [Benchmark]
 getAllBenchmarks conf =
@@ -152,8 +155,9 @@ runBench conf = do
                                    case bc_optimizeTr conf of
                                      True ->
                                          vvtBinary
-                                         <> " encode -o " <> dest <> " "
-                                         <> benchAsTxt
+                                         <> " encode -o " <> dest
+                                         <> _ENCODE_OPTS_
+                                         <> " " <> benchAsTxt
                                          <> " > /dev/null" <> " 2>&1"
                                      False ->
                                          vvtBinary
@@ -161,7 +165,7 @@ runBench conf = do
                                          <> benchAsTxt
                                          <> " | " <> vvtenc
                                          <> " 2>/dev/null "
-                                         <> " | " <> vvtpreds <> " -i"
+                                         <> " | " <> vvtpreds <> _ENCODE_OPTS_
                                          <> " | " <> vvtpp
                                          <> " 1> " <> dest
                            in do

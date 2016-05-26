@@ -1,8 +1,6 @@
 {-# LANGUAGE PackageImports,FlexibleContexts, DeriveGeneric #-}
 module RSM where
 
-import Args
-
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -12,8 +10,6 @@ import "mtl" Control.Monad.State (runStateT,modify)
 import "mtl" Control.Monad.Trans (lift)
 import Prelude hiding (mapM,sequence)
 import Data.Traversable (mapM,sequence)
-import Data.GADT.Show
-import Data.GADT.Compare
 import qualified Data.Text as T
 
 import GHC.Generics as G
@@ -92,51 +88,6 @@ createLines coeffs points = do
                   return (cid,point)
               ) (Set.toList points)
   return $ Map.fromList res
-
-newtype RSMVars var e = RSMVars (Map var (e IntType))
-
-data RSMVar :: * -> Type -> * where
-  RSMVar :: var -> RSMVar var IntType
-
-deriving instance Show var => Show (RSMVar var tp)
-
-instance Show var => GShow (RSMVar var) where
-  gshowsPrec = showsPrec
-
-instance Eq var => GEq (RSMVar var) where
-  geq (RSMVar v1) (RSMVar v2) = if v1==v2
-                                then Just Refl
-                                else Nothing
-
-instance Ord var => GCompare (RSMVar var) where
-  gcompare (RSMVar v1) (RSMVar v2) = case compare v1 v2 of
-    EQ -> GEQ
-    LT -> GLT
-    GT -> GGT
-
-instance (Show var,Ord var) => Composite (RSMVars var) where
-  type CompDescr (RSMVars var) = Map var ()
-  type RevComp (RSMVars var) = RSMVar var
-  compositeType mp = RSMVars (fmap (const IntRepr) mp)
-  foldExprs f (RSMVars mp) = do
-    mp' <- sequence $ Map.mapWithKey
-           (\var -> f (RSMVar var)) mp
-    return (RSMVars mp')
-  createComposite f mp = do
-    mp' <- sequence $ Map.mapWithKey (\instr _ -> f IntRepr (RSMVar instr)) mp
-    return (RSMVars mp')
-  accessComposite (RSMVar instr) (RSMVars mp) = mp Map.! instr
-  eqComposite (RSMVars mp1) (RSMVars mp2) = do
-    res <- sequence $ Map.elems $ Map.intersectionWith
-           (\e1 e2 -> e1 .==. e2) mp1 mp2
-    case res of
-      [] -> true
-      [e] -> return e
-      _ -> and' res
-  revType _ _ (RSMVar _) = IntRepr
-
-instance GetType (RSMVar v) where
-  getType (RSMVar _) = IntRepr
 
 extractLine :: (Backend b,Ord var) => Coeffs b var
             -> SMT b (Integer,[(var,Integer)])
