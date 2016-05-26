@@ -49,7 +49,7 @@ Library
     LitOrder
     Simplify
     Stats
-  GHC-Options: -fwarn-unused-imports
+  GHC-Options: -fwarn-unused-imports -fwarn-unused-binds
   Build-Depends:
     base,mtl,linear,containers,vector,transformers,attoparsec,bytestring,atto-lisp,text,dependent-sum,smtlib2 >= 1.0 && < 1.1,smtlib2-pipe >= 1.0 && < 1.1,smtlib2-debug >= 1.0 && < 1.1,smtlib2-timing >= 1.0 && < 1.1,bindings-llvm,fgl,dependent-map,resource-pool,pqueue,time,yaml,aeson,aeson-pretty,cassava,utf8-string
   Extensions:
