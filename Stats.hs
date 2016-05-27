@@ -19,6 +19,7 @@ data IC3Stats =
              , liftingNum :: IORef Int
              , initiationTime :: IORef NominalDiffTime
              , initiationNum :: IORef Int
+             , rsmTime :: NominalDiffTime
              , numErased :: Int
              , numCTI :: Int
              , numUnliftedErased :: Int
@@ -44,6 +45,7 @@ data IC3MachineReadableStats =
     , mrs_liftingNum :: Int
     , mrs_initiationTime :: Float
     , mrs_initiationNum :: Int
+    , mrs_rsmTime :: Float
     , mrs_numErased :: Int
     , mrs_numCTI :: Int
     , mrs_numUnliftedErased :: Int
@@ -73,6 +75,7 @@ instance Show IC3MachineReadableStats where
         ++ ("liftingNum:" ++ show (mrs_liftingNum mrs) ++ "\n")
         ++ ("initiationTime:" ++ ((showFFloat Nothing (mrs_initiationTime mrs)) "") ++ "\n")
         ++ ("initiationNum:" ++ show (mrs_initiationNum mrs) ++ "\n")
+        ++ ("rsmTime:" ++ show (mrs_rsmTime mrs) ++ "\n")
         ++ ("numErased:" ++ show (mrs_numErased mrs) ++ "\n")
         ++ ("numCTI:" ++ show (mrs_numCTI mrs) ++ "\n")
         ++ ("numUnliftedErased:" ++ show (mrs_numUnliftedErased mrs) ++ "\n")
@@ -100,6 +103,7 @@ emptyIC3MRStats =
     , mrs_liftingNum = 0
     , mrs_initiationTime = 0
     , mrs_initiationNum = 0
+    , mrs_rsmTime = 0
     , mrs_numErased = 0
     , mrs_numCTI = 0
     , mrs_numUnliftedErased = 0
