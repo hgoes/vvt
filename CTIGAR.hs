@@ -79,12 +79,13 @@ data IC3Config mdl
            , ic3DumpDomainFile :: Maybe String
            , ic3DumpStatsFile :: Maybe String
            , ic3DumpStatesFile :: Maybe String
+           , ic3UseSearch :: Bool
            }
 
 data IC3Env mdl
   = IC3Env { ic3Domain :: Dom.Domain (TR.State mdl) -- The domain talks about the outputs
            , ic3InitialProperty :: Node
-           , ic3Consecution :: Consecution (TR.Input mdl) (TR.State mdl)
+           , ic3Consecution :: Consecution (TR.Input mdl) (TR.State mdl) (TR.RealizationProgress mdl)
            , ic3Lifting :: Lifting mdl
            , ic3Initiation :: SMTPool (PoolVars (TR.State mdl))
            , ic3Interpolation :: SMTPool (InterpolationState mdl)
@@ -209,8 +210,9 @@ mkIC3Config :: mdl -> BackendOptions
             -> Maybe String -- ^ Dump domain?
             -> Maybe String -- ^ Dump stats?
             -> Maybe String -- ^ Dump states?
+            -> Bool         -- ^ Use search strategy?
             -> IC3Config mdl
-mkIC3Config mdl opts verb stats dumpDomain dumpStats dumpStates
+mkIC3Config mdl opts verb stats dumpDomain dumpStats dumpStates searchS
   = IC3Cfg { ic3Model = mdl
            , ic3ConsecutionBackend = mkPipe (optBackend opts Map.! ConsecutionBackend)
                                      (fmap (\t -> ("cons",t)) $ Map.lookup ConsecutionBackend (optDebugBackend opts))
@@ -234,6 +236,7 @@ mkIC3Config mdl opts verb stats dumpDomain dumpStats dumpStates
            , ic3DumpDomainFile = dumpDomain
            , ic3DumpStatsFile = dumpStats
            , ic3DumpStatesFile = dumpStates
+           , ic3UseSearch = searchS
            }
   where
     mkPipe :: BackendUse -> Maybe (String,BackendDebug) -> AnyBackend IO
@@ -300,7 +303,8 @@ runIC3 cfg act = do
                                        , consecutionNxtInput = nxtInp
                                        , consecutionState = cur
                                        , consecutionNxtState = nxt
-                                       , consecutionNxtAsserts = asserts2 })
+                                       , consecutionNxtAsserts = asserts2
+                                       , consecutionGates = real2' })
           (mkCompExpr (TR.initialState mdl) (TR.stateAnnotation mdl))
   lifting <- case liftingBackend of
     AnyBackend cr
@@ -376,7 +380,7 @@ runIC3 cfg act = do
 
 extractState :: (Backend b,PartialComp inp,PartialComp st)
                 => Maybe (IORef (State inp st))
-                -> ConsecutionVars inp st (Expr b)
+                -> ConsecutionVars inp st gts (Expr b)
                 -> SMT b (State inp st)
 extractState (succ::Maybe (IORef (State inp st))) vars = do
   inps <- unliftComp getValue (consecutionInput vars)
@@ -604,6 +608,8 @@ abstractConsecution fi abs_st succ = do
     abs_st_str <- renderAbstractState abs_st
     liftIO $ hPutStrLn stderr ("Original abstract state: "++abs_st_str)
   env <- get
+  useSearch <- asks ic3UseSearch
+  mdl <- asks ic3Model
   res <- liftIO $ consecutionPerform (ic3Domain env) (ic3Consecution env) fi $ \vars -> do
     trm <- Dom.toDomainTerm abs_st (ic3Domain env) (consecutionState vars)
     not' trm >>= assert
@@ -625,7 +631,20 @@ abstractConsecution fi abs_st succ = do
          (stateLiftedInputs succ')-}
     res <- checkSat
     if res==Sat
-      then (do
+      then (if useSearch
+            then stack $ do
+               (trgs,_) <- TR.searchPreferences mdl
+                 (consecutionState vars)
+                 (consecutionInput vars)
+                 (consecutionNxtState vars)
+                 (\name -> case name of
+                     Nothing -> defineVar
+                     Just n -> defineVarNamed n)
+                 (consecutionGates vars)
+               maxSat trgs $ do
+                 st <- extractState succ vars
+                 return $ Right st
+            else do
                st <- extractState succ vars
                return $ Right st)
       else (do
@@ -646,6 +665,22 @@ abstractConsecution fi abs_st succ = do
       --absInit' <- initiationAbstract absCore'
       --error $ "abstractConsecution core: "++show absCore'++" "++show absInit'
       return $ Left absCore'
+
+-- | Find a maximal set of assertions that are still compatible, assert them
+--   and perform an action.
+maxSat :: Backend b => [Expr b BoolType] -> SMT b a -> SMT b a
+maxSat cls act = do
+  first <- stack $ do
+    ids <- mapM assertId cls
+    res <- checkSat
+    if res==Sat
+      then fmap Right act -- All assertions are compatible
+      else do
+      core <- getUnsatCore
+      return $ Left [ cl | (id,cl) <- zip ids cls, id /= head core ] -- Remove one conflicting clause
+  case first of
+    Right res -> return res
+    Left ncls -> maxSat ncls act
 
 concreteConsecution :: TR.TransitionRelation mdl
                        => Int -> Partial (TR.State mdl)
@@ -917,11 +952,12 @@ check :: TR.TransitionRelation mdl
          -> Maybe String -- ^ Dump domain?
          -> Maybe String -- ^ Dump stats?
          -> Maybe String -- ^ Dump states?
+         -> Bool         -- ^ Use search strategy?
          -> IO (Either [(Unpacked (TR.State mdl),
                          Unpacked (TR.Input mdl))]
                        (CompositeExpr (TR.State mdl) BoolType))
-check st opts verb stats dumpDomain dumpstats dumpstates = do
-  runIC3 (mkIC3Config st opts verb stats dumpDomain dumpstats dumpstates) $ do
+check st opts verb stats dumpDomain dumpstats dumpstates searchS = do
+  runIC3 (mkIC3Config st opts verb stats dumpDomain dumpstats dumpstates searchS) $ do
     backend <- asks ic3BaseBackend
     tr <- liftIO $ withAnyBackend backend (baseCases st)
     case tr of

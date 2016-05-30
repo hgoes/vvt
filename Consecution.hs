@@ -11,32 +11,33 @@ import qualified Data.IntSet as IntSet
 import Data.Vector (Vector)
 import qualified Data.Vector as Vec
 
-data Consecution inp st
-  = Consecution { consecutionPool :: SMTPool (ConsecutionInstance inp st)
+data Consecution inp st gts
+  = Consecution { consecutionPool :: SMTPool (ConsecutionInstance inp st gts)
                 , consecutionFrames :: Vector IntSet
                 , consecutionFrameHash :: Int
                 , consecutionCubes :: Vector (AbstractState st)
                 , consecutionInitial :: CompositeExpr st BoolType
                 }
 
-data ConsecutionInstance inp st b
-  = ConsecutionInstance { consecutionVars :: ConsecutionVars inp st (Expr b)
+data ConsecutionInstance inp st gts b
+  = ConsecutionInstance { consecutionVars :: ConsecutionVars inp st gts (Expr b)
                         , framesLoaded :: Vector (IntSet,Expr b BoolType)
                         , frameHash :: Int
                         }
 
-data ConsecutionVars inp st e
+data ConsecutionVars inp st gts e
   = ConsecutionVars { consecutionInput :: inp e
                     , consecutionNxtInput :: inp e
                     , consecutionState :: st e
                     , consecutionNxtState :: st e
                     , consecutionNxtAsserts :: [e BoolType]
+                    , consecutionGates :: gts e
                     }
 
 consecutionNew :: (Backend b,SMTMonad b ~ IO) => IO b
-               -> SMT b (ConsecutionVars inp st (Expr b)) -- ^ How to allocate the transition relation
+               -> SMT b (ConsecutionVars inp st gts (Expr b)) -- ^ How to allocate the transition relation
                -> CompositeExpr st BoolType  -- ^ The initial condition
-               -> IO (Consecution inp st)
+               -> IO (Consecution inp st gts)
 consecutionNew backend alloc init = do
   pool <- createSMTPool backend $ do
     setOption (ProduceModels True)
@@ -51,16 +52,16 @@ consecutionNew backend alloc init = do
                        , consecutionCubes = Vec.empty
                        , consecutionInitial = init }
 
-extendFrames :: Consecution inp st -> Consecution inp st
+extendFrames :: Consecution inp st gts -> Consecution inp st gts
 extendFrames cons = cons { consecutionFrames = Vec.snoc (consecutionFrames cons) IntSet.empty }
 
-frontier :: Consecution inp st -> Int
+frontier :: Consecution inp st gts -> Int
 frontier cons = Vec.length (consecutionFrames cons) - 2
 
 consecutionPerform :: Composite st
                    => Domain st
-                   -> Consecution inp st -> Int
-                   -> (forall b. Backend b => ConsecutionVars inp st (Expr b) -> SMT b a)
+                   -> Consecution inp st gts -> Int
+                   -> (forall b. Backend b => ConsecutionVars inp st gts (Expr b) -> SMT b a)
                    -> IO a
 consecutionPerform dom cons lvl act = do
   Right res <- case cons of
@@ -75,10 +76,10 @@ consecutionPerform dom cons lvl act = do
   return res
   where
     updateInstance :: (Backend b,Composite st)
-                   => Consecution inp st
+                   => Consecution inp st gts
                    -> Domain st
-                   -> ConsecutionInstance inp st b
-                   -> SMT b (ConsecutionInstance inp st b)
+                   -> ConsecutionInstance inp st gts b
+                   -> SMT b (ConsecutionInstance inp st gts b)
     updateInstance cons dom inst = do
       let vars = consecutionVars inst
           numFrames = Vec.length (consecutionFrames cons)
@@ -113,16 +114,16 @@ consecutionPerform dom cons lvl act = do
       return inst { framesLoaded = loaded2
                   , frameHash = consecutionFrameHash cons }
 
-getCubeId :: AbstractState st -> Consecution inp st -> (Int,Consecution inp st)
+getCubeId :: AbstractState st -> Consecution inp st gts -> (Int,Consecution inp st gts)
 getCubeId st cons = case Vec.findIndex (==st) (consecutionCubes cons) of
   Just i -> (i,cons)
   Nothing -> (Vec.length (consecutionCubes cons),
               cons { consecutionCubes = Vec.snoc (consecutionCubes cons) st })
 
-getCube :: Int -> Consecution inp st -> AbstractState st
+getCube :: Int -> Consecution inp st gts -> AbstractState st
 getCube st_id cons = (consecutionCubes cons) Vec.! st_id
 
-addCubeAtLevel :: Int -> Int -> Consecution inp st -> Consecution inp st
+addCubeAtLevel :: Int -> Int -> Consecution inp st gts -> Consecution inp st gts
 addCubeAtLevel cube lvl cons
   | IntSet.member cube frame = cons
   | otherwise = cons { consecutionFrames = (consecutionFrames cons) Vec.//

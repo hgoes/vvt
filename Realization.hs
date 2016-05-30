@@ -64,6 +64,13 @@ class (PartialComp (State t),PartialComp (Input t))
                     -> m (PredicateExtractor t,
                           [CompositeExpr (State t) BoolType])
   startingProgress :: t -> RealizationProgress t e
+  -- | Given a current state, inputs and the corresponding next state, returns a
+  --   list of predicates that should preferably hold when searching for a
+  --   successor state.
+  searchPreferences :: (Embed m e,GetType e) => t -> State t e -> Input t e -> State t e
+                    -> (forall t. Maybe String -> e t -> m (e t))
+                    -> RealizationProgress t e -> m ([e BoolType],RealizationProgress t e)
+  searchPreferences _ _ _ _ _ p = return ([],p)
 
 renderState :: (TransitionRelation t) => t -> Unpacked (State t) -> String
 renderState (mdl::t) st = show (unmaskValue (Proxy::Proxy (State t)) st)

@@ -46,6 +46,8 @@ data LispName (sig :: ([Type],Tree Type)) where
 
 newtype Annotation (sig :: k) = Annotation { getAnnotation :: Map T.Text L.Lisp } deriving (Eq,Ord)
 
+newtype AnyTag obj (tp :: k) = AnyTag { unAnyTag :: obj } deriving (Eq,Ord)
+
 data NoRef (t :: k) = NoRef deriving Show
 
 data LispProgram
@@ -739,7 +741,6 @@ parseLispValue state inps gates
     castVal sz e f = case isArrayed (getType e) sz $
                           \tp -> f tp (Sized e) of
                      Just res -> res
-               
 parseLispValue state inps gates expr f
   = parseLispExpr state inps gates Nothing expr $
     \e -> f (LispValue (Size Nil Nil) (Singleton (Sized e)))
@@ -946,6 +947,28 @@ instance TransitionRelation LispProgram where
                                    Just (L.Symbol "true") -> True
                                    _ -> False
                                ) st
+  searchPreferences prog st'@(LispState st) inp'@(LispState inp) (LispState nxt) decl gts = do
+    let stPrefs :: DMap LispName (LispValue' Value)
+        stPrefs = DMap.mapMaybeWithKey (\(LispName sz tps _) ann -> fmap LispValue' $
+                                                                   getSearchPreference sz tps ann)
+          (programState prog)
+    stEqs <- sequence [ eq | _ :=> AnyTag eq <- DMap.toList $ DMap.intersectionWithKey
+                       (\(LispName _ _ _) (LispValue' var) (LispValue' val)
+                        -> AnyTag $ do
+                           nval <- mapValue (embed . E.Const) val
+                           eqValue var nval
+                       ) st stPrefs ]
+    (gtEqs,ngts) <- runStateT (sequence [ do
+                                           var <- relativizeVar st' inp' (declareGate decl prog st' inp')
+                                             (gateDefinition gt)
+                                           rvar <- lift $ defineGate decl (T.unpack name) var
+                                           rval <- lift $ mapValue (embed . E.Const) val
+                                           lift $ eqValue rvar rval
+                                       | LispName sz tps name :=> gt <- DMap.toList $ programGates prog
+                                       , val <- case getSearchPreference sz tps (gateAnnotation gt) of
+                                           Nothing -> []
+                                           Just v -> [v]]) gts
+    return (stEqs++gtEqs,ngts)
 
 declareGate :: (Embed m e,GetType e)
             => (forall t. Maybe String -> e t -> m (e t))
@@ -1312,3 +1335,19 @@ instance Embed m e => Embed (StateT (LispState e) m) e where
   embed = lift . embed
   embedQuantifier q tps f = lift (embedQuantifier q tps f)
   embedTypeOf = lift . embedTypeOf
+
+getSearchPreference :: List Repr sz -> Struct Repr tp -> Annotation '(sz,tp) -> Maybe (LispValue '(sz,tp) Value)
+getSearchPreference sz tp (Annotation ann) = case Map.lookup "preference" ann of
+  Nothing -> Nothing
+  Just val -> case runExcept $ parseLispValue Map.empty Map.empty Map.empty val
+                  (\v -> let (sz',tp') = lispValueType v
+                        in case geq sz sz' of
+                      Just Refl -> case geq tp tp' of
+                        Just Refl -> return v
+                        Nothing -> throwE "type error in preference value."
+                      Nothing -> throwE "type error in preference value.") of
+    Right res -> mapValue (\v -> case v of
+                             LispExpr (E.Const rv) -> Just rv
+                             _ -> Nothing
+                         ) res
+    Left err -> Nothing

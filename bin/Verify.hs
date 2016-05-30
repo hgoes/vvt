@@ -24,6 +24,7 @@ data Options = Options { optBackends :: BackendOptions
                        , optPrintFixpoint :: Bool
                        , optDumpStats :: Maybe String
                        , optDumpStates :: Maybe String
+                       , optUseSearch :: Bool
                        }
 
 defaultOptions :: Options
@@ -36,6 +37,7 @@ defaultOptions = Options { optBackends = defaultBackendOptions
                          , optDumpStats = Nothing
                          , optDumpStates = Nothing
                          , optPrintFixpoint = False
+                         , optUseSearch = False
                          }
 
 allOpts :: [OptDescr (Options -> Options)]
@@ -76,7 +78,8 @@ allOpts
      "Dump the states that IC3 collects during refinement to a file. The states will be printed in csv format."
     ,Option [] ["print-fixpoint"]
      (NoArg $ \opt -> opt { optPrintFixpoint = True }) "If the program can be proven correct, output the fixpoint."
-    ]
+    ,Option [] ["search-strategy"]
+     (NoArg $ \opt -> opt { optUseSearch = True }) "Use search strategies to find better counter-examples."]
 
 parseTime :: String -> Int
 parseTime str = parseNumber 0 0 str
@@ -138,6 +141,7 @@ main = do
                        (optDumpDomain opts)
                        (optDumpStats opts)
                        (optDumpStates opts)
+                       (optUseSearch opts)
             Just to -> do
               mainThread <- myThreadId
               timeoutThread <- forkOS (threadDelay to >> throwTo mainThread (ExitFailure (-2)))
@@ -149,6 +153,7 @@ main = do
                                       (optDumpDomain opts)
                                       (optDumpStats opts)
                                       (optDumpStates opts)
+                                      (optUseSearch opts)
                                killThread timeoutThread
                                return (Just res)
                            )

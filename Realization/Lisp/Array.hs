@@ -55,6 +55,13 @@ sizeType lst = Size lst (sizeListType lst)
 sizeIndices :: Size e sz -> List Repr sz
 sizeIndices (Size tps _) = tps
 
+mapSize :: Monad m => (forall tp. e tp -> m (e' tp))
+        -> Size e sz
+        -> m (Size e' sz)
+mapSize f (Size tps idx) = do
+  idx' <- List.mapM f idx
+  return (Size tps idx')
+
 accessSize :: (Monad m) => (e (List.Index (SizeList sz) i)
                             -> m (a,e (List.Index (SizeList sz) i)))
            -> Natural i

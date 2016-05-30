@@ -35,6 +35,17 @@ lispValueType (LispValue sz val) = (rsz,Struct.map (\e -> sizedType e rsz) val)
   where
     rsz = sizeIndices sz
 
+mapValue :: Monad m => (forall tp. e tp -> m (e' tp))
+         -> LispValue '(sz,tps) e
+         -> m (LispValue '(sz,tps) e')
+mapValue f (LispValue sz v) = do
+  sz' <- mapSize f sz
+  v' <- Struct.mapM (\(Sized e) -> do
+                       e' <- f e
+                       return (Sized e')
+                   ) v
+  return (LispValue sz' v')
+
 eqValue :: (Embed m e,GetType e)
         => LispValue '(lvl,tps) e
         -> LispValue '(lvl,tps) e
