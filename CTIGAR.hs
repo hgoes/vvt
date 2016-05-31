@@ -677,7 +677,8 @@ maxSat cls act = do
       then fmap Right act -- All assertions are compatible
       else do
       core <- getUnsatCore
-      return $ Left [ cl | (id,cl) <- zip ids cls, id /= head core ] -- Remove one conflicting clause
+      let relevantCore = [ c | c <- core, c `elem` ids ]
+      return $ Left [ cl | (id,cl) <- zip ids cls, id /= head relevantCore ] -- Remove one conflicting clause
   case first of
     Right res -> return res
     Left ncls -> maxSat ncls act
