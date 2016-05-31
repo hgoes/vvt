@@ -1133,13 +1133,18 @@ elimSpuriousTrans st level = do
   backend <- asks ic3BaseBackend
   extr <- gets ic3PredicateExtractor
   mbDumpStatesFile <- asks ic3DumpStatesFile
+  rsmTimeBegin <- liftIO $ getCurrentTime
   (nextr,props) <- TR.extractPredicates mdl extr
                    (stateFull rst)
                    (stateLifted rst)
                    mbDumpStatesFile
+  rsmTimeEnd <- liftIO $ getCurrentTime
   modify $ \env -> env { ic3PredicateExtractor = nextr }
   updateStats (\stats -> stats { numRefinements = (numRefinements stats)+1
-                               , numAddPreds = (numAddPreds stats)+(length props) })
+                               , numAddPreds = (numAddPreds stats)+(length props)
+                               , rsmTime = (rsmTime stats) + (diffUTCTime rsmTimeEnd rsmTimeBegin)
+                               }
+              )
   interp <- interpolateState level (stateLifted rst) (stateLiftedInputs rst)
   ic3Debug 4 $ "mined new predicates: " ++ (show props)
   ic3Debug 4 $ "computed interpolant: " ++ (show interp)
@@ -1590,6 +1595,7 @@ newIC3Stats = do
                     , liftingNum = liftNum
                     , initiationTime = initTime
                     , initiationNum = initNum
+                    , rsmTime = 0
                     , numErased = 0
                     , numCTI = 0
                     , numCTG = 0
@@ -1635,6 +1641,7 @@ ic3DumpStats fp = do
        putStrLn $ "Domain time: "++show domTime
        putStrLn $ "Interpolation time: "++show interpTime
        putStrLn $ "Initiation time: "++show initTime
+       putStrLn $ "Rsm time: " ++ show (rsmTime stats)
        putStrLn $ "# of consecution queries: "++show consNum
        putStrLn $ "# of domain queries: "++show domNum
        putStrLn $ "# of interpolation queries: "++show interpNum
@@ -1673,6 +1680,7 @@ ic3DumpStats fp = do
                           , mrs_liftingNum = liftNum
                           , mrs_initiationTime = realToFrac initTime
                           , mrs_initiationNum = initNum
+                          , mrs_rsmTime = realToFrac (rsmTime stats)
                           , mrs_numErased = numErased stats
                           , mrs_numCTI = numCTI stats
                           , mrs_numUnliftedErased = numUnliftedErased stats
