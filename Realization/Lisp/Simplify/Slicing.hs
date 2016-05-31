@@ -101,7 +101,7 @@ slice prog = prog { programState = filterMap (programState prog) State
 
 defaultExpr :: Repr tp -> LispExpr tp
 defaultExpr tp = case tp of
-  BoolRepr -> LispExpr (ConstBool True)
+  BoolRepr -> LispExpr (ConstBool False)
   IntRepr -> LispExpr (ConstInt 0)
   RealRepr -> LispExpr (ConstReal 0)
   BitVecRepr bw -> LispExpr (ConstBV 0 bw)
@@ -146,7 +146,10 @@ getDependenciesExpr :: LispExpr a -> DepState -> DepState
 getDependenciesExpr (LispExpr (E.App fun args)) st
   = runIdentity $ List.foldM (\st e -> return $ getDependenciesExpr e st
                              ) st args
+getDependenciesExpr (LispExpr _) st = st
 getDependenciesExpr (LispRef var _) st
+  = getDependencies var st
+getDependenciesExpr (LispSize var _) st
   = getDependencies var st
 getDependenciesExpr (LispEq lhs rhs) st
   = getDependencies lhs $
@@ -155,7 +158,6 @@ getDependenciesExpr (ExactlyOne xs) st
   = foldl (\st x -> getDependenciesExpr x st) st xs
 getDependenciesExpr (AtMostOne xs) st
   = foldl (\st x -> getDependenciesExpr x st) st xs
-getDependenciesExpr _ st = st
 
 getDependenciesIndex :: List LispExpr lvl -> DepState -> DepState
 getDependenciesIndex Nil st = st
