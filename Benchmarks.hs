@@ -99,7 +99,7 @@ _VERIFY_OPTS_ :: T.Text
 _VERIFY_OPTS_ = " -v5 --stats --timeout=200s"
 
 _ENCODE_OPTS_ :: T.Text
-_ENCODE_OPTS_ = ""
+_ENCODE_OPTS_ = " "
 
 getAllBenchmarks :: BenchConf -> IO [Benchmark]
 getAllBenchmarks conf =
@@ -272,7 +272,7 @@ meanValsPrettyString stats benchmarkCount =
         ++ "liftingNum:" ++ showMean (fromIntegral . mrs_liftingNum) ++ "\n"
         ++ "initiationTime:" ++ showMean mrs_initiationTime ++ "\n"
         ++ "initiationNum:" ++ showMean (fromIntegral . mrs_initiationNum) ++ "\n"
-        ++ "rsmTime:" ++ showMean mrs_rsmTime
+        ++ "rsmTime:" ++ showMean mrs_rsmTime ++ "\n"
         ++ "numErased:" ++ showMean (fromIntegral . mrs_numErased) ++ "\n"
         ++ "numCTI:" ++ showMean (fromIntegral . mrs_numCTI) ++ "\n"
         ++ "numUnliftedErased:" ++ showMean (fromIntegral . mrs_numUnliftedErased) ++ "\n"
