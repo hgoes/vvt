@@ -61,6 +61,7 @@ data LispProgram
                 , programInvariant :: [LispExpr BoolType]
                 , programAssumption :: [LispExpr BoolType]
                 , programPredicates :: [LispExpr BoolType]
+                , programPreferences :: [LispExpr BoolType]
                 } deriving Show
 
 data LispGate (sig :: ([Type],Tree Type)) = LispGate { gateDefinition :: LispVar LispExpr sig
@@ -205,7 +206,7 @@ programToLisp :: LispProgram -> L.Lisp
 programToLisp prog = L.List (L.Symbol "program":elems)
   where
     elems = ann ++ states ++ inputs ++ gates ++ next ++ init ++
-            prop ++ invar ++ assump ++ preds
+            prop ++ invar ++ assump ++ preds ++ prefs
     ann = annToLisp (programAnnotation prog)
     states = if DMap.null (programState prog)
              then []
@@ -262,6 +263,10 @@ programToLisp prog = L.List (L.Symbol "program":elems)
             then []
             else [L.List (L.Symbol "predicates":preds')]
     preds' = [ lispExprToLisp p | p <- programPredicates prog ]
+    prefs = if null (programPreferences prog)
+            then []
+            else [L.List (L.Symbol "preferences":prefs')]
+    prefs' = [ lispExprToLisp p | p <- programPreferences prog ]
 
 lispExprToLisp :: LispExpr t -> L.Lisp
 lispExprToLisp (LispExpr e)
@@ -407,6 +412,11 @@ parseProgram descr = case descr of
              Just xs -> case runExcept $ mapM (parseLispExprT state' Map.empty Map.empty BoolRepr) xs of
                Right lst -> lst
                Left err -> error $ "Error while parsing predicates: "++err
+           prefs = case Map.lookup "preferences" mp of
+            Nothing -> []
+            Just xs -> case runExcept $ mapM (parseLispExprT state' inp' gts' BoolRepr) xs of
+              Right lst -> lst
+              Left err -> error $ "Error while parsing preferences: "++err
        in LispProgram { programAnnotation = ann
                       , programState = state
                       , programInput = inp
@@ -416,7 +426,8 @@ parseProgram descr = case descr of
                       , programInit = init
                       , programInvariant = invar
                       , programAssumption = assume
-                      , programPredicates = preds }
+                      , programPredicates = preds
+                      , programPreferences = prefs }
 
 parseAnnotation :: [L.Lisp] -> Map T.Text L.Lisp -> (Map T.Text L.Lisp,[L.Lisp])
 parseAnnotation [] cur = (cur,[])
@@ -968,7 +979,10 @@ instance TransitionRelation LispProgram where
                                        , val <- case getSearchPreference sz tps (gateAnnotation gt) of
                                            Nothing -> []
                                            Just v -> [v]]) gts
-    return (stEqs++gtEqs,ngts)
+    (prefEqs,nngts) <- runStateT (mapM (relativize st' inp' (declareGate decl prog st' inp')
+                                      ) (programPreferences prog)
+                                ) ngts
+    return (stEqs++gtEqs++prefEqs,nngts)
 
 declareGate :: (Embed m e,GetType e)
             => (forall t. Maybe String -> e t -> m (e t))
