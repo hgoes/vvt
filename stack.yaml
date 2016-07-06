@@ -6,7 +6,7 @@ packages:
 #smtlib2 1.0
 - location:
     git: https://github.com/hguenther/smtlib2.git
-    commit: d814d50a9940efcbc89b7945877648298c76c494
+    commit: 59c8c03cc6086dcf09532d91ef3383fce22cc825
   subdirs:
     - '.'
     - backends/debug
