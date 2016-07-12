@@ -1,5 +1,6 @@
 resolver: lts-3.19
 compiler: ghc-7.10.3
+with-gcc: /usr/bin/gcc-4.9
 
 packages:
 - '.'
@@ -18,7 +19,6 @@ packages:
     git: https://github.com/hguenther/bindings-llvm
     commit: c486e76e6c28ae5f4c9718611767789be9eec158
   extra-dep: true
-
 extra-deps:
 - atto-lisp-0.2.2.2
 - data-fix-0.0.1
