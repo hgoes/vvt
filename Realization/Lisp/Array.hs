@@ -173,7 +173,7 @@ sizeRange (BoolValue True) = [BoolValue False]
 sizeRange (IntValue n) = [IntValue i | i <- [0..n-1] ]
 sizeRange (RealValue _) = error "sizeRange: Cannot generate size range for real type."
 sizeRange (BitVecValue v bw) = [BitVecValue i bw | i <- [0..v-1] ]
-sizeRange (DataValue _) = error "sizeRange: Cannot generate size range for user defined type."
+sizeRange (DataValue _ _) = error "sizeRange: Cannot generate size range for user defined type."
 
 defaultValue :: (Embed m e,GetType e) => Repr tp -> m (e tp)
 defaultValue BoolRepr = false

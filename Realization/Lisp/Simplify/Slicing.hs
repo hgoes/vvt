@@ -44,7 +44,9 @@ slice prog = prog { programState = filterMap (programState prog) State
                   , programGates = filterMap (programGates prog) Gate
                   , programNext  = filterMap (programNext prog) State
                   , programInit  = filterMap (programInit prog) State
-                  , programInvariant = fmap filterExpr (programInvariant prog)
+                  , programInvariant = fmap (eliminateKeep (JustVal $ BoolValue True)
+                                             (\name' cat' -> Set.member (AnyName name' cat') deps))
+                                       (programInvariant prog)
                   }
   where
     filterMap :: DMap LispName a -> LispVarCat -> DMap LispName a
@@ -58,46 +60,6 @@ slice prog = prog { programState = filterMap (programState prog) State
     dep1 = foldl (\st e -> getDependenciesExpr e st
                  ) dep0 (programProperty prog)
     deps = recDependencies prog dep1
-    filterExpr :: LispExpr t -> LispExpr t
-    filterExpr (LispExpr (E.App fun args)) = LispExpr (E.App fun nargs)
-      where
-        nargs = runIdentity $ List.mapM (return.filterExpr) args
-    filterExpr (LispExpr e) = LispExpr e
-    filterExpr e@(LispRef var idx) = case filterVar var of
-      Nothing -> defaultExpr (getType e)
-      Just nvar -> LispRef nvar idx
-    filterExpr (LispEq v1 v2) = case filterVar v1 of
-      Nothing -> LispExpr (ConstBool True)
-      Just v1' -> case filterVar v2 of
-        Nothing -> LispExpr (ConstBool True)
-        Just v2' -> LispEq v1' v2'
-    filterExpr (ExactlyOne xs) = ExactlyOne $ fmap filterExpr xs
-    filterExpr (AtMostOne xs) = AtMostOne $ fmap filterExpr xs
-
-    filterVar :: LispVar LispExpr sig -> Maybe (LispVar LispExpr sig)
-    filterVar v@(NamedVar name@(LispName _ _ _) cat)
-      = if Set.member (AnyName name cat) deps
-        then Just v
-        else Nothing
-    filterVar (LispStore v idx sidx val) = do
-      v' <- filterVar v
-      let sidx' = filterArrayIndex sidx
-          val' = filterExpr val
-      return (LispStore v' idx sidx' val')
-    filterVar (LispConstr (LispValue sz val))
-      = Just $ LispConstr $ LispValue nsize nvalue
-      where
-        nsize = filterSize sz
-        nvalue = runIdentity $ Struct.mapM (\(Sized v) -> return $ Sized (filterExpr v)) val
-    filterVar (LispITE c ifT ifF) = do
-      ifT' <- filterVar ifT
-      ifF' <- filterVar ifF
-      return (LispITE (filterExpr c) ifT' ifF')
-    filterArrayIndex :: List LispExpr lvl
-                     -> List LispExpr lvl
-    filterArrayIndex = runIdentity . List.mapM (return.filterExpr)
-    filterSize :: Size LispExpr lvl -> Size LispExpr lvl
-    filterSize (Size tps szs) = Size tps (runIdentity $ List.mapM (return.filterExpr) szs)
 
 defaultExpr :: Repr tp -> LispExpr tp
 defaultExpr tp = case tp of
@@ -106,6 +68,13 @@ defaultExpr tp = case tp of
   RealRepr -> LispExpr (ConstReal 0)
   BitVecRepr bw -> LispExpr (ConstBV 0 bw)
   ArrayRepr idx el -> LispExpr (ConstArray idx (defaultExpr el))
+
+defaultVal :: Repr tp -> Value tp
+defaultVal tp = case tp of
+  BoolRepr -> BoolValue False
+  IntRepr -> IntValue 0
+  RealRepr -> RealValue 0
+  BitVecRepr bw -> BitVecValue 0 bw
 
 recDependencies :: LispProgram -> DepState -> Set AnyName
 recDependencies prog dep = case todo dep of
@@ -164,3 +133,77 @@ getDependenciesIndex Nil st = st
 getDependenciesIndex (e ::: es) st
   = getDependenciesExpr e $
     getDependenciesIndex es st
+
+data OptValue tp
+  = JustVal (Value tp)
+  | NoVal (Repr tp)
+
+-- | Eliminates a variable from an expression and tries to keep the value of the expression.
+eliminateKeep :: OptValue t             -- ^ The value the expression should be able to evaluate to
+              -> (forall lvl tps.
+                  LispName '(lvl,tps) -> LispVarCat -> Bool)
+              -> LispExpr t
+              -> LispExpr t
+eliminateKeep val filter (LispRef (var::LispVar LispExpr '(sz,tps')) idx)
+  = LispRef (eliminateKeepVar nval filter var) idx
+  where
+    (varSz,varTp) = lispVarType var
+    nval = mkVal varTp varSz idx val
+    mkVal :: Struct.Struct Repr sig
+          -> List Repr sz
+          -> List Natural idx
+          -> OptValue (Arrayed sz (Struct.ElementIndex sig idx))
+          -> LispValue '(sz,sig) OptValue
+    mkVal sig sz idx val
+      = LispValue
+        (Size varSz (runIdentity $ List.mapM (return . NoVal) (sizeListType varSz)))
+        (runIdentity $ Struct.mapIndexM (\idx' repr -> case geq idx idx' of
+                                            Just Refl -> return (Sized val)
+                                            Nothing -> return (Sized $ NoVal $ arrayType sz repr)
+                                        ) sig)
+eliminateKeep (JustVal (BoolValue v)) filter (LispExpr (E.App E.Not (x ::: Nil)))
+  = LispExpr $ E.App E.Not (eliminateKeep (JustVal $ BoolValue $ not v) filter x ::: Nil)
+eliminateKeep (JustVal (BoolValue v)) filter (ExactlyOne [x])
+  = eliminateKeep (JustVal $ BoolValue v) filter x
+eliminateKeep _ filter (ExactlyOne xs)
+  = ExactlyOne (fmap (eliminateKeep (JustVal $ BoolValue False) filter) xs)
+eliminateKeep val filter (LispExpr (E.App fun args))
+  = LispExpr (E.App fun nargs)
+  where
+    nargs = runIdentity $ List.mapM (\e -> return $ eliminateKeep (NoVal $ getType e) filter e) args
+eliminateKeep _ _ e = e
+
+eliminateKeepVar :: LispValue sig OptValue
+                 -> (forall lvl tps.
+                     LispName '(lvl,tps) -> LispVarCat -> Bool)
+                 -> LispVar LispExpr sig
+                 -> LispVar LispExpr sig
+eliminateKeepVar (LispValue _ val) filter (LispConstr (LispValue sz cval))
+  = LispConstr (LispValue nsize nval)
+  where
+    nsize = case sz of
+      Size tps szs -> Size tps (runIdentity $ List.mapM (\e -> return $ eliminateKeep (NoVal (getType e)) filter e) szs)
+    nval = mkVal val cval
+    mkVal :: Struct.Struct (Sized OptValue sz) sig
+          -> Struct.Struct (Sized LispExpr sz) sig
+          -> Struct.Struct (Sized LispExpr sz) sig
+    mkVal val var = runIdentity $ Struct.zipWithM
+                      (\(Sized val') (Sized e) -> return $ Sized $ eliminateKeep val' filter e) val var
+eliminateKeepVar (LispValue sz val) filter var@(NamedVar name cat)
+  = if filter name cat
+    then var
+    else LispConstr (LispValue nsz nval)
+  where
+    nsz = case sz of
+      Size tps szs -> Size tps (runIdentity $ List.mapM (\v -> case v of
+                                                            JustVal v' -> return $ LispExpr $ E.Const v'
+                                                            NoVal tp -> return $ defaultExpr tp
+                                                        ) szs)
+    nval = runIdentity $ Struct.mapM (\(Sized val) -> case val of
+                                         JustVal val' -> return $ Sized $ LispExpr $ E.Const val'
+                                         NoVal tp -> return $ Sized $ defaultExpr tp
+                                     ) val
+eliminateKeepVar val filter (LispITE c ifT ifF)
+  = LispITE (eliminateKeep (NoVal bool) filter c)
+    (eliminateKeepVar val filter ifT)
+    (eliminateKeepVar val filter ifF)
