@@ -215,15 +215,15 @@ domainAddUniqueUnsafe pred dom = do
 --   False = predicate was already present) and the resulting new domain.
 domainAdd :: Composite a => CompositeExpr a BoolType -- ^ The predicate.
           -> Domain a -- ^ The domain to which to add the predicate
-          -> IO (Node,Bool,Domain a)
+          -> IO (Node,Bool,Bool,Domain a)
 domainAdd pred dom = case Map.lookup npred (domainNodesRev dom) of
-  Just nd -> return (nd,False,dom)
+  Just nd -> return (nd,neg,False,dom)
   Nothing -> do
     Just parents <- findParents domainTop
     Just childs <- findChildren domainBot
     let intersection = Set.intersection parents childs
     case Set.toList intersection of -- Is the term redundant?
-     [equiv] -> return (equiv,False,dom)
+     [equiv] -> return (equiv,neg,False,dom)
      [] -> do
        if domainVerbosity dom >= 2
          then (do
@@ -244,11 +244,11 @@ domainAdd pred dom = case Map.lookup npred (domainNodesRev dom) of
                                pred'' = ((),newNd):pred'
                            in (pred'',child,cterm,succs) & cgr'
                        ) gr1 childs
-       return (newNd,True,dom { domainGraph = gr2
-                              , domainNextNode = succ newNd
-                              , domainNodesRev = Map.insert npred newNd
-                                (domainNodesRev dom)
-                              })
+       return (newNd,neg,True,dom { domainGraph = gr2
+                                  , domainNextNode = succ newNd
+                                  , domainNodesRev = Map.insert npred newNd
+                                    (domainNodesRev dom)
+                                  })
   where
     vars = collectRevVars DMap.empty npred
     poseQuery :: Composite a => Domain a
@@ -318,9 +318,9 @@ domainAdd pred dom = case Map.lookup npred (domainNodesRev dom) of
                  case catMaybes childs of
                    [] -> return $ Just (Set.singleton cur)
                    xs -> return $ Just (Set.unions xs))
-    npred = case runReader (simplify () pred) (domainDescr dom) of
-      CompositeExpr { compositeExpr = Not x } -> x
-      e -> e
+    (npred,neg) = case runReader (simplify () pred) (domainDescr dom) of
+      CompositeExpr { compositeExpr = Not x } -> (x,True)
+      e -> (e,False)
 
 -- | Create an abstract state from a concrete state.
 domainAbstract :: Composite a

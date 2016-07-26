@@ -362,7 +362,7 @@ runIC3 cfg act = do
   dom <- case domainBackend of
     AnyBackend cr -> Dom.initialDomain (ic3DebugLevel cfg) cr
                      (TR.stateAnnotation mdl)
-  (initNode,_,dom') <- Dom.domainAdd (mkCompExpr (TR.initialState mdl) (TR.stateAnnotation mdl)) dom
+  (initNode,_,_,dom') <- Dom.domainAdd (mkCompExpr (TR.initialState mdl) (TR.stateAnnotation mdl)) dom
   extractor <- TR.defaultPredicateExtractor mdl
   ref <- newIORef (IC3Env { ic3Domain = dom'
                           , ic3InitialProperty = initNode
@@ -1190,7 +1190,7 @@ elimSpuriousTrans st level = do
   order <- gets ic3LitOrder
   (ndomain,norder) <- foldlM (\(cdomain,corder) trm
                               -> do
-                                (nd,isNew,ndom) <- liftIO $ Dom.domainAdd trm cdomain
+                                (nd,isNeg,isNew,ndom) <- liftIO $ Dom.domainAdd trm cdomain
                                 let nord = if isNew
                                            then addOrderElement nd corder
                                            else corder
@@ -1492,7 +1492,7 @@ addSuggestedPredicates = do
                           (_,ndom) <- liftIO $ Dom.domainAddUniqueUnsafe trm cdomain
                           return ndom
                         else do
-                          (_,_,ndom) <- liftIO $ Dom.domainAdd trm cdomain
+                          (_,_,_,ndom) <- liftIO $ Dom.domainAdd trm cdomain
                           return ndom
                     ) domain (TR.suggestedPredicates mdl)
   modify $ \env -> env { ic3Domain = ndomain }
@@ -1785,8 +1785,8 @@ addTentativeProperties = do
   forM_ trueProps $ \prop -> do
     -- Create a predicate for each true property:
     domain <- gets ic3Domain
-    (pred,_,ndomain) <- liftIO $ Dom.domainAdd prop domain
+    (pred,predNeg,_,ndomain) <- liftIO $ Dom.domainAdd prop domain
     modify $ \env -> env { ic3Domain = ndomain }
-    let absState = Vec.singleton (pred,False)
+    let absState = Vec.singleton (pred,predNeg)
     addAbstractCube 1 absState
   
