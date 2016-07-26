@@ -871,6 +871,11 @@ instance TransitionRelation LispProgram where
                                   (\_ -> undefined) expr
                           ) (programState prog))
       | expr <- programPredicates prog ]
+  tentativeProperties prog
+    = [mkCompExpr (\st -> relativize st (LispState DMap.empty)
+                          (\_ -> undefined) expr
+                  ) (programState prog)
+      | expr <- programPreferences prog]
   defaultPredicateExtractor _ = return emptyRSM
   extractPredicates prog rsm (LispConcr full) (LispPart part) mDumpStates = liftIO $ do
     (rsm2,lines) <- mineStates (createPipe "z3" ["-smt2","-in"]) rsm1

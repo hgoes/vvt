@@ -969,6 +969,7 @@ check st opts verb stats dumpDomain dumpstats dumpstates searchS = do
                       addSuggestedPredicates
                       extend
                       extend
+                      addTentativeProperties
                       res <- checkIt
                       ic3DumpStats (case res of
                                       Left _ -> Nothing
@@ -1750,3 +1751,42 @@ addDebugging :: String -> AnyBackend IO -> AnyBackend IO
 addDebugging name (AnyBackend act) = AnyBackend $ do
   b <- act
   return $ namedDebugBackend name b
+
+-- | Initialize the first frame with the tentative properties, if they hold there.
+addTentativeProperties :: TR.TransitionRelation mdl => IC3 mdl ()
+addTentativeProperties = do
+  mdl <- asks ic3Model
+  backend <- asks ic3BaseBackend
+  -- Check which tentative properties hold in the first two states:
+  trueProps <- if null (TR.tentativeProperties mdl)
+               then return []
+               else liftIO $ withAnyBackend backend $ do
+    st <- TR.createStateVars (\tp _ -> declareVar tp) mdl
+    TR.initialState mdl st >>= assert
+    tentative1 <- fmap catMaybes $
+      mapM (\prop -> stack $ do
+               assert $ not' $ concretizeExpr st prop
+               chk <- checkSat
+               if chk/=Unsat
+                 then return Nothing
+                 else return (Just prop)
+           ) (TR.tentativeProperties mdl)
+    inp <- TR.createInputVars (\tp _ -> declareVar tp) mdl
+    (nxt,_) <- TR.declareNextState (\_ -> defineVar) mdl st inp (TR.startingProgress mdl)
+    fmap catMaybes $
+      mapM (\prop -> stack $ do
+               assert $ not' $ concretizeExpr nxt prop
+               chk <- checkSat
+               if chk/=Unsat
+                 then return Nothing
+                 else return (Just prop)
+           ) tentative1
+  ic3Debug 4 $ "Tentative properties used: " ++ show trueProps
+  forM_ trueProps $ \prop -> do
+    -- Create a predicate for each true property:
+    domain <- gets ic3Domain
+    (pred,_,ndomain) <- liftIO $ Dom.domainAdd prop domain
+    modify $ \env -> env { ic3Domain = ndomain }
+    let absState = Vec.singleton (pred,False)
+    addAbstractCube 1 absState
+  

@@ -71,6 +71,10 @@ class (PartialComp (State t),PartialComp (Input t))
                     -> (forall t. Maybe String -> e t -> m (e t))
                     -> RealizationProgress t e -> m ([e BoolType],RealizationProgress t e)
   searchPreferences _ _ _ _ _ p = return ([],p)
+  -- | A list of properties that are allowed to fail but could be good for
+  --   strengthening the invariant.
+  tentativeProperties :: t -> [CompositeExpr (State t) BoolType]
+  tentativeProperties _ = []
 
 renderState :: (TransitionRelation t) => t -> Unpacked (State t) -> String
 renderState (mdl::t) st = show (unmaskValue (Proxy::Proxy (State t)) st)
