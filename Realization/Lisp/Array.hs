@@ -11,7 +11,6 @@ import Language.SMTLib2.Internals.Interface
 import Data.GADT.Compare
 import Data.GADT.Show
 import qualified Data.AttoLisp as L
-import qualified Data.Attoparsec.Number as L
 import Data.Functor.Identity
 import Data.List (genericLength)
 import Data.Foldable (foldlM)

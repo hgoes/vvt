@@ -75,7 +75,7 @@ instance Show IC3MachineReadableStats where
         ++ ("liftingNum:" ++ show (mrs_liftingNum mrs) ++ "\n")
         ++ ("initiationTime:" ++ ((showFFloat Nothing (mrs_initiationTime mrs)) "") ++ "\n")
         ++ ("initiationNum:" ++ show (mrs_initiationNum mrs) ++ "\n")
-        ++ ("rsmTime:" ++ show (mrs_rsmTime mrs) ++ "\n")
+        ++ ("rsmTime:" ++ showFFloat Nothing (mrs_rsmTime mrs) "" ++ "\n")
         ++ ("numErased:" ++ show (mrs_numErased mrs) ++ "\n")
         ++ ("numCTI:" ++ show (mrs_numCTI mrs) ++ "\n")
         ++ ("numUnliftedErased:" ++ show (mrs_numUnliftedErased mrs) ++ "\n")

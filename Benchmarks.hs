@@ -29,6 +29,7 @@ data BenchConf =
     , bc_optimizeTr :: Bool
     , bc_results :: FilePath
     , bc_benchmarks :: FilePath
+    , bc_verifyOpts :: T.Text
     }
 
 benchConfParser :: Parser BenchConf
@@ -79,6 +80,13 @@ benchConfParser =
       <> metavar "FILEPATH"
       <> help "Directory, where benchmarks are located"
       )
+    <*>
+    OA.option (fmap T.pack str)
+      (  long "verify-opts"
+      <> value _DEFAULT_VERIFY_OPTS_
+      <> metavar "STR"
+      <> help "opts to pass to vvt-verify run"
+      )
 
 _DEFAULT_BINDIR_ :: FilePath
 _DEFAULT_BINDIR_ = ".stack-work/install/x86_64-linux/lts-3.19/7.10.3/bin/"
@@ -95,11 +103,11 @@ _DEFAULT_BENCHDIR_ = "test/"
 _DEFAULT_LOGDIR_ :: FilePath
 _DEFAULT_LOGDIR_ = "log/"
 
-_VERIFY_OPTS_ :: T.Text
-_VERIFY_OPTS_ = " -v5 --stats --timeout=200s"
+_DEFAULT_VERIFY_OPTS_ :: T.Text
+_DEFAULT_VERIFY_OPTS_ = " -v5 --stats --timeout=200s"
 
 _ENCODE_OPTS_ :: T.Text
-_ENCODE_OPTS_ = ""
+_ENCODE_OPTS_ = " "
 
 getAllBenchmarks :: BenchConf -> IO [Benchmark]
 getAllBenchmarks conf =
@@ -137,6 +145,7 @@ runBench conf = do
           trDir = bc_trDir conf
           binDir = bc_binDir conf
           logDir = bc_logDir conf
+          verifyOpts = bc_verifyOpts conf
       case bc_dontCreateTr conf of
         True -> return ()
         False ->
@@ -188,7 +197,7 @@ runBench conf = do
                            cmdToExecute =
                                verifyBinary
                                 <> " --dump-stats-to " <> tmpFileForStats
-                                <> _VERIFY_OPTS_
+                                <> verifyOpts
                                 <> " < " <> (T.pack $ show $ trAsText)
                                 <> " > " <> logFile
                                 <> " 2>&1"
@@ -272,7 +281,7 @@ meanValsPrettyString stats benchmarkCount =
         ++ "liftingNum:" ++ showMean (fromIntegral . mrs_liftingNum) ++ "\n"
         ++ "initiationTime:" ++ showMean mrs_initiationTime ++ "\n"
         ++ "initiationNum:" ++ showMean (fromIntegral . mrs_initiationNum) ++ "\n"
-        ++ "rsmTime:" ++ showMean mrs_rsmTime
+        ++ "rsmTime:" ++ showMean mrs_rsmTime ++ "\n"
         ++ "numErased:" ++ showMean (fromIntegral . mrs_numErased) ++ "\n"
         ++ "numCTI:" ++ showMean (fromIntegral . mrs_numCTI) ++ "\n"
         ++ "numUnliftedErased:" ++ showMean (fromIntegral . mrs_numUnliftedErased) ++ "\n"
