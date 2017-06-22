@@ -16,7 +16,7 @@ import Language.SMTLib2.Internals.Type.Struct (Struct(..),Tree(..))
 import qualified Language.SMTLib2.Internals.Type.Struct as Struct
 import qualified Language.SMTLib2.Internals.Expression as E
 
-import LLVM.FFI hiding (GetType,getType,And)
+import LLVM.FFI hiding (GetType,getType,And,IntType)
 
 import qualified Data.AttoLisp as L
 import Data.Map (Map)

@@ -1029,7 +1029,7 @@ check st opts verb stats dumpDomain dumpstats dumpstates = do
       concrs <- getWitness real xs
       return $ (concr1,concr2):concrs
 
-getFixpoint :: (Embed m e,GetType e,Composite st)
+getFixpoint :: (Embed m e,Monad m,GetType e,Composite st)
             => Dom.Domain st -> [Dom.AbstractState st] -> st e
             -> m (e BoolType)
 getFixpoint domain sts inp = do
@@ -1218,10 +1218,10 @@ interpolateState j s inp = do
         E.LVar v -> case DMap.lookup v mp of
           Just res -> return res
         E.Let args body -> do
-          nmp <- List.foldM (\cmp bind -> do
-                                nexpr <- cleanInterpolant cmp (E.letExpr bind)
-                                return $ DMap.insert (E.letVar bind) nexpr cmp
-                            ) mp args
+          nmp <- foldlM (\cmp (E.LetBinding v e) -> do
+                            nexpr <- cleanInterpolant cmp e
+                            return $ DMap.insert v nexpr cmp
+                        ) mp args
           cleanInterpolant nmp body
         Divisible n x -> do
           nx <- cleanInterpolant mp x

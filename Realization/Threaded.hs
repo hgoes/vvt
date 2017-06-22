@@ -19,7 +19,7 @@ import Language.SMTLib2.Internals.Interface as I
 import Language.SMTLib2.Internals.Embed
 import Language.SMTLib2.Internals.Type
 
-import LLVM.FFI hiding (GetType,getType,And)
+import LLVM.FFI hiding (GetType,getType,And,IntType)
 import qualified LLVM.FFI as LLVM
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (peek)
@@ -30,6 +30,7 @@ import qualified Data.Map as Map
 import Data.Typeable
 import "mtl" Control.Monad.State
 import "mtl" Control.Monad.Reader
+import Control.Monad.Identity
 import Data.Foldable
 import Data.List (genericReplicate,genericIndex)
 import Prelude hiding (foldl,sequence,mapM,mapM_,concat)
@@ -153,18 +154,21 @@ instance (Composite inp,Composite st)
                  (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoVar
   type EmLVar (ReaderT TranslationOptions
                (StateT (RealizationState inp st) IO)) (RExpr inp st) = E.NoVar
-  embed e = return (RExpr e)
-  embedQuantifier = error "Cannot embed quantifier into RExpr."
-  embedTypeOf (RExpr e) = E.expressionType (return.getType) (return.getType)
-                          (return.getFunType) (return.getType) (return.getType)
-                          embedTypeOf e
-  embedTypeOf (RRef (DefExpr _ tp)) = return tp
-  embedTypeOf (RInput rev :: RExpr inp st tp) = do
-    inp <- gets inputAnnotation
-    return $ revType (Proxy::Proxy inp) inp rev
-  embedTypeOf (RState rev :: RExpr inp st tp) = do
-    st <- gets stateAnnotation
-    return $ revType (Proxy::Proxy st) st rev
+  embed e = fmap RExpr e
+  embedQuantifier _ _ _ = error "Cannot embed quantifier into RExpr."
+  embedTypeOf = do
+    st <- get
+    return $ f st
+    where
+      f :: RealizationState inp st -> RExpr inp st tp -> Repr tp
+      f st (RExpr e) = runIdentity $ E.expressionType (return.getType) (return.getType)
+                       (return.getFunType) (return.getType) (return.getType)
+                       (return.f st) e
+      f _ (RRef (DefExpr _ tp)) = tp
+      f st (RInput rev :: RExpr inp st tp)
+        = revType (Proxy::Proxy inp) (inputAnnotation st) rev
+      f st (RState rev :: RExpr inp st tp)
+        = revType (Proxy::Proxy st) (stateAnnotation st) rev
 
 uniqueName :: String -> Realization inp st String
 uniqueName name = do
@@ -197,12 +201,12 @@ define :: (Composite inp,Composite st) => String -> RExpr inp st tp
        -> Realization inp st (RExpr inp st tp)
 define name expr = do
   name' <- uniqueName name
-  tp <- embedTypeOf expr
+  tp <- embedTypeOf
   s <- get
   let defs = definitions s
       sz = DMap.size defs
       def = Definition expr name'
-      key = DefExpr sz tp
+      key = DefExpr sz (tp expr)
   put s { definitions = DMap.insert key def defs }
   return (RRef key)
 
@@ -681,8 +685,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
      retTrg' <- realizeValue thread retTrg edge
      rthId <- memoryRead thread i thId' edge
      liftIO $ hPutStrLn stderr $ "join: "++show (symbolicValue rthId)
-     gt <- sequence [ embed (Not $ RState $ ThreadActivation call') >>=
-                      embed.(cact :&:)
+     gt <- sequence [ embed (pure $ Not $ RState $ ThreadActivation call') >>=
+                      embed.(pure . (cact :&:))
                     | (call',cact) <- Map.toList $ valThreadId $
                                       symbolicValue rthId
                     ] >>= mkOr
@@ -714,7 +718,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue retTrg') of
                           Just r -> r
-                    ncond <- embed $ act :&: cond
+                    ncond <- embed $ pure $ act :&: cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType retTrg')
      joinReturn <- mkResults (symbolicValue rthId) (Map.keys $ tpThreadId $ symbolicType rthId)
@@ -727,7 +731,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                                              , eventThread = thread
                                              , eventOrigin = castUp call
                                              }) edge
-     nact <- embed $ act :&: cond
+     nact <- embed $ pure $ act :&: cond
      return (Just nedge,nact)
    "__thread_kill" -> do
      thId <- liftIO $ getOperand call 0
@@ -744,7 +748,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                         Nothing -> return Nothing
                       case Map.lookup th (valThreadId $ symbolicValue rthId) of
                         Just cond -> do
-                          rcond <- embed $ act :&: cond
+                          rcond <- embed $ pure $ act :&: cond
                           return [(rcond,ret)]
               ) (tpThreadId $ symbolicType rthId)
      modify $ \s -> s { termEvents = Map.unionWith (++) (termEvents s) terms }
@@ -754,14 +758,14 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
      val' <- realizeValue thread val edge
      branch <- asks dedicatedErrorState
      nact <- if branch
-             then embed $ act :&: (valBool $ symbolicValue val')
+             then embed $ pure $ act :&: (valBool $ symbolicValue val')
              else return act
-     assertion <- embed $ act :=>: (valBool $ symbolicValue val')
+     assertion <- embed $ pure $ act :=>: (valBool $ symbolicValue val')
      modify $ \s -> s { assertions = (thread,assertion):(assertions s) }
      return (Just edge,nact)
    "__error" -> do
      dontStep <- gets $ Map.null . threadStateDesc . stateAnnotation
-     assertion <- embed $ Not act
+     assertion <- embed $ pure $ Not act
      modify $ \s -> s { assertions = (thread,assertion):(assertions s) }
      return (Nothing,act)
    "pthread_mutex_init" -> do
@@ -784,7 +788,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- embed $ act :&: cond
+                    ncond <- embed $ pure $ act :&: cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType ptr')
      writeValue <- constantBoolValue True
@@ -793,8 +797,8 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                                    , eventThread = thread
                                    , eventOrigin = castUp call
                                    }) edge1
-     nact <- embed (Not $ valBool $ symbolicValue lock) >>=
-             embed.(act :&:)
+     nact <- embed (pure $ Not $ valBool $ symbolicValue lock) >>=
+             embed.pure.(act :&:)
      return (Just edge2,nact)
    "pthread_mutex_unlock" -> do
      ptr <- liftIO $ getOperand call 0
@@ -806,7 +810,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- embed $ act :&: cond
+                    ncond <- embed $ pure $ act :&: cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType ptr')
      writeValue <- constantBoolValue False
@@ -836,7 +840,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue ptr') of
                           Just r -> r
-                    ncond <- embed $ act :&: cond
+                    ncond <- embed $ pure $ act :&: cond
                     return (ncond,idx)) (tpPtr $ symbolicType ptr')
      writeValue <- case symbolicValue lock of
        ValVector [wr,ValInt rd] -> do
@@ -865,7 +869,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                     return (ncond,idx)) (tpPtr $ symbolicType ptr')
      writeValue <- do
        wrLock <- true
-       rdLock <- 0
+       rdLock <- cint 0
        return $ ValVector [ValBool wrLock,ValInt rdLock]
      edge2 <- addEvent (WriteEvent { target = ntarget
                                    , writeContent = InstructionValue { symbolicType = TpVector [TpBool,TpInt]
@@ -929,7 +933,7 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                 (\loc _ -> do
                     let (cond,idx) = case Map.lookup loc (valPtr $ symbolicValue cond') of
                           Just r -> r
-                    ncond <- embed $ act :&: cond
+                    ncond <- act .&. cond
                     return (ncond,idx)
                 ) (tpPtr $ symbolicType cond')
      condCont <- do
@@ -970,9 +974,9 @@ realizeInstruction thread blk sblk act i@(castDown -> Just call) edge = do
                                    , eventOrigin = castUp call
                                    }) edge
      nact <- do
-       notWaiting <- embed $ Not waiting
-       notLocked <- embed $ Not locked
-       embed $ And (act ::: notWaiting ::: notLocked ::: Nil)
+       notWaiting <- not' waiting
+       notLocked <- not' locked
+       embed $ pure $ And (act ::: notWaiting ::: notLocked ::: Nil)
      return (Just nedge,nact)
    "__cond_signal" -> do
      -- We must select a thread at random
@@ -1337,7 +1341,7 @@ realizeDefInstruction thread i@(castDown -> Just call) edge = do
            Just (TpStatic _ tp') -> return tp'
            Just (TpDynamic tp') -> return tp'
          cond <- true
-         i0 <- 0
+         i0 <- cint 0
          return InstructionValue { symbolicType = TpPtr (Map.singleton ptrLocDyn ()) tp
                                  , symbolicValue = ValPtr (Map.singleton ptrLocDyn (cond,[i0])) tp
                                  , alternative = Nothing }
@@ -1667,7 +1671,7 @@ memoryWrite th origin act ptr val edge = do
                        Just r -> return r
                        Nothing -> do
                          c <- false
-                         i <- sequence [ 0 | DynamicAccess <- offsetPattern loc ]
+                         i <- sequence [ cint 0 | DynamicAccess <- offsetPattern loc ]
                          return (c,i)
                  ncond <- act .&. cond
                  return (ncond,idx)) (tpPtr $ symbolicType ptr)
@@ -1724,7 +1728,7 @@ realizeValue thread (castDown -> Just i) edge = do
     else do
     useBW <- asks bitPrecise
     if useBW
-      then reifyNat (fromIntegral bw) $
+      then getBw (fromIntegral bw) $
            \bw' -> do
              val <- cbv (fromIntegral rv) bw'
              return InstructionValue { symbolicType = TpBounded bw'
@@ -1854,7 +1858,7 @@ translateType0 opts (castDown -> Just itp) = do
   case bw of
     1 -> return $ Singleton TpBool
     _ -> if bitPrecise opts
-         then reifyNat (fromIntegral bw) $
+         then getBw (fromIntegral bw) $
               \bw' -> return $ Singleton $ TpBounded bw'
          else return $ Singleton TpInt
 translateType0 opts (castDown -> Just ptr) = do
@@ -2430,7 +2434,7 @@ getConstant opts (castDown -> Just cint) = do
   if bw==1
     then return $ Singleton $ ValBool $ RExpr $ E.Const $ BoolValue (rv/=0)
     else if bitPrecise opts
-         then reifyNat (fromIntegral bw) $
+         then getBw (fromIntegral bw) $
               \bw' -> return $ Singleton $ ValBounded $ RExpr $ E.Const $
                                BitVecValue (fromIntegral rv) bw'
          else return $ Singleton $ ValInt $ RExpr $ E.Const $ IntValue (fromIntegral rv)

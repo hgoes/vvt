@@ -101,7 +101,7 @@ makeAtomic mod = do
       begin <- atomicFun mod "__atomic_begin"
       blk <- getEntryBlock fun
       instr <- getFirstNonPHI blk
-      callName <- newTwineEmpty
+      callName <- newTwine ""
       callBegin <- withArrayRef [] $ \arr -> newCallInst begin arr callName
       instructionInsertBefore callBegin instr
       makeAtomic'' Set.empty blk
@@ -114,7 +114,7 @@ makeAtomic mod = do
       case castDown term of
         Just (_::Ptr ReturnInst) -> do
           end <- atomicFun mod "__atomic_end"
-          callName <- newTwineEmpty
+          callName <- newTwine ""
           callEnd <- withArrayRef [] $ \arr -> newCallInst end arr callName
           instructionInsertBefore callEnd term
           return (Set.insert blk visited)
@@ -167,12 +167,12 @@ insertLocks mod = do
   struct <- withArrayRef [castUp val0] $ \arr -> newConstantStruct mtype arr
   deleteAttributeSet attrs
   mapM_ (\((var,lock),n) -> do
-            name <- newTwineString $ "__infered_lock_"++show n
+            name <- newTwine $ "__infered_lock_"++show n
             nvar <- newGlobalVariable mtype False InternalLinkage struct name NotThreadLocal 0 False
             globs <- moduleGetGlobalList mod
             ipListPushBack globs nvar
             mapM_ (\(beginAquire,endAquire) -> do
-                     name <- newTwineEmpty
+                     name <- newTwine ""
                      lockCall <- withArrayRef [castUp nvar] $
                                  \args -> newCallInst lockFun args name
                      blk <- instructionGetParent beginAquire
@@ -183,7 +183,7 @@ insertLocks mod = do
                      return ()
                   ) (lockAquires lock)
             mapM_ (\(beginRelease,endRelease) -> do
-                     name <- newTwineEmpty
+                     name <- newTwine ""
                      unlockCall <- withArrayRef [castUp nvar] $
                                    \args -> newCallInst unlockFun args name
                      blk <- instructionGetParent beginRelease
@@ -193,7 +193,7 @@ insertLocks mod = do
                      return ()
                   ) (lockReleases lock)
             mapM_ (\(loadMtx,truncLoad) -> do
-                       name <- newTwineEmpty
+                       name <- newTwine ""
                        testCall <- withArrayRef [castUp nvar] $
                                    \args -> newCallInst testFun args name
                        instructionInsertBefore testCall loadMtx
@@ -435,7 +435,7 @@ makeFiniteThreads n mod = do
       ipListPushBack lst (castUp ret)
     unrollBlock fun n blk = do
       ctx <- moduleGetContext mod
-      blkName <- newTwineEmpty
+      blkName <- newTwine ""
       mapping <- newValueMap
       nblk <- cloneBasicBlock blk mapping blkName fun nullPtr
       deleteValueMap mapping
@@ -471,7 +471,7 @@ fixPThreadCalls mod = do
         Just (allocRef::Ptr AllocaInst) -> do
           ctx <- moduleGetContext mod
           tp <- threadIdType mod
-          name <- newTwineEmpty
+          name <- newTwine ""
           sz <- mallocAPInt (APInt 32 1) >>= createConstantInt ctx
           nalloc <- newAllocaInst tp sz 0 name
           instructionInsertAfter nalloc allocRef
@@ -493,7 +493,7 @@ fixPThreadCalls mod = do
         "pthread_create" -> do
           hPutStrLn stderr $ "Replacing call:"
           valueDump call
-          noName <- newTwineEmpty
+          noName <- newTwine ""
           ref <- callInstGetArgOperand call 0
           (nref,nmp) <- fixRef mp ref
           hPutStrLn stderr $ "New reference:"
@@ -518,7 +518,7 @@ fixPThreadCalls mod = do
         "pthread_join" -> do
           hPutStrLn stderr $ "Replacing call:"
           valueDump call
-          noName <- newTwineEmpty
+          noName <- newTwine ""
           ref <- callInstGetArgOperand call 0
           (nref,nmp) <- fixRef mp ref
           hPutStrLn stderr $ "New reference:"
@@ -555,10 +555,10 @@ getProgram = do
   loadRes <- getStdInMemoryBufferSimple
   buf <- case loadRes of
     Left err -> error $ "Error while loading bitcode file: "++show err
-    Right b -> return b
+    Right b -> memoryBufferGetRef b
   diag <- newSMDiagnostic
   ctx <- newLLVMContext
-  mod <- parseIR buf diag ctx
+  mod <- parseIR buf diag ctx >>= getUniquePtr
   return mod
 
 data Transformation

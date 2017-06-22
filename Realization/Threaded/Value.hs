@@ -4,11 +4,12 @@ import Args
 
 import Language.SMTLib2
 import Language.SMTLib2.Internals.Embed
+import Language.SMTLib2.Internals.Type (bwSize)
 import Language.SMTLib2.Internals.Type.Nat
 import qualified Language.SMTLib2.Internals.Type.List as List
 import Data.Map (Map)
 import qualified Data.Map as Map
-import LLVM.FFI hiding (Type,Value,Vector,ArrayType,GetType,getType,Select,Store)
+import LLVM.FFI hiding (Type,Value,Vector,ArrayType,GetType,getType,Select,Store,IntType)
 import Foreign.Ptr (Ptr)
 import Data.Typeable
 import Data.List (genericIndex)
@@ -51,7 +52,7 @@ data SymArray e = ArrBool { arrBool :: e (ArrayType '[IntType] BoolType) }
 
 data SymType = TpBool
              | TpInt
-             | forall bw. TpBounded { tpBoundedBitwidth :: Natural bw }
+             | forall bw. TpBounded { tpBoundedBitwidth :: BitWidth bw }
              | TpPtr { tpPtr :: Map MemoryPtr ()
                      , tpPtrType :: Struct SymType }
              | TpThreadId { tpThreadId :: Map (Ptr CallInst) () }
@@ -90,7 +91,7 @@ data MemoryAccessResult e a
 data RevValue tp where
   RevInt :: RevValue IntType
   RevBool :: RevValue BoolType
-  RevBounded :: Natural bw -> RevValue (BitVecType bw)
+  RevBounded :: BitWidth bw -> RevValue (BitVecType bw)
   PtrCond :: MemoryPtr -> RevValue BoolType
   PtrIdx :: MemoryPtr -> Int -> RevValue IntType
   ThreadIdCond :: Ptr CallInst -> RevValue BoolType
@@ -199,15 +200,15 @@ defaultConst (TpCondition mp)
   = ValCondition (fmap (const (BoolValue False)) mp)
 defaultConst (TpVector tps) = ValVector (fmap defaultConst tps)
 
-defaultValue :: Embed m e => SymType -> m (SymVal e)
+defaultValue :: (Embed m e,Monad m) => SymType -> m (SymVal e)
 defaultValue tp = foldExprs (\_ -> constant) (defaultConst tp)
 
-valEq :: (Embed m e,GetType e) => SymVal e -> SymVal e -> m (e BoolType)
-valEq (ValBool x) (ValBool y) = embed $ x :==: y
-valEq (ValInt x) (ValInt y) = embed $ x :==: y
+valEq :: (Embed m e,Monad m,GetType e) => SymVal e -> SymVal e -> m (e BoolType)
+valEq (ValBool x) (ValBool y) = x .==. y
+valEq (ValInt x) (ValInt y) = x .==. y
 valEq (ValBounded e1) (ValBounded e2) = case (getType e1,getType e2) of
   (BitVecRepr bw1,BitVecRepr bw2) -> case geq bw1 bw2 of
-    Just Refl -> embed $ e1 :==: e2
+    Just Refl -> e1 .==. e2
 valEq (ValPtr x _) (ValPtr y _) = do
   mp <- sequence $ Map.intersectionWith ptrEq x y
   case catMaybes $ Map.elems mp of
@@ -263,7 +264,7 @@ derefPattern (_:is) [_] = DynamicAccess:
                           fmap (maybe DynamicAccess StaticAccess) is
 derefPattern idx (i:is) = i:derefPattern idx is
 
-derefPointer :: (Embed m e)
+derefPointer :: (Embed m e,Monad m)
              => [Either Integer (e IntType)]
              -> Map MemoryPtr (e BoolType,[e IntType])
              -> m (Map MemoryPtr (e BoolType,[e IntType]))
@@ -281,7 +282,7 @@ derefPointer idx mp
     | (loc,(cond,dyns)) <- Map.toList mp
     , let (pat,dyn) = deref (offsetPattern loc) dyns idx ]
   where
-    deref :: (Embed m e)
+    deref :: (Embed m e,Monad m)
           => [AccessPattern] -> [e IntType] -> [Either Integer (e IntType)]
           -> ([AccessPattern],m [e IntType])
     deref [] [] is = let (pat,dyn) = toAccess is
@@ -337,7 +338,7 @@ withOffset f n (Struct xs) st = do
     withStruct _ [] = return (Invalid,[],st)
 withOffset _ n obj st = error $ "withOffset: Cannot index "++show obj++" with "++show n
 
-symITE :: forall m e. (GShow e,GetType e,Embed m e)
+symITE :: forall m e. (GShow e,GetType e,Embed m e,Monad m)
        => e BoolType -> SymVal e -> SymVal e -> m (SymVal e)
 symITE cond (ValBool x) (ValBool y) = fmap ValBool $ ite cond x y
 symITE cond (ValInt x) (ValInt y) = fmap ValInt $ ite cond x y
@@ -367,18 +368,20 @@ symITE cond (ValCondition x) (ValCondition y)
   = fmap ValCondition
     (sequence $ Map.mergeWithKey (\_ p q -> Just $ ite cond p q)
      (fmap (\c -> c .&. cond))
-     (fmap (\c -> embed (Not cond) >>= embed.(c :&:))) x y)
+     (fmap (\c -> c .&. not' cond)) x y)
 symITE cond (ValVector v1) (ValVector v2)
   = fmap ValVector $ sequence $ zipWith (symITE cond) v1 v2
 symITE cond v1 v2 = error $ "Cannot ITE differently typed values "++show v1++" and "++show v2
 
-symITEs :: (GShow e,GetType e,Embed m e) => [(SymVal e,e BoolType)] -> m (SymVal e)
+symITEs :: (GShow e,GetType e,Embed m e,Monad m)
+        => [(SymVal e,e BoolType)] -> m (SymVal e)
 symITEs [(val,_)] = return val
 symITEs ((val,c):rest) = do
   rval <- symITEs rest
   symITE c val rval
 
-arrITE :: forall m e. (GShow e,GetType e,Embed m e) => e BoolType -> SymArray e -> SymArray e
+arrITE :: forall m e. (GShow e,GetType e,Embed m e,Monad m)
+       => e BoolType -> SymArray e -> SymArray e
        -> m (SymArray e)
 arrITE cond (ArrBool x) (ArrBool y) = fmap ArrBool (ite cond x y)
 arrITE cond (ArrInt x) (ArrInt y) = fmap ArrInt (ite cond x y)
@@ -413,7 +416,7 @@ arrITE cond (ArrCondition x) (ArrCondition y)
 arrITE cond (ArrVector x) (ArrVector y)
   = fmap ArrVector $ sequence $ zipWith (arrITE cond) x y
 
-structITE :: (Embed m e)
+structITE :: (Embed m e,Monad m)
           => (e BoolType -> b -> b -> m b)
           -> e BoolType -> Struct b -> Struct b -> m (Struct b)
 structITE ite cond (Singleton x) (Singleton y)
@@ -421,7 +424,7 @@ structITE ite cond (Singleton x) (Singleton y)
 structITE ite cond (Struct xs) (Struct ys)
   = fmap Struct $ sequence $ zipWith (structITE ite cond) xs ys
 
-structITEs :: (Embed m e)
+structITEs :: (Embed m e,Monad m)
            => ([(b,e BoolType)] -> m b)
            -> [(Struct b,e BoolType)]
            -> m (Struct b)
@@ -432,7 +435,7 @@ structITEs comb xs = fmap Struct (sequence $ zipStructs (fmap (\(Struct x,c) -> 
     zipStructs xs = (structITEs comb (fmap (\(x:_,c) -> (x,c)) xs)):
                     zipStructs (fmap (\(_:xs,c) -> (xs,c)) xs)
 
-withDynOffset :: (Embed m e)
+withDynOffset :: (Embed m e,Monad m)
               => (e BoolType -> b -> b -> m b)
               -> (Struct b -> c -> m (MemoryAccessResult e a,Struct b,c))
               -> e IntType
@@ -451,7 +454,7 @@ withDynOffset ite f n xs st = with (0::Integer) xs st
               st2)
     with i [] st = return (Invalid,[],st)
 
-accessStruct :: (Embed m e,Show b)
+accessStruct :: (Embed m e,Monad m,Show b)
               => (e BoolType -> b -> b -> m b)
               -> (b -> c -> m (MemoryAccessResult e a,b,c))
               -> [Either Integer (e IntType)]
@@ -468,7 +471,7 @@ accessStruct ite f (Right i:is) (Struct s) st = do
   return (res,Struct ns,nst)
 
 
-accessArray :: (GetType e,Embed m e)
+accessArray :: (GetType e,Embed m e,Monad m)
             => (SymVal e -> c -> m (MemoryAccessResult e a,SymVal e,c))
             -> e IntType
             -> SymArray e
@@ -480,7 +483,7 @@ accessArray f idx arr st = do
   narr <- insertValue idx nval arr
   return (res,narr,nst)
 
-extractValue :: (Embed m e) => e IntType -> SymArray e -> m (SymVal e)
+extractValue :: (Embed m e,Monad m) => e IntType -> SymArray e -> m (SymVal e)
 extractValue idx (ArrBool arr) = fmap ValBool $ select1 arr idx
 extractValue idx (ArrInt arr) = fmap ValInt $ select1 arr idx
 extractValue idx (ArrBounded arr) = fmap ValBounded $ select1 arr idx
@@ -498,7 +501,8 @@ extractValue idx (ArrCondition arr)
 extractValue idx (ArrVector arrs)
   = fmap ValVector (mapM (extractValue idx) arrs)
 
-insertValue :: (GetType e,Embed m e) => e IntType -> SymVal e -> SymArray e -> m (SymArray e)
+insertValue :: (GetType e,Embed m e,Monad m)
+            => e IntType -> SymVal e -> SymArray e -> m (SymArray e)
 insertValue idx (ValBool b) (ArrBool arr) = fmap ArrBool $ store1 arr idx b
 insertValue idx (ValInt i) (ArrInt arr) = fmap ArrInt $ store1 arr idx i
 insertValue idx (ValBounded v) (ArrBounded arr) = case (getType v,getType arr) of
@@ -523,7 +527,7 @@ insertValue idx (ValCondition t) (ArrCondition ts)
 insertValue idx (ValVector vals) (ArrVector arr)
   = fmap ArrVector $ sequence $ zipWith (insertValue idx) vals arr
 
-accessAlloc :: (Embed m e,GetType e,GShow e)
+accessAlloc :: (Embed m e,Monad m,GetType e,GShow e)
             => (SymVal e -> c -> m (MemoryAccessResult e a,SymVal e,c))
             -> [Either Integer (e IntType)]
             -> AllocVal e
@@ -558,7 +562,7 @@ accessAlloc f (i:is) (ValDynamic arrs sz) st = do
       cond <- i .>=. sz
       return (CondAccess cond Invalid acc,res,nst)
     
-accessAllocTyped :: (Embed m e,GetType e,GShow e)
+accessAllocTyped :: (Embed m e,Monad m,GetType e,GShow e)
                  => SymType
                  -> (SymVal e -> c -> m (a,SymVal e,c))
                  -> [Either Integer (e IntType)]
@@ -573,7 +577,7 @@ accessAllocTyped tp f idx val st
                             else return (TypeError,val,st)
                 ) idx val st
 
-accessAllocTypedIgnoreErrors :: (Embed m e,GetType e,GShow e)
+accessAllocTypedIgnoreErrors :: (Embed m e,Monad m,GetType e,GShow e)
                              => SymType
                              -> (SymVal e -> c -> m (SymVal e,c))
                              -> [Either Integer (e IntType)]
@@ -628,14 +632,16 @@ sameArrayType x1 x2 = sameStructType
                       (fmap symArrType x1)
                       (fmap symArrType x2)
 
-compositeITE :: (Embed m e,GetType e,Composite arg) => e BoolType -> arg e -> arg e -> m (arg e)
+compositeITE :: (Embed m e,Monad m,GetType e,Composite arg)
+             => e BoolType -> arg e -> arg e -> m (arg e)
 compositeITE c arg1 arg2
   = foldExprs (\rev e1 -> do
                   let e2 = accessComposite rev arg2
-                  embed $ ITE c e1 e2
+                  ite c e1 e2
               ) arg1
 
-compositeITEs :: (Embed m e,GetType e,Composite arg) => [(arg e,e BoolType)] -> m (arg e)
+compositeITEs :: (Embed m e,Monad m,GetType e,Composite arg)
+              => [(arg e,e BoolType)] -> m (arg e)
 compositeITEs [(x,_)] = return x
 compositeITEs ((x,c):xs) = do
   xs' <- compositeITEs xs
@@ -674,7 +680,7 @@ mapPointer f (TpPtr trgs tp)
     in TpPtr ntrgs ntp
 mapPointer _ tp = tp
 
-patternMatch :: (Embed m e)
+patternMatch :: (Embed m e,Monad m)
              => [AccessPattern] -> [AccessPattern]
              -> [e IntType] -> [e IntType]
              -> m (Maybe [e BoolType])
@@ -705,7 +711,7 @@ patternMatch (DynamicAccess:xs) (DynamicAccess:ys) (ix:ixs) (iy:iys) = do
       return $ Just $ c:rest'
 patternMatch _ _ _ _ = return Nothing
 
-allocITE :: (Embed m e,GetType e,GShow e) => e BoolType -> AllocVal e -> AllocVal e
+allocITE :: (Embed m e,Monad m,GetType e,GShow e) => e BoolType -> AllocVal e -> AllocVal e
          -> m (AllocVal e)
 allocITE cond (ValStatic xs) (ValStatic ys) = do
   res <- ites xs ys
@@ -1048,7 +1054,7 @@ instance Show (RevValue tp) where
   showsPrec p RevInt = showString "int"
   showsPrec p RevBool = showString "bool"
   showsPrec p (RevBounded bw) = showParen (p>10) $
-                                showString "bw " . showsPrec 11 (naturalToInteger bw)
+                                showString "bw " . showsPrec 11 (bwSize bw)
   showsPrec p (PtrCond loc) = showString "ptrcond"
   showsPrec p (PtrIdx loc i) = showString "ptridx"
   showsPrec p (ThreadIdCond th) = showString"threadid"
@@ -1237,7 +1243,7 @@ showSymType _ TpBool = showString "bool"
 showSymType _ TpInt = showString "int"
 showSymType _ (TpBounded bw)
   = showString "bw[" .
-    showsPrec 0 (naturalToInteger bw) .
+    showsPrec 0 (bwSize bw) .
     showChar ']'
 showSymType mp (TpPtr trgs tp) = showString "ptr[" .
                                  showStruct (showSymType mp) tp .
@@ -1353,7 +1359,7 @@ instance Show SymType where
   showsPrec _ TpBool = showString "Bool"
   showsPrec _ TpInt = showString "Int"
   showsPrec _ (TpBounded bw)
-    = showString "(_ BitVec " . showsPrec 11 (naturalToInteger bw) . showChar ')'
+    = showString "(_ BitVec " . showsPrec 11 (bwSize bw) . showChar ')'
   showsPrec p (TpPtr trg tp)
     = showParen (p>10) $ showString "Ptr " .
       showsPrec 11 (Map.keys trg) .

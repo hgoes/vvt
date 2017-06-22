@@ -21,32 +21,32 @@ class (PartialComp (State t),PartialComp (Input t))
   type RealizationProgress t :: (Type -> *) -> *
   stateAnnotation :: t -> CompDescr (State t)
   inputAnnotation :: t -> CompDescr (Input t)
-  initialState :: (Embed m e,GetType e)
+  initialState :: (Embed m e,Monad m,GetType e)
                => t
                -> State t e
                -> m (e BoolType)
-  stateInvariant :: (Embed m e,GetType e)
+  stateInvariant :: (Embed m e,Monad m,GetType e)
                  => t -> State t e -> Input t e
                  -> m (e BoolType)
-  declareNextState :: (Embed m e,GetType e)
+  declareNextState :: (Embed m e,Monad m,GetType e)
                    => (forall t. Maybe String -> e t -> m (e t))
                    -> t
                    -> State t e -> Input t e
                    -> RealizationProgress t e
                    -> m (State t e,RealizationProgress t e)
-  declareAssumptions :: (Embed m e,GetType e)
+  declareAssumptions :: (Embed m e,Monad m,GetType e)
                      => (forall t. Maybe String -> e t -> m (e t))
                      -> t
                      -> State t e -> Input t e
                      -> RealizationProgress t e
                      -> m ([e BoolType],RealizationProgress t e)
-  declareAssertions :: (Embed m e,GetType e)
+  declareAssertions :: (Embed m e,Monad m,GetType e)
                     => (forall t. Maybe String -> e t -> m (e t))
                     -> t
                     -> State t e -> Input t e
                     -> RealizationProgress t e
                     -> m ([e BoolType],RealizationProgress t e)
-  isEndState :: (Embed m e,GetType e)
+  isEndState :: (Embed m e,Monad m,GetType e)
              => t -> State t e -> m (e BoolType)
   {-createRevState :: Backend b => String -> t -> SMT b (State t (Expr b),RevState t)
   relativizeExpr :: (GetType a,Backend b) => t -> RevState t -> Expr b a -> (State t (Expr b) -> SMT b (Expr b a))-}
@@ -77,14 +77,14 @@ renderInput (mdl::t) st = show (unmaskValue (Proxy::Proxy (Input t)) st)
 renderPartialInput :: (TransitionRelation t) => t -> Partial (Input t) -> String
 renderPartialInput (mdl::t) st = show st
 
-createStateVars :: (TransitionRelation tr,Embed m e,GetType e)
+createStateVars :: (TransitionRelation tr,Embed m e,Monad m,GetType e)
                 => (forall t. Repr t -> RevComp (State tr) t -> m (e t))
                 -> tr
                 -> m (State tr e)
 createStateVars f tr
   = createComposite f (stateAnnotation tr)
 
-createInputVars :: (TransitionRelation tr,Embed m e,GetType e)
+createInputVars :: (TransitionRelation tr,Embed m e,Monad m,GetType e)
                 => (forall t. Repr t -> RevComp (Input tr) t -> m (e t))
                 -> tr
                 -> m (Input tr e)

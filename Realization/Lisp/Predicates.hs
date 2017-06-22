@@ -11,7 +11,7 @@ import Prelude hiding (foldl)
 import Data.GADT.Compare
 import Data.Functor.Identity
 
-ineqPredicates :: (Embed m e,GetType e) => [e IntType] -> m [e BoolType]
+ineqPredicates :: (Embed m e,Monad m,GetType e) => [e IntType] -> m [e BoolType]
 ineqPredicates [] = return []
 ineqPredicates (i:is) = do
   lts <- mapM (\j -> i .<. j) is

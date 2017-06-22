@@ -103,10 +103,10 @@ _DEFAULT_BENCHDIR_ = "test/"
 _DEFAULT_LOGDIR_ :: FilePath
 _DEFAULT_LOGDIR_ = "log/"
 
-_DEFAULT_VERIFY_OPTS_ :: T.Text
+_DEFAULT_VERIFY_OPTS_ :: Text
 _DEFAULT_VERIFY_OPTS_ = " -v5 --stats --timeout=200s"
 
-_ENCODE_OPTS_ :: T.Text
+_ENCODE_OPTS_ :: Text
 _ENCODE_OPTS_ = " "
 
 getAllBenchmarks :: BenchConf -> IO [Benchmark]
@@ -137,7 +137,7 @@ runBench conf = do
   resFileExists <- testfile resultsFile
   case resFileExists of
     True -> do
-      let resFileAsText = safeToText resultsFile
+      let resFileAsText = unsafeTextToLine $ format fp resultsFile
       stderr . return $ "ResultsFile: " <> resFileAsText <> " already exists! Not proceeding"
     False -> do
       benchmarks <- getAllBenchmarks conf
@@ -178,12 +178,12 @@ runBench conf = do
                                          <> " | " <> vvtpp
                                          <> " 1> " <> dest
                            in do
-                             echo cmdToExecute
+                             echo $ unsafeTextToLine cmdToExecute
                              exitCode <- shell cmdToExecute Turtle.empty
                              case exitCode of
                                ExitFailure _ ->
                                    echo $ "vvt-verify encode failed on benchmark: "
-                                            <> benchAsTxt
+                                            <> unsafeTextToLine benchAsTxt
                                _ -> return ()
                   ) benchmarks
       (accumStats, _) <-
@@ -201,12 +201,12 @@ runBench conf = do
                                 <> " < " <> (T.pack $ show $ trAsText)
                                 <> " > " <> logFile
                                 <> " 2>&1"
-                       echo cmdToExecute
+                       echo $ unsafeTextToLine cmdToExecute
                        exitCode <- shell cmdToExecute Turtle.empty
                        case exitCode of
                          ExitFailure ec -> do
-                             echo $ "vvt-verify exited with exit-code " <> (T.pack $ show ec)
-                                 <> " on benchmark: " <> (T.pack $ show bench)
+                             echo $ "vvt-verify exited with exit-code " <> (unsafeTextToLine $ T.pack $ show ec)
+                                 <> " on benchmark: " <> (unsafeTextToLine $ T.pack $ show bench)
                              return (accumulatedStats, n+1)
                          ExitSuccess -> do
                              statsAsByteString <- BS.readFile (T.unpack tmpFileForStats)
@@ -214,20 +214,22 @@ runBench conf = do
                              case mStats of
                                Just newStats -> do
                                    append resultsFile $ select $
-                                          fmap T.pack [ ("benchmark " ++ (show n)
-                                                        ++ ": " ++ (show (benchName bench))
-                                                        )
-                                                      , (show newStats)
-                                                      ]
+                                          fmap (unsafeTextToLine.T.pack)
+                                          [ ("benchmark " ++ (show n)
+                                              ++ ": " ++ (show (benchName bench))
+                                            )
+                                          , (show newStats)
+                                          ]
                                    return (addToAccumulatedStats newStats accumulatedStats, n+1)
                                Nothing -> fail "could not parse stats file"
                                                 )
                 ) (emptyIC3MRStats, 1) benchmarks :: IO (IC3MachineReadableStats, Int)
 
       append resultsFile $ select $
-          fmap T.pack ["mean values over all benchmarks:"
-                      , meanValsPrettyString accumStats (length benchmarks)
-                      ]
+          fmap (unsafeTextToLine.T.pack)
+          ["mean values over all benchmarks:"
+          , meanValsPrettyString accumStats (length benchmarks)
+          ]
 
 safeToText :: FilePath -> T.Text
 safeToText = format fp

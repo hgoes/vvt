@@ -26,10 +26,10 @@ getProgram dump optimize entry file = do
   loadRes <- getFileMemoryBufferSimple file
   buf <- case loadRes of
     Left err -> error $ "Error while loading bitcode file: "++show err
-    Right b -> return b
+    Right b -> memoryBufferGetRef b
   diag <- newSMDiagnostic
   ctx <- newLLVMContext
-  mod <- parseIR buf diag ctx
+  mod <- parseIR buf diag ctx >>= getUniquePtr
   applyOptimizations optimize mod entry
   if dump
     then moduleDump mod

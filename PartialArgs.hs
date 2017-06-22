@@ -11,10 +11,10 @@ import Data.GADT.Show
 
 class (Composite a,Ord (Unpacked a),Show (Unpacked a)) => LiftComp a where
   type Unpacked a
-  liftComp :: (Embed m e,GetType e)
+  liftComp :: (Embed m e,Monad m,GetType e)
            => Unpacked a
            -> m (a e)
-  unliftComp :: (Embed m e,GetType e) => (forall t. e t -> m (Value t))
+  unliftComp :: (Embed m e,Monad m,GetType e) => (forall t. e t -> m (Value t))
              -> a e
              -> m (Unpacked a)
 
@@ -22,7 +22,7 @@ class (LiftComp a,Ord (Partial a),Show (Partial a)) => PartialComp a where
   type Partial a
   maskValue :: Proxy a -> Partial a -> [Bool] -> (Partial a,[Bool])
   unmaskValue :: Proxy a -> Unpacked a -> Partial a
-  assignPartial :: (Embed m e,GetType e) => (forall t. e t -> Value t -> m p)
+  assignPartial :: (Embed m e,Monad m,GetType e) => (forall t. e t -> Value t -> m p)
                 -> a e -> Partial a -> m [Maybe p]
 
 data PValue t where
@@ -58,7 +58,7 @@ instance Show (PValue t) where
 instance GShow PValue where
   gshowsPrec = showsPrec
 
-assignEq :: (Embed m e,GetType e) => e t -> Value t -> m (e BoolType)
+assignEq :: (Embed m e,Monad m,GetType e) => e t -> Value t -> m (e BoolType)
 assignEq var c = do
   val <- constant c
   var .==. val

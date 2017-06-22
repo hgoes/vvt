@@ -161,13 +161,15 @@ getThreadSpawns fun loopInfo = do
       end <- valueUseEnd val
       get begin end
       where
+        get :: Ptr Use_iterator -> Ptr Use_iterator -> IO [Ptr CallInst]
         get cur end = do
           finished <- valueUseIteratorEq cur end
           if finished
             then return []
             else do
             use <- valueUseIteratorDeref cur
-            nxt <- valueUseIteratorNext cur
+            valueUseIteratorNext cur
+            let nxt=cur
             user <- useGetUser use
             case castDown user of
               Just cast -> do

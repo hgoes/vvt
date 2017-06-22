@@ -35,7 +35,7 @@ lispValueType (LispValue sz val) = (rsz,Struct.map (\e -> sizedType e rsz) val)
   where
     rsz = sizeIndices sz
 
-eqValue :: (Embed m e,GetType e)
+eqValue :: (Embed m e,Monad m,GetType e)
         => LispValue '(lvl,tps) e
         -> LispValue '(lvl,tps) e
         -> m (e BoolType)
@@ -43,25 +43,25 @@ eqValue (LispValue sz1 v1) (LispValue sz2 v2) = do
   conj1 <- eqSize sz1 sz2
   conj2 <- eqVal v1 v2
   case conj1++conj2 of
-    [] -> embed $ ConstBool True
+    [] -> true
     [x] -> return x
-    xs -> embed $ AndLst xs
+    xs -> and' xs
   where
-    eqVal :: (Embed m e,GetType e) => Struct (Sized e lvl) tps
+    eqVal :: (Embed m e,Monad m,GetType e) => Struct (Sized e lvl) tps
           -> Struct (Sized e lvl) tps
           -> m [e BoolType]
     eqVal = Struct.zipFlatten (\(Sized x) (Sized y) -> do
-                                  res <- embed $ x :==: y
+                                  res <- x .==. y
                                   return [res])
             (return . concat)
 
-iteValue :: (Embed m e,GetType e)
+iteValue :: (Embed m e,Monad m,GetType e)
          => e BoolType -> LispValue '(sz,tps) e -> LispValue '(sz,tps) e
          -> m (LispValue '(sz,tps) e)
 iteValue c (LispValue sz1 v1) (LispValue sz2 v2) = do
   nsz <- iteSize c sz1 sz2
   nval <- Struct.zipWithM (\(Sized x) (Sized y) -> do
-                              z <- embed $ ITE c x y
+                              z <- ite c x y
                               return (Sized z)
                           ) v1 v2
   return (LispValue nsz nval)
@@ -89,7 +89,7 @@ geqValue (LispValue (Size sz1 _) val1) (LispValue (Size sz2 _) val2) = do
 data LispUVal (sig :: ([Type],Tree Type)) where
   LispU :: Struct Value tps -> LispUVal '( '[],tps)
   LispUArray :: Repr sz -> List Repr szs -> Struct Repr tps
-             -> [LispUVal '(szs,tps)] -> LispUVal '(sz ': szs,tps)
+             -> [LispUVal '(szs,tps)] -> LispUVal '(sz : szs,tps)
 
 instance GEq LispUVal where
   geq (LispU x) (LispU y) = do
@@ -226,7 +226,7 @@ instance LiftComp (LispValue '(lvl,tps)) where
         vals' <- mapM (unliftComp f) vals
         return $ LispUArray sz' szs tps vals'
 
-indexValue :: (Embed m e,GetType e) => (forall t. e t -> Value t -> m p)
+indexValue :: (Embed m e,Monad m,GetType e) => (forall t. e t -> Value t -> m p)
            -> Value sz
            -> LispValue '(sz ': szs,tps) e
            -> m (p,LispValue '(szs,tps) e)
@@ -235,17 +235,17 @@ indexValue f idx (LispValue sz val) = do
   nval <- indexValue' f idx val
   return (res,LispValue nsz nval)
   where
-    indexSize :: (Embed m e,GetType e) => (forall t. e t -> Value t -> m p)
+    indexSize :: (Embed m e,Monad m,GetType e) => (forall t. e t -> Value t -> m p)
               -> Value sz -> Size e (sz ': szs)
               -> m (p,Size e szs)
     indexSize f n (Size (tp ::: tps) (sz ::: szs)) = do
       res <- f sz n
       nszs <- List.unmapM (sizeListType tps) szs (\arr -> do
                                                      n' <- constant n
-                                                     embed $ Select arr (n' ::: Nil))
+                                                     select arr (n' ::: Nil))
       return (res,Size tps nszs)
 
-    indexValue' :: (Embed m e,GetType e) => (forall t. e t -> Value t -> m p)
+    indexValue' :: (Embed m e,Monad m,GetType e) => (forall t. e t -> Value t -> m p)
                 -> Value sz
                 -> Struct (Sized e (sz ': szs)) tps
                 -> m (Struct (Sized e szs) tps)
@@ -253,15 +253,15 @@ indexValue f idx (LispValue sz val) = do
                       (\(Sized x)
                        -> do
                             n' <- constant n
-                            x' <- embed $ Select x (n' ::: Nil)
+                            x' <- select x (n' ::: Nil)
                             return $ Sized x')
 
-assignPartialLisp :: (Embed m e,GetType e) => (forall t. e t -> Value t -> m p)
+assignPartialLisp :: (Embed m e,Monad m,GetType e) => (forall t. e t -> Value t -> m p)
                   -> LispValue tps e -> LispPVal tps
                   -> m [Maybe p]
 assignPartialLisp f (LispValue sz val) (LispP str) = assignStruct f val str
   where
-    assignStruct :: Embed m e => (forall t. e t -> Value t -> m p)
+    assignStruct :: (Embed m e,Monad m) => (forall t. e t -> Value t -> m p)
                  -> Struct (Sized e '[]) tps'
                  -> Struct PValue tps'
                  -> m [Maybe p]
@@ -271,7 +271,7 @@ assignPartialLisp f (LispValue sz val) (LispP str) = assignStruct f val str
     assignStruct _ _ (Singleton (NoPValue _)) = return [Nothing]
     assignStruct f (Struct xs) (Struct ys) = assignStructs f xs ys
 
-    assignStructs :: Embed m e => (forall t. e t -> Value t -> m p)
+    assignStructs :: (Embed m e,Monad m) => (forall t. e t -> Value t -> m p)
                   -> List (Struct (Sized e '[])) tps'
                   -> List (Struct PValue) tps'
                   -> m [Maybe p]
@@ -324,8 +324,8 @@ extractStruct :: Monad m => (forall t. e t -> m (Value t))
               -> m (Struct Value tps)
 extractStruct f = Struct.mapM (\(Sized x) -> f x)
 
-unliftValue :: (Embed m e,GetType e) => (forall t. e t -> m (Value t))
-            -> LispValue '(sz ': szs,tps) e
+unliftValue :: (Embed m e,Monad m,GetType e) => (forall t. e t -> m (Value t))
+            -> LispValue '(sz : szs,tps) e
             -> m [LispValue '(szs,tps) e]
 unliftValue f lv@(LispValue sz val) = case lispValueType lv of
   (csz ::: szs,tps) -> do
@@ -333,7 +333,7 @@ unliftValue f lv@(LispValue sz val) = case lispValueType lv of
     nvals <- unliftStruct f csz nszs val
     return $ zipWith LispValue nszs nvals
 
-unliftStruct :: (Embed m e,GetType e) => (forall t. e t -> m (Value t))
+unliftStruct :: (Embed m e,Monad m,GetType e) => (forall t. e t -> m (Value t))
              -> Repr sz
              -> [Size e szs]
              -> Struct (Sized e (sz ': szs)) tps
@@ -341,7 +341,7 @@ unliftStruct :: (Embed m e,GetType e) => (forall t. e t -> m (Value t))
 unliftStruct f sz szs (Singleton (Sized x))
   = mapM (\(idx,sz) -> do
              idx' <- constant idx
-             el <- embed $ Select x (idx' ::: Nil)
+             el <- select x (idx' ::: Nil)
              return $ Singleton (Sized el)
          ) (zip range szs)
   where
@@ -351,7 +351,7 @@ unliftStruct f sz szs (Struct vals) = do
   vals' <- unliftStructs f sz szs vals
   return $ fmap Struct vals'
 
-unliftStructs :: (Embed m e,GetType e)
+unliftStructs :: (Embed m e,Monad m,GetType e)
               => (forall t. e t -> m (Value t))
               -> Repr sz
               -> [Size e szs]
@@ -363,7 +363,7 @@ unliftStructs f sz szs (x ::: xs) = do
   xs' <- unliftStructs f sz szs xs
   return $ zipWith (:::) x' xs'
 
-liftValues :: (Embed m e,GetType e)
+liftValues :: (Embed m e,Monad m,GetType e)
            => Repr sz
            -> List Repr szs
            -> Struct Repr tps
@@ -374,12 +374,12 @@ liftValues sz szs tps xs = do
   nval <- liftStructs sz szs tps (fmap (\(LispValue _ val) -> val) xs)
   return $ LispValue nsz nval
 
-liftStruct :: (Embed m e,GetType e)
+liftStruct :: (Embed m e,Monad m,GetType e)
            => Struct Value tps
            -> m (Struct (Sized e '[]) tps)
 liftStruct = Struct.mapM (fmap Sized . constant)
 
-liftStructs :: (Embed m e,GetType e)
+liftStructs :: (Embed m e,Monad m,GetType e)
             => Repr sz
             -> List Repr szs
             -> Struct Repr tp
@@ -389,7 +389,7 @@ liftStructs sz szs tp vals = case tp of
   Singleton tp' -> fmap Singleton $ liftSized sz szs tp' (fmap (\(Singleton x) -> x) vals)
   Struct tps -> fmap Struct (liftStructs' sz szs tps (fmap (\(Struct x) -> x) vals))
   where
-    liftStructs' :: (Embed m e,GetType e)
+    liftStructs' :: (Embed m e,Monad m,GetType e)
                  => Repr sz
                  -> List Repr szs
                  -> List (Struct Repr) tps

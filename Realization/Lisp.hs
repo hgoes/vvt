@@ -352,11 +352,11 @@ lispSortToLisp :: List Repr sz -> Struct Repr sig -> L.Lisp
 lispSortToLisp sz tp = case sz of
   Nil -> structTypeToLisp tp
   _ -> L.List [L.Symbol "array"
-              ,L.List (runIdentity $ List.toList (return.typeSymbol) sz)
+              ,L.List (runIdentity $ List.toList (return.typeSymbol Set.empty) sz)
               ,structTypeToLisp tp]
   where
     structTypeToLisp :: Struct Repr sig -> L.Lisp
-    structTypeToLisp (Singleton repr) = typeSymbol repr
+    structTypeToLisp (Singleton repr) = typeSymbol Set.empty repr
     structTypeToLisp (Struct tps)
       = L.List (L.Symbol "struct":structTypesToLisp tps)
 
@@ -919,19 +919,19 @@ instance TransitionRelation LispProgram where
                               let var = accessComposite rev st
                               case val of
                                 1 -> return var
-                                -1 -> embed $ Neg var
+                                -1 -> neg var
                                 _ -> do
                                   rval <- cint val
-                                  embed $ rval :*: var
+                                  rval .*. var
                           ) coeff
               case sum of
-                [x] -> embed (Ord op c' x)
+                [x] -> ord op c' x
                 _ -> do
-                  rsum <- embed $ PlusLst sum
-                  embed (Ord op c' rsum))
+                  rsum <- plus sum
+                  ord op c' rsum)
           (programState prog)
   isEndState prog (LispState st)
-    = embed (OrLst conds) >>= embed.Not
+    = embed (pure $ OrLst conds) >>= embed.(pure.Not)
     where
       conds = [ r | name :=> val <- DMap.toList pcs
                   , r <- case val of
@@ -947,7 +947,7 @@ instance TransitionRelation LispProgram where
                                    _ -> False
                                ) st
 
-declareGate :: (Embed m e,GetType e)
+declareGate :: (Embed m e,Monad m,GetType e)
             => (forall t. Maybe String -> e t -> m (e t))
             -> LispProgram -> LispState e -> LispState e
             -> LispName '(lvl,tp)
@@ -984,7 +984,7 @@ defineGate mkGate name (LispValue sz val) = do
       nszs <- List.mapM (mkGate (Just name)) szs
       return (Size tps nszs)
 
-relativize :: (Embed m e,GetType e)
+relativize :: (Embed m e,Monad m,GetType e)
            => LispState e
            -> LispState e
            -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
@@ -993,7 +993,7 @@ relativize :: (Embed m e,GetType e)
 relativize st inp gts (LispExpr e) = do
   e' <- E.mapExpr err err err err err
         (relativize st inp gts) e
-  embed e'
+  embed (pure e')
   where
     err = error "Realization.Lisp.relativize: LispExpr shouldn't have any user defined entities."
 relativize st inp gts (LispRef var stat) = do
@@ -1016,7 +1016,7 @@ relativize st inp gts (AtMostOne es) = do
   atMostOneOf es'
 relativize st inp gts e = error $ "Realization.Lisp.relativize: Cannot relativize: "++show e
 
-oneOf :: Embed m e
+oneOf :: (Embed m e,Monad m)
       => [e BoolType] -> m (e BoolType)
 oneOf [] = true
 oneOf [x] = return x
@@ -1024,23 +1024,23 @@ oneOf xs = do
   disj <- oneOf' [] xs
   or' disj
   where
-    oneOf' :: Embed m e
+    oneOf' :: (Embed m e,Monad m)
            => [e BoolType] -> [e BoolType] -> m [e BoolType]
     oneOf' _ [] = return []
     oneOf' xs (y:ys) = do
-      negs <- mapM (embed.Not) (xs++ys)
+      negs <- mapM (embed.pure.Not) (xs++ys)
       conj <- let arg = y:negs
-              in embed $ AndLst arg
+              in embed $ pure $ AndLst arg
       rest <- oneOf' (y:xs) ys
       return (conj:rest)
 
-atMostOneOf :: Embed m e
+atMostOneOf :: (Embed m e,Monad m)
             => [e BoolType] -> m (e BoolType)
 atMostOneOf [] = true
 atMostOneOf [x] = true
 atMostOneOf xs = oneOf' [] xs >>= or'
   where
-    oneOf' :: Embed m e
+    oneOf' :: (Embed m e,Monad m)
            => [e BoolType] -> [e BoolType] -> m [e BoolType]
     oneOf' xs [] = do
       negs <- mapM not' xs
@@ -1052,7 +1052,7 @@ atMostOneOf xs = oneOf' [] xs >>= or'
       rest <- oneOf' (y:xs) ys
       return (trm:rest)
 
-relativizeVar :: (Embed m e,GetType e)
+relativizeVar :: (Embed m e,Monad m,GetType e)
               => LispState e
               -> LispState e
               -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
@@ -1081,7 +1081,7 @@ relativizeVar st inp gts (LispITE c ifT ifF) = do
   ifF' <- relativizeVar st inp gts ifF
   iteValue nc ifT' ifF'
 
-relativizeValue :: (Embed m e,GetType e)
+relativizeValue :: (Embed m e,Monad m,GetType e)
                 => LispState e
                 -> LispState e
                 -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
@@ -1093,7 +1093,7 @@ relativizeValue st inp gts (LispValue sz val) = do
                       ) val
   return $ LispValue nsz nval
   where
-    relativizeSize :: (Embed m e,GetType e)
+    relativizeSize :: (Embed m e,Monad m,GetType e)
                    => LispState e -> LispState e
                    -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
                    -> Size LispExpr lvl
@@ -1102,7 +1102,7 @@ relativizeValue st inp gts (LispValue sz val) = do
       nsz <- List.mapM (relativize st inp gts) sz
       return $ Size tps nsz
 
-relativizeIndex :: (Embed m e,GetType e)
+relativizeIndex :: (Embed m e,Monad m,GetType e)
                 => LispState e
                 -> LispState e
                 -> (forall lvl tp. LispName '(lvl,tp) -> m (LispValue '(lvl,tp) e))
@@ -1137,7 +1137,7 @@ instance Composite LispState where
     eqs <- sequence [ eqComposite v1 v2
                     | (name@(LispName _ _ _) :=> (LispValue' v1)) <- DMap.toList mp1
                     , let LispValue' v2 = mp2 DMap.! name ]
-    embed $ AndLst eqs
+    embed $ pure $ AndLst eqs
   revName _ (LispRev (LispName _ _ name) _) = T.unpack name
 
 --instance GetType LispRev where
@@ -1158,7 +1158,7 @@ instance LiftComp LispState where
                  ) lst
     return $ LispState $ DMap.fromAscList nlst
     where
-      lift' :: (Embed m e,GetType e) => LispUVal '(lvl,tps) -> m (LispValue '(lvl,tps) e)
+      lift' :: (Embed m e,Monad m,GetType e) => LispUVal '(lvl,tps) -> m (LispValue '(lvl,tps) e)
       lift' (LispU str) = do
         str' <- liftStruct str
         return (LispValue (Size Nil Nil) str')
@@ -1174,7 +1174,7 @@ instance LiftComp LispState where
                  ) lst
     return $ LispConcr $ DMap.fromAscList nlst
     where
-      unlift' :: (Embed m e,GetType e) => (forall t. e t -> m (Value t))
+      unlift' :: (Embed m e,Monad m,GetType e) => (forall t. e t -> m (Value t))
               -> LispValue '(lvl,tps) e -> m (LispUVal '(lvl,tps))
       unlift' f lv@(LispValue sz val) = case sz of
         Size Nil Nil -> do
@@ -1206,6 +1206,7 @@ instance PartialComp LispState where
       in (LispPart nmp,res)
   unmaskValue _ (LispConcr cmp)
     = let lst = DMap.toAscList cmp
+          nlst :: [DSum LispName LispPVal']
           nlst = fmap (\(name@(LispName _ _ _) :=> cval)
                         -> name :=> LispPVal' (unmaskLispValue cval)
                       ) lst
@@ -1300,15 +1301,17 @@ instance Embed Identity LispExpr where
   type EmFun Identity LispExpr = NoRef
   type EmFunArg Identity LispExpr = NoRef
   type EmLVar Identity LispExpr = NoRef
-  embed = return.LispExpr
-  embedQuantifier = error "LispExpr doesn't embed quantifier."
+  embed = fmap LispExpr
+  embedQuantifier _ _ _ = error "LispExpr doesn't embed quantifier."
 
-instance Embed m e => Embed (StateT (LispState e) m) e where
+instance (Embed m e,Monad m) => Embed (StateT (LispState e) m) e where
   type EmVar (StateT (LispState e) m) e = EmVar m e
   type EmQVar (StateT (LispState e) m) e = EmQVar m e
   type EmFun (StateT (LispState e) m) e = EmFun m e
   type EmFunArg (StateT (LispState e) m) e = EmFunArg m e
   type EmLVar (StateT (LispState e) m) e = EmLVar m e
-  embed = lift . embed
+  embed e = do
+    re <- e
+    lift $ embed (pure re)
   embedQuantifier q tps f = lift (embedQuantifier q tps f)
-  embedTypeOf = lift . embedTypeOf
+  embedTypeOf = lift embedTypeOf

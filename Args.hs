@@ -36,12 +36,12 @@ class (Ord (CompDescr arg),GCompare (RevComp arg),GShow (RevComp arg))
   createComposite f descr
     = foldExprs (\rev tp -> f tp rev)
       (compositeType descr)
-  eqComposite :: (Embed m e,GetType e) => arg e -> arg e -> m (e BoolType)
+  eqComposite :: (Embed m e,Monad m,GetType e) => arg e -> arg e -> m (e BoolType)
   eqComposite e1 e2 = do
     eqs <- execWriterT $ foldExprs
            (\rev x -> do
                let y = accessComposite rev e2
-               c <- lift $ embed $ x :==: y
+               c <- lift $ x .==. y
                tell [c]
                return x) e1
     case eqs of
@@ -72,14 +72,14 @@ declareComposite :: forall arg m e.
 declareComposite f descr
   = createComposite (\tp rev -> f tp (revName (Proxy::Proxy arg) rev)) descr
 
-createRevComp :: (Composite arg,Embed m e,GetType e)
+createRevComp :: (Composite arg,Embed m e,Monad m,GetType e)
               => (forall t. Repr t -> RevComp arg t -> m (EmVar m e t))
               -> CompDescr arg
               -> m (arg e,DMap (EmVar m e) (RevComp arg))
 createRevComp f descr
   = runStateT (createComposite (\tp rev -> do
                                    v <- lift (f tp rev)
-                                   e <- lift (embed (Var v))
+                                   e <- lift (embed (pure $ Var v))
                                    modify (DMap.insert v rev)
                                    return e
                                ) descr
@@ -115,9 +115,10 @@ instance (Composite a,d ~ CompDescr a) => Embed (Reader d) (CompositeExpr a) whe
   type EmLVar (Reader d) (CompositeExpr a) = E.NoVar
   embed e = do
     descr <- ask
-    return (CompositeExpr descr e)
-  embedQuantifier _ _ = error "CompositeExpr does not support quantifier"
-  embedTypeOf = return.getType
+    re <- e
+    return (CompositeExpr descr re)
+  embedQuantifier _ _ _ = error "CompositeExpr does not support quantifier"
+  embedTypeOf = return getType
 
 instance Composite a => Extract () (CompositeExpr a) where
   type ExVar () (CompositeExpr a) = RevComp a
@@ -136,7 +137,7 @@ mkCompExpr f descr
                   arg <- createComposite (\_ rev -> return (CompositeExpr descr (Var rev))) descr
                   f arg) descr
 
-concretizeExpr :: (Embed m e,GetType e,Composite arg)
+concretizeExpr :: (Embed m e,Monad m,GetType e,Composite arg)
                => arg e
                -> CompositeExpr arg tp
                -> m (e tp)
@@ -145,11 +146,11 @@ concretizeExpr arg (CompositeExpr _ (E.Var rev))
 concretizeExpr arg (CompositeExpr _ (E.App fun args)) = do
   nfun <- E.mapFunction undefined fun
   nargs <- List.mapM (concretizeExpr arg) args
-  embed (E.App nfun nargs)
+  embed (pure $ E.App nfun nargs)
 concretizeExpr arg (CompositeExpr _ (E.Const c)) = constant c
 concretizeExpr arg (CompositeExpr _ (E.AsArray fun)) = do
   nfun <- E.mapFunction undefined fun
-  embed (E.AsArray nfun)
+  embed (pure $ E.AsArray nfun)
 
 relativizeExpr :: (Backend b,Composite arg)
                => CompDescr arg
@@ -184,9 +185,10 @@ relativizeExpr' descr mp lmp info e = case extract info e of
   -- TODO: Find a way not to flatten let bindings
   Just (E.Let bind body) -> relativizeExpr' descr mp nlmp info body
     where
-      nlmp = runIdentity $ List.foldM (\lmp bind -> return $ DMap.insert (E.letVar bind)
-                                                    (relativizeExpr' descr mp lmp info (E.letExpr bind)) lmp
-                                      ) lmp bind
+      nlmp = foldl (\lmp (E.LetBinding v e)
+                     -> DMap.insert v
+                        (relativizeExpr' descr mp lmp info e) lmp
+                   ) lmp bind
 
 collectRevVars :: Composite arg
                => DMap (RevComp arg) E.NoVar

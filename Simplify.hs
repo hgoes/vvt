@@ -11,7 +11,7 @@ import qualified Language.SMTLib2.Internals.Expression as E
 import qualified Language.SMTLib2.Internals.Type.List as List
 
 simplify :: forall i e tp m.
-            (GetType e,
+            (GetType e,Monad m,
              Embed m e,Extract i e,
              EmVar m e ~ ExVar i e,
              EmQVar m e ~ ExQVar i e,
@@ -24,10 +24,10 @@ simplify i e = case extract i e of
     nx <- simplify i x
     if v
       then return nx
-      else embed $ Not nx
+      else not' nx
   Just (AndLst xs) -> do
     xs' <- mapM (simplify i) xs
-    embed $ AndLst $ concatAnd xs'
+    and' $ concatAnd xs'
     where
       concatAnd :: [e BoolType] -> [e BoolType]
       concatAnd [] = []
@@ -36,7 +36,7 @@ simplify i e = case extract i e of
         _ -> e:concatAnd es
   Just (OrLst xs) -> do
     xs' <- mapM (simplify i) xs
-    embed $ OrLst $ concatOr xs'
+    or' $ concatOr xs'
     where
       concatOr :: [e BoolType] -> [e BoolType]
       concatOr [] = []
@@ -45,7 +45,7 @@ simplify i e = case extract i e of
         _ -> e:concatOr es      
   Just (E.App fun args) -> do
     nargs <- List.mapM (simplify i) args
-    embed $ E.App fun nargs
+    embed $ pure $ E.App fun nargs
   _ -> return e
 
 simplifySMT :: (Composite a,Backend b) => CompositeExpr a tp -> SMT b (CompositeExpr a tp)

@@ -355,7 +355,7 @@ domainAbstract expr mustUse dom = do
     exprVars = collectRevVars DMap.empty expr
 
 -- | Create an SMT expression that represents an abstract state.
-toDomainTerm :: (Embed m e,GetType e,Composite a)
+toDomainTerm :: (Embed m e,Monad m,GetType e,Composite a)
              => AbstractState a -- ^ The abstract state to represent
              -> Domain a -- ^ The domain to use (The abstract state must have been created using this domain)
              -> a e -- ^ An instance of the abstracted data type
@@ -375,7 +375,7 @@ toDomainTerm state dom vars = do
     [x] -> return x
     xs -> and' xs
 
-toDomainTerms :: (Embed m e,Composite a,GetType e)
+toDomainTerms :: (Embed m e,Monad m,Composite a,GetType e)
               => AbstractState a -> Domain a -> a e -> m (Vector (Node,e BoolType,Bool))
 toDomainTerms state dom vars
   = mapM (\(nd,act) -> do
