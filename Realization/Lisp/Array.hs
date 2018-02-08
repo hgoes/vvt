@@ -72,7 +72,7 @@ createSize f sz = do
   rsz <- List.mapIndexM f (sizeListType sz)
   return (Size sz rsz)
 
-deSize :: Monad m => Size e (sz : szs)
+deSize :: Monad m => Size e (sz ': szs)
        -> (forall tp. Repr sz -> e sz -> e (ArrayType '[sz] tp) -> m (e tp))
        -> m (Size e szs)
 deSize (Size (tp ::: tps) (sz ::: szs)) f = do
@@ -110,13 +110,13 @@ enSize sz (Size tps szs) f
   where
     tp = getType sz
 
-indexSize :: (Embed m e,Monad m,GetType e) => Size e (sz : szs) -> e sz -> m (Size e szs)
+indexSize :: (Embed m e,Monad m,GetType e) => Size e (sz ': szs) -> e sz -> m (Size e szs)
 indexSize sz idx = deSize sz (\_ _ arr -> select arr (idx ::: Nil))
 
 liftSizes :: (Embed m e,Monad m,GetType e)
           => Repr sz -> List Repr szs
           -> [Size e szs]
-          -> m (Size e (sz : szs))
+          -> m (Size e (sz ': szs))
 liftSizes tp tps vals = do
   sz <- constant len
   rangeR <- mapM constant range
@@ -150,7 +150,7 @@ liftSizes tp tps vals = do
       return (narr ::: narrs)
     
 unliftSize :: (Embed m e,Monad m,GetType e) => (forall t. e t -> m (Value t))
-           -> Size e (sz : szs)
+           -> Size e (sz ': szs)
            -> m [Size e szs]
 unliftSize f sz@(Size (_ ::: _) (s ::: _)) = do
   x <- f s
@@ -314,7 +314,7 @@ liftSized :: (Embed m e,Monad m,GetType e)
           -> List Repr szs
           -> Repr tp
           -> [Sized e szs tp]
-          -> m (Sized e (sz : szs) tp)
+          -> m (Sized e (sz ': szs) tp)
 liftSized sz szs tp vals = do
   def <- defaultValue arrTp
   arr <- constArray (sz ::: Nil) def

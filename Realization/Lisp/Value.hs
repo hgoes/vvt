@@ -89,7 +89,7 @@ geqValue (LispValue (Size sz1 _) val1) (LispValue (Size sz2 _) val2) = do
 data LispUVal (sig :: ([Type],Tree Type)) where
   LispU :: Struct Value tps -> LispUVal '( '[],tps)
   LispUArray :: Repr sz -> List Repr szs -> Struct Repr tps
-             -> [LispUVal '(szs,tps)] -> LispUVal '(sz : szs,tps)
+             -> [LispUVal '(szs,tps)] -> LispUVal '(sz ': szs,tps)
 
 instance GEq LispUVal where
   geq (LispU x) (LispU y) = do
@@ -325,7 +325,7 @@ extractStruct :: Monad m => (forall t. e t -> m (Value t))
 extractStruct f = Struct.mapM (\(Sized x) -> f x)
 
 unliftValue :: (Embed m e,Monad m,GetType e) => (forall t. e t -> m (Value t))
-            -> LispValue '(sz : szs,tps) e
+            -> LispValue '(sz ': szs,tps) e
             -> m [LispValue '(szs,tps) e]
 unliftValue f lv@(LispValue sz val) = case lispValueType lv of
   (csz ::: szs,tps) -> do
